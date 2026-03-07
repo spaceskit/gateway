@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  labels:
+    app: spaceskit-gateway
+data:
+  SPACESKIT_PORT: "9320"
+  SPACESKIT_HOST: "0.0.0.0"
+  SPACESKIT_DB_PATH: "/data/gateway.db"
+  SPACESKIT_LOG_LEVEL: "info"

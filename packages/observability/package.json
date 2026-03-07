@@ -1,0 +1,20 @@
+{
+  "name": "@spaceskit/observability",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Observability and logging for Spaceskit",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@spaceskit/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

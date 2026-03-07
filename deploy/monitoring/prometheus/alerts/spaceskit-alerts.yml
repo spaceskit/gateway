@@ -1,0 +1,42 @@
+groups:
+  - name: spaceskit-relay-sandbox
+    rules:
+      - alert: RelaySloBreached
+        expr: min_over_time(spaceskit_relay_slo_met{operation="overall"}[15m]) < 1
+        for: 5m
+        labels:
+          severity: warning
+          service: spaceskit-gateway
+        annotations:
+          summary: Relay overall success-rate SLO breached
+          description: Relay overall SLO has remained below target for at least 15m.
+
+      - alert: RelayJoinFailuresHigh
+        expr: rate(spaceskit_relay_join_failure_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: spaceskit-gateway
+        annotations:
+          summary: Relay join failures elevated
+          description: Relay join failures are above 0.1/s over the last 5m.
+
+      - alert: SandboxSloBreached
+        expr: min_over_time(spaceskit_sandbox_slo_met[15m]) < 1
+        for: 5m
+        labels:
+          severity: critical
+          service: spaceskit-gateway
+        annotations:
+          summary: Sandbox success-rate SLO breached
+          description: Sandbox SLO has remained below target for at least 15m.
+
+      - alert: SandboxFailureBurst
+        expr: rate(spaceskit_sandbox_failure_total[5m]) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          service: spaceskit-gateway
+        annotations:
+          summary: Sandbox failure burst detected
+          description: Sandbox failures are above 0.2/s over the last 5m.

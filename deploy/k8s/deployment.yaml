@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spaceskit-gateway
+  labels:
+    app: spaceskit-gateway
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spaceskit-gateway
+  template:
+    metadata:
+      labels:
+        app: spaceskit-gateway
+        version: v1
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: gateway
+        image: spaceskit-gateway:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 9320
+          protocol: TCP
+        env:
+        - name: SPACESKIT_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: gateway-config
+              key: SPACESKIT_PORT
+        - name: SPACESKIT_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: gateway-config
+              key: SPACESKIT_HOST
+        - name: SPACESKIT_DB_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: gateway-config
+              key: SPACESKIT_DB_PATH
+        - name: SPACESKIT_LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: gateway-config
+              key: SPACESKIT_LOG_LEVEL
+        - name: SPACESKIT_GATEWAY_PROFILE
+          valueFrom:
+            configMapKeyRef:
+              name: gateway-config
+              key: SPACESKIT_GATEWAY_PROFILE
+        - name: SPACESKIT_SECRET_REF_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gateway-secrets
+              key: SECRET_REF_MASTER_KEY
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 9320
+          failureThreshold: 30
+          periodSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9320
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9320
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: gateway-pvc
+      - name: tmp
+        emptyDir: {}

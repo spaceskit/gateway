@@ -1,0 +1,7 @@
+{"type":"space.turn_started","timestamp":"2026-03-07T05:25:15.811Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","metadata":{"agents":"[array:1]"}}
+{"type":"space.turn_event","timestamp":"2026-03-07T05:25:15.836Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","agentId":"main-agent","metadata":{"event":"[object]"}}
+{"type":"space.turn_event","timestamp":"2026-03-07T05:25:21.631Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","agentId":"main-agent","metadata":{"event":"[object]"}}
+{"type":"audit.turn","timestamp":"2026-03-07T05:25:21.633Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","agentId":"main-agent","metadata":{"eventId":"audit-1772861121633-cybxd2","layer":"turn","action":"turn_executed","durationMs":5803,"metadata":"[object]"}}
+{"type":"security.audit","timestamp":"2026-03-07T05:25:21.633Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","agentId":"main-agent","metadata":{"layer":"turn"}}
+{"type":"space.turn_event","timestamp":"2026-03-07T05:25:21.633Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","agentId":"main-agent","metadata":{"event":"[object]"}}
+{"type":"space.turn_event","timestamp":"2026-03-07T05:25:21.633Z","spaceId":"external-main-space","turnId":"1bdd9a20-77bf-48c3-96cb-15642d7dffbf","agentId":"main-agent","metadata":{"event":"[object]"}}

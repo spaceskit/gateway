@@ -1,0 +1,130 @@
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: spaceskit-gateway-primary
+    ports:
+      - "9320:9320"
+    volumes:
+      - gateway-data:/data
+    environment:
+      SPACESKIT_PORT: 9320
+      SPACESKIT_HOST: 0.0.0.0
+      SPACESKIT_DB_PATH: /data/gateway.db
+      SPACESKIT_LOG_LEVEL: info
+      SPACESKIT_GATEWAY_PROFILE: external
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9320/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # NOTE: Each gateway instance MUST use its own SQLite database file.
+  # SQLite does not support concurrent writers across processes. The gateway
+  # acquires an exclusive lock on startup and will refuse to start if another
+  # process holds the lock. Use separate volumes or DB paths per instance.
+  gateway-peer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: spaceskit-gateway-peer
+    ports:
+      - "9420:9420"
+    volumes:
+      - gateway-peer-data:/data
+    environment:
+      SPACESKIT_PORT: 9420
+      SPACESKIT_HOST: 0.0.0.0
+      SPACESKIT_DB_PATH: /data/gateway-peer.db
+      SPACESKIT_LOG_LEVEL: info
+      SPACESKIT_GATEWAY_PROFILE: external
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9420/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: spaceskit-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+      gateway-peer:
+        condition: service_healthy
+      alertmanager:
+        condition: service_started
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: spaceskit-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    restart: unless-stopped
+    depends_on:
+      alert-webhook:
+        condition: service_started
+
+  alert-webhook:
+    image: hashicorp/http-echo:1.0.0
+    container_name: spaceskit-alert-webhook
+    ports:
+      - "18080:8080"
+    command:
+      - -listen=:8080
+      - -text=spaceskit-alert-webhook-ok
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: spaceskit-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_started
+
+volumes:
+  gateway-data:
+    driver: local
+  gateway-peer-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  alertmanager-data:
+    driver: local

@@ -1,0 +1,22 @@
+{
+  "name": "@spaceskit/provider-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Native model runtime adapters for Spaceskit execution",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@meridius-labs/apple-on-device-ai": "^1.6.2",
+    "@spaceskit/core": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}

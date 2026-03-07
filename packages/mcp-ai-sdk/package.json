@@ -1,0 +1,21 @@
+{
+  "name": "@spaceskit/mcp-ai-sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Isolated MCP bridge for Spaceskit capability routing",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/mcp": "^1.0.25",
+    "@spaceskit/core": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}

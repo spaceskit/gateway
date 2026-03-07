@@ -1,0 +1,182 @@
+---
+title: SpaceGateway — Protocol Architecture
+---
+graph TB
+  %% ===================================================================
+  %% HUMAN LAYER
+  %% ===================================================================
+  subgraph Human["👤 Human (Coordinator)"]
+    direction TB
+    NativeApp["Native App<br/>(SwiftUI)"]
+    NativeAdapter["Native Adapter<br/>(Swift)"]
+    WebClient["Web Client<br/>(any)"]
+  end
+
+  %% ===================================================================
+  %% PROTOCOL LAYER — what SpaceGateway defines
+  %% ===================================================================
+  subgraph Protocol["Protocol Layer (protobuf definitions)"]
+    direction TB
+
+    subgraph SpaceProto["Space Lifecycle"]
+      SpaceService["SpaceService<br/>create, join, leave<br/>session begin/end"]
+    end
+
+    subgraph CoordProto["Coordination"]
+      CoordinatorService["CoordinatorService<br/>turn orchestration<br/>feedback routing"]
+      TurnModels["Turn Models<br/>round_robin, moderated<br/>debate, parallel_race<br/>priority_queue"]
+    end
+
+    subgraph IdentityProto["Identity"]
+      ProfileService["ProfileService<br/>agent passports<br/>revision history"]
+      InsightProto["PersonalityInsight<br/>experience → profile<br/>growth loop"]
+    end
+
+    subgraph FeedbackProto["Feedback"]
+      FeedbackFlow["FeedbackRequest<br/>→ human review<br/>→ FeedbackResponse"]
+    end
+
+    subgraph StateProto["Shared State"]
+      CanvasOps["Canvas Operations<br/>artifact exchange"]
+      EventStream["EventStream<br/>38 trace event types"]
+    end
+  end
+
+  %% ===================================================================
+  %% REFERENCE GATEWAY — TypeScript implementation
+  %% ===================================================================
+  subgraph Gateway["Reference Gateway (TypeScript / Bun)"]
+    direction TB
+
+    subgraph Coordination["Coordination Runtime"]
+      Coordinator["Coordinator<br/>turn orchestration"]
+      Spaces["Spaces<br/>goal, turn_model<br/>agent_assignments"]
+    end
+
+    subgraph Identity["Identity Store"]
+      Profiles["AgentProfile<br/>personality_prompt<br/>default_skills<br/>security_scope"]
+      Revisions["ProfileRevision<br/>version history"]
+      ModProfiles["ModeratorProfile"]
+    end
+
+    subgraph Safety["Safety Layer"]
+      Security["SecurityPolicy<br/>inspect, audit"]
+      AgentScope["SecurityScope<br/>allowlists, limits"]
+    end
+
+    subgraph Infra["Infrastructure"]
+      Capabilities["CapabilityRegistry"]
+      EventBus["EventBus"]
+      Persistence["SQLite + WAL"]
+    end
+  end
+
+  %% ===================================================================
+  %% RUNTIME ADAPTERS — how execution backends connect
+  %% ===================================================================
+  subgraph Adapters["Runtime Adapters"]
+    Cloud["Cloud APIs<br/>OpenAI-compatible HTTP"]
+    Executors["CLI Executors<br/>Claude/Codex/Gemini"]
+    Local["Local Runtimes<br/>LM Studio/Ollama"]
+    MCP["MCP Bridge<br/>Capabilities only"]
+  end
+
+  %% ===================================================================
+  %% ORCHESTRATION CLIENTS — what can sit above the gateway
+  %% ===================================================================
+  subgraph Frameworks["External Orchestration Clients"]
+    CrewAIFW["CrewAI<br/>Crews & Tasks"]
+    AutoGenFW["AutoGen / MAF<br/>Actor Model"]
+    DirectLLM["Direct LLM<br/>via native adapters"]
+    OtherFW["LangGraph<br/>Claude Agent SDK<br/>etc."]
+  end
+
+  %% ===================================================================
+  %% EXTERNAL
+  %% ===================================================================
+  subgraph External["External"]
+    Providers["Execution Integrations<br/>Cloud APIs / CLI Executors / Local Runtimes"]
+    MCPServers["MCP Servers<br/>Tools & Data"]
+    OtherGW["Other Gateways<br/>SyncService"]
+  end
+
+  %% ===================================================================
+  %% THE GROWTH LOOP (primary cycle)
+  %% ===================================================================
+  Profiles -->|"assigned to"| Spaces
+  Spaces -->|"orchestrates via"| Coordinator
+  Coordinator -->|"delegates turns to"| Adapters
+  Adapters -->|"produce experiences"| Identity
+  InsightProto -->|"proposes change to"| Profiles
+  Revisions -.->|"version history of"| Profiles
+
+  %% ===================================================================
+  %% HUMAN-IN-THE-LOOP
+  %% ===================================================================
+  NativeApp <-->|"ConnectRPC"| NativeAdapter
+  NativeAdapter <-->|"WebSocket :9320"| Coordinator
+  WebClient <-->|"WebSocket :9320"| Coordinator
+  FeedbackFlow -->|"presented to"| Human
+  Human -->|"FeedbackResponse"| Coordinator
+  InsightProto -->|"human reviews"| Human
+
+  %% ===================================================================
+  %% FRAMEWORK CONNECTIONS
+  %% ===================================================================
+  CrewAI <-->|"SpaceGateway protocol"| Coordinator
+  AutoGen <-->|"SpaceGateway protocol"| Coordinator
+  AISDK <-->|"SpaceGateway protocol"| Coordinator
+  Custom <-->|"SpaceGateway protocol"| Coordinator
+
+  CrewAIFW -->|"runs agents"| CrewAI
+  AutoGenFW -->|"runs agents"| AutoGen
+  DirectLLM -->|"runs agents"| AISDK
+  OtherFW -->|"runs agents"| Custom
+
+  %% ===================================================================
+  %% EXTERNAL CONNECTIONS
+  %% ===================================================================
+  Frameworks -->|"model calls"| Providers
+  Capabilities -->|"routes to"| MCPServers
+  OtherGW <-->|"pull-based sync"| Gateway
+
+  %% ===================================================================
+  %% SAFETY ENFORCEMENT
+  %% ===================================================================
+  Security -->|"governs"| Spaces
+  AgentScope -->|"constrains"| Adapters
+  Profiles -->|"default_security_scope"| AgentScope
+
+  %% ===================================================================
+  %% INFRASTRUCTURE
+  %% ===================================================================
+  Coordinator -->|"emits events"| EventBus
+  EventBus -->|"streamed to"| Human
+  Spaces -->|"persisted in"| Persistence
+  Profiles -->|"persisted in"| Persistence
+
+  %% ===================================================================
+  %% PROTOCOL IMPLEMENTATION
+  %% ===================================================================
+  Protocol -.->|"implemented by"| Gateway
+
+  %% ===================================================================
+  %% STYLING
+  %% ===================================================================
+  classDef human fill:#4A90D9,stroke:#2C5F8A,color:#fff
+  classDef protocol fill:#8E44AD,stroke:#6C3483,color:#fff
+  classDef gateway fill:#E67E22,stroke:#BA6518,color:#fff
+  classDef adapter fill:#27AE60,stroke:#1E8449,color:#fff
+  classDef framework fill:#95A5A6,stroke:#7F8C8D,color:#fff
+  classDef external fill:#1ABC9C,stroke:#148F77,color:#fff
+  classDef safety fill:#E74C3C,stroke:#C0392B,color:#fff
+  classDef infra fill:#7F8C8D,stroke:#5D6D7E,color:#fff
+
+  class NativeApp,NativeAdapter,WebClient human
+  class SpaceService,CoordinatorService,TurnModels,ProfileService,InsightProto,FeedbackFlow,CanvasOps,EventStream protocol
+  class Coordinator,Spaces,Profiles,Revisions,ModProfiles gateway
+  class CrewAI,AutoGen,AISDK,Custom adapter
+  class CrewAIFW,AutoGenFW,DirectLLM,OtherFW framework
+  class Providers,MCPServers,OtherGW external
+  class Security,AgentScope safety
+  class Capabilities,EventBus,Persistence infra

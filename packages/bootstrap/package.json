@@ -1,0 +1,32 @@
+{
+  "name": "@spaceskit/bootstrap",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bootstrap entry point for Spaceskit (Bun runtime)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "spaceskit-gateway": "src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "bun run --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@spaceskit/contracts": "*",
+    "@spaceskit/core": "*",
+    "@spaceskit/gateway-core": "*",
+    "@spaceskit/mcp-ai-sdk": "*",
+    "@spaceskit/observability": "*",
+    "@spaceskit/persistence": "*",
+    "@spaceskit/policy": "*",
+    "@spaceskit/provider-runtime": "*",
+    "@spaceskit/server": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}
