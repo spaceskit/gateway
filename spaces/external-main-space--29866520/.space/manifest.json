@@ -1,0 +1,13 @@
+{
+  "layoutVersion": 2,
+  "generatedAt": "2026-04-08T20:49:30.820Z",
+  "root": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520",
+  "spaceDir": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520/.space",
+  "paths": {
+    "meta": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520/.space",
+    "logs": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520/.space/logs",
+    "work": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520/.space/work",
+    "sharedContext": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520/.space/shared-context",
+    "scratchpads": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--29866520/.space/scratchpads"
+  }
+}

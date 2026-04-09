@@ -1,0 +1,10 @@
+{
+  "spaceId": "main-space-lmstudio-detected-model-test",
+  "spaceUid": "5b5dadcc-6f63-4c1f-bfa4-78f83d7279b4",
+  "spaceName": "External Main Space",
+  "mode": "managed",
+  "effectiveWorkspaceRoot": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/5b5dadcc-6f63-4c1f-bfa4-78f83d7279b4",
+  "gitRepoDetected": false,
+  "layoutVersion": 3,
+  "updatedAt": "2026-03-08T11:53:33.232Z"
+}

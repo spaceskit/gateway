@@ -1,0 +1,13 @@
+{
+  "layoutVersion": 2,
+  "generatedAt": "2026-03-07T13:05:06.570Z",
+  "root": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe",
+  "spaceDir": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe/.space",
+  "paths": {
+    "meta": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe/.space",
+    "logs": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe/.space/logs",
+    "work": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe/.space/work",
+    "sharedContext": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe/.space/shared-context",
+    "scratchpads": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/d6dd2334-1932-40cd-b047-e033f86edffe/.space/scratchpads"
+  }
+}

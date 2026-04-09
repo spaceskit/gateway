@@ -1,0 +1,10 @@
+{
+  "spaceId": "main-space-lmstudio-fallback-test",
+  "spaceUid": "22c73709-056b-4237-82cc-1921ad2dcfcd",
+  "spaceName": "External Main Space",
+  "mode": "managed",
+  "effectiveWorkspaceRoot": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/22c73709-056b-4237-82cc-1921ad2dcfcd",
+  "gitRepoDetected": false,
+  "layoutVersion": 3,
+  "updatedAt": "2026-03-08T11:53:33.308Z"
+}

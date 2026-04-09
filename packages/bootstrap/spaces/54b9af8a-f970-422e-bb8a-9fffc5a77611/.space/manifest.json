@@ -1,0 +1,14 @@
+{
+  "layoutVersion": 3,
+  "generatedAt": "2026-03-08T11:50:38.232Z",
+  "root": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611",
+  "spaceDir": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space",
+  "paths": {
+    "meta": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space",
+    "logs": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space/logs",
+    "artifacts": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space/artifacts",
+    "work": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space/work",
+    "sharedContext": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space/shared-context",
+    "scratchpads": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/54b9af8a-f970-422e-bb8a-9fffc5a77611/.space/scratchpads"
+  }
+}
