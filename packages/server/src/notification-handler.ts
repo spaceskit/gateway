@@ -59,6 +59,40 @@ export class NotificationHandler {
     await this.notificationService.unsubscribeAll(clientId);
   }
 
+  async subscribeClient(clientId: string, categories: string[]): Promise<string[]> {
+    const normalized = categories
+      .filter((category): category is string => typeof category === "string")
+      .map((category) => category.trim())
+      .filter((category) => category.length > 0);
+    if (normalized.length === 0) {
+      return [];
+    }
+    await this.notificationService.subscribe(
+      clientId,
+      normalized as NotificationCategory[],
+      [{ type: "broadcast" }],
+    );
+    return normalized;
+  }
+
+  async unsubscribeClient(clientId: string, categories: string[]): Promise<string[]> {
+    const normalized = categories
+      .filter((category): category is string => typeof category === "string")
+      .map((category) => category.trim())
+      .filter((category) => category.length > 0);
+    if (normalized.length === 0) {
+      return [];
+    }
+    const subscriptions = await this.notificationService.getSubscriptions(clientId);
+    for (const subscription of subscriptions) {
+      const matches = subscription.categories.some((category) => normalized.includes(category));
+      if (matches || normalized.includes("*")) {
+        await this.notificationService.unsubscribe(subscription.subscriptionId);
+      }
+    }
+    return normalized;
+  }
+
   /**
    * Push a notification to a specific client via WebSocket.
    * This is the callback wired into DefaultNotificationService.
@@ -73,11 +107,16 @@ export class NotificationHandler {
         id: notification.notificationId,
         ts: notification.createdAt.toISOString(),
         payload: {
+          notificationId: notification.notificationId,
           category: notification.category,
           title: notification.title,
+          body: notification.message,
           message: notification.message,
           severity: notification.severity,
+          createdAt: notification.createdAt.toISOString(),
           actionUrl: notification.actionUrl,
+          expiresAt: notification.expiresAt?.toISOString(),
+          ...(notification.payload as Record<string, unknown>),
           data: notification.payload,
         },
       });

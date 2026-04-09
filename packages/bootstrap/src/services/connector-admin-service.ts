@@ -198,6 +198,16 @@ const DEFAULT_CONNECTOR_FAMILIES: Array<Omit<ConnectorFamilyRecord, "createdAt" 
     features: { platform: "apple", native: true },
   },
   {
+    familyId: "apple-mail-mailkit",
+    displayName: "Apple Mail (MailKit)",
+    kind: "hybrid",
+    runtime: "adapter",
+    trustClass: "embedded_safe",
+    embeddedEnabled: true,
+    capabilityTypes: ["email"],
+    features: { platform: "apple", native: true },
+  },
+  {
     familyId: "apple-contacts-contactsframework",
     displayName: "Apple Contacts (Contacts.framework)",
     kind: "capability",
@@ -284,6 +294,20 @@ const DEFAULT_CONNECTOR_SELECTOR_SCHEMAS: Record<string, ConnectorBindingSelecto
     capability_export: {
       allowedKeys: ["accountId", "listId", "capabilityType"],
       description: "Optional account/list capability export scope keys.",
+    },
+  },
+  "apple-mail-mailkit": {
+    inbound_route: {
+      allowedKeys: ["accountId", "mailboxId", "threadId", "messageId"],
+      description: "Optional account/mailbox/thread/message match keys for inbound route bindings.",
+    },
+    outbound_action: {
+      allowedKeys: ["accountId", "mailboxId", "threadId", "messageId"],
+      description: "Optional account/mailbox/thread/message match keys for outbound action bindings.",
+    },
+    capability_export: {
+      allowedKeys: ["accountId", "mailboxId", "threadId", "messageId", "capabilityType"],
+      description: "Optional account/mailbox/thread/message capability export scope keys.",
     },
   },
   "apple-contacts-contactsframework": {

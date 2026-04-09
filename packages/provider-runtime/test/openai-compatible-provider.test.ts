@@ -190,4 +190,104 @@ describe("OpenAICompatibleModelProvider", () => {
       code: "TOOLS_UNSUPPORTED",
     });
   });
+
+  test("sends reasoning_effort for OpenAI o-series models when effort is set", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
+    const provider = new OpenAICompatibleModelProvider({
+      id: "openai",
+      name: "OpenAI",
+      model: "openai/o3",
+      apiKey: "test-key",
+      fetchImpl: async (_url, init) => {
+        capturedBody = JSON.parse(init!.body as string) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: "done" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    await provider.generate("openai/o3", {
+      messages: [{ role: "user", content: "Think about this" }],
+      effort: "high",
+    });
+
+    expect(capturedBody?.reasoning_effort).toBe("high");
+  });
+
+  test("maps effort 'max' to reasoning_effort 'high' for o-series", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
+    const provider = new OpenAICompatibleModelProvider({
+      id: "openai",
+      name: "OpenAI",
+      model: "openai/o4-mini",
+      apiKey: "test-key",
+      fetchImpl: async (_url, init) => {
+        capturedBody = JSON.parse(init!.body as string) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: "done" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    await provider.generate("openai/o4-mini", {
+      messages: [{ role: "user", content: "Think about this" }],
+      effort: "max",
+    });
+
+    expect(capturedBody?.reasoning_effort).toBe("high");
+  });
+
+  test("does NOT send reasoning_effort for non-o-series OpenAI models", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
+    const provider = new OpenAICompatibleModelProvider({
+      id: "openai",
+      name: "OpenAI",
+      model: "openai/gpt-4.1",
+      apiKey: "test-key",
+      fetchImpl: async (_url, init) => {
+        capturedBody = JSON.parse(init!.body as string) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: "done" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    await provider.generate("openai/gpt-4.1", {
+      messages: [{ role: "user", content: "Think about this" }],
+      effort: "high",
+    });
+
+    expect(capturedBody?.reasoning_effort).toBeUndefined();
+  });
+
+  test("does NOT send reasoning_effort for non-OpenAI providers", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+
+    const provider = new OpenAICompatibleModelProvider({
+      id: "openrouter",
+      name: "OpenRouter",
+      model: "openrouter/openai/o3",
+      apiKey: "test-key",
+      fetchImpl: async (_url, init) => {
+        capturedBody = JSON.parse(init!.body as string) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: "done" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+
+    await provider.generate("openrouter/openai/o3", {
+      messages: [{ role: "user", content: "Think about this" }],
+      effort: "high",
+    });
+
+    expect(capturedBody?.reasoning_effort).toBeUndefined();
+  });
 });

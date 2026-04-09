@@ -12,6 +12,7 @@
  */
 
 import type { ToolDefinition } from "../agents/model-provider.js";
+import type { ExperienceStatus } from "../experiences/types.js";
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -58,6 +59,7 @@ export interface MemoryQuery {
   text: string;
   scope: MemoryScope;
   type?: MemoryType;
+  status?: ExperienceStatus;
   tags?: string[];
   /** Max results. Default: 10. */
   limit?: number;

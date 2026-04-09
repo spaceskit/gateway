@@ -41,6 +41,12 @@ export interface VoiceUsageSourceSummary extends VoiceUsageWindowSummary {
   source: "managed" | "byok" | "local_model" | "apple_speech" | "unknown";
 }
 
+export interface VoiceUsageProviderSummary extends VoiceUsageWindowSummary {
+  source: "managed" | "byok" | "local_model" | "apple_speech" | "unknown";
+  channel: "stt" | "tts" | "session" | "unknown";
+  providerId: string;
+}
+
 export interface VoiceUsageLockSummary {
   enabled: boolean;
   managedSttSecondsMonthlyLimit?: number;
@@ -59,6 +65,7 @@ export interface VoiceUsageSnapshot {
     lifetime: VoiceUsageWindowSummary;
   };
   bySource: VoiceUsageSourceSummary[];
+  byProvider: VoiceUsageProviderSummary[];
   lock?: VoiceUsageLockSummary;
 }
 
@@ -225,6 +232,15 @@ export class UsageSnapshotService {
       ttsSeconds: roundMoney(row.ttsSeconds),
       estimatedCostUsd: roundMoney(row.estimatedCostUsd),
     }));
+    const byProvider = voiceRepo.aggregateByProviderChannel().map((row): VoiceUsageProviderSummary => ({
+      source: row.source,
+      channel: row.channel,
+      providerId: row.providerId,
+      sttSeconds: roundMoney(row.sttSeconds),
+      ttsChars: row.ttsChars,
+      ttsSeconds: roundMoney(row.ttsSeconds),
+      estimatedCostUsd: roundMoney(row.estimatedCostUsd),
+    }));
 
     const lock = this.options.loadVoiceLockState?.();
 
@@ -236,6 +252,7 @@ export class UsageSnapshotService {
         lifetime,
       },
       bySource,
+      byProvider,
       lock,
     };
   }

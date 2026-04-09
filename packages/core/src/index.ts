@@ -11,7 +11,15 @@ export type {
   GenerateOptions,
   GenerateResult,
   StreamChunk,
+  CliExecutionMode,
+  CliExecutionObserver,
+  CliExecutionObserverEvent,
   FinishReason,
+  TurnAccessMode,
+  TurnExecutionMode,
+  TurnReasoningEffort,
+  ThinkingConfig,
+  ProviderSessionHandle,
   TokenUsage,
   TokenUsageDetails,
   ModelInfo,
@@ -25,7 +33,25 @@ export type {
   TurnResult,
   TurnEvent,
   RuntimeFeedbackCheckpoint,
+  RuntimeApprovalSelection,
 } from "./agents/agent-runtime.js";
+
+export type {
+  CapabilityTier,
+  TierProviderHints,
+  ArchetypeId,
+  ArchetypeDefinition,
+} from "./agents/capability-tiers.js";
+export {
+  resolveArchetypeHint,
+  isCapabilityTier,
+  resolveTierProviderHints,
+} from "./agents/capability-tiers.js";
+export type { PromptBudgetClass } from "./agents/model-capability-registry.js";
+export { inferContextWindow } from "./agents/model-capability-registry.js";
+export type { CliLaunchSnapshot, CliLaunchSnapshotSource } from "./agents/cli-launch-snapshot.js";
+export { resolveCliLaunchSnapshot } from "./agents/cli-launch-snapshot.js";
+export type { TurnAccessMode as TurnRequestAccessMode } from "./agents/model-provider.js";
 
 export type {
   ToolExecutor,
@@ -42,6 +68,30 @@ export type {
 
 export { computeRetryDecision, DEFAULT_PROVIDER_RETRY_CONFIG } from "./agents/provider-retry.js";
 export type { ProviderRetryConfig, RetryDecision } from "./agents/provider-retry.js";
+export {
+  buildMediatedToolPrompt,
+  buildToolUsageGuidance,
+  hasInjectedToolGuidance,
+} from "./agents/agent-runtime-tools.js";
+export {
+  parseFencedToolCalls,
+  stripFencedToolCallBlocks,
+} from "./agents/mediated-tool-calls.js";
+export { ReflectionService } from "./reflection/reflection-service.js";
+export type {
+  ExperienceJobInput,
+  ExperienceJobResult,
+  InsightProposalJobInput,
+  InsightProposalJobResult,
+  ReflectionFallbackMode,
+  ReflectionGenerationTrace,
+  ReflectionModelPolicy,
+  ReflectionModelTarget,
+  ReflectionServiceOptions,
+  SummaryJobInput,
+  SummaryJobKind,
+  SummaryJobResult,
+} from "./reflection/reflection-service.js";
 
 // Identity
 export { deterministicUuid, isUuid, normalizeOrDeterministicUuid, normalizeUuid } from "./identity/uuid.js";
@@ -85,6 +135,7 @@ export {
 export { CapabilityRegistry, CapabilityNotAvailableError, CapabilityDeniedError } from "./capabilities/registry.js";
 export type {
   CapabilityHandler,
+  CapabilityPolicyContext,
   GatewayPolicyEvaluationResult,
   GatewayPolicyEvaluator,
   CapabilityExecutionOrigin,
@@ -107,11 +158,19 @@ export type {
   SpaceResourceType,
   TurnModelStrategy,
   TurnModelConfig,
+  ConversationTopology,
   CoordinatorRole,
   InterAgentMode,
   InterAgentCall,
   TaskDependency,
 } from "./spaces/types.js";
+export type {
+  GatewayMemoryDefaults,
+  SpaceExperienceCaptureMode,
+  SpaceMemoryPolicy,
+  SpacePrivacyMode,
+  ThinkingCapturePolicy,
+} from "./spaces/memory-policy.js";
 
 // Skills & Actions
 export type {
@@ -209,6 +268,22 @@ export type {
   SecretsDetectionConfig,
 } from "./security/types.js";
 export { DEFAULT_SECURITY_POLICY, DEFAULT_AGENT_SCOPE, DEFAULT_SECRETS_DETECTION_CONFIG } from "./security/types.js";
+export type {
+  DangerousCapabilityId,
+  DangerousCapabilityRule,
+  EffectiveDangerousCapability,
+  EffectiveToolAccess,
+  EffectiveToolAccessOperation,
+  GuestAccessPreset,
+  SafetyProfileDefinition,
+  SafetyProfileId,
+  ToolAccessEvaluation,
+  ToolAccessPolicy,
+  ToolAccessPolicyScopeType,
+  ToolAccessRule,
+  ToolAccessRuleSelectorKind,
+} from "./security/tool-access.js";
+export { DEFAULT_SAFETY_PROFILES } from "./security/tool-access.js";
 
 // Events
 export { EventBus } from "./events/event-bus.js";
@@ -268,7 +343,6 @@ export {
   createSecurityMiddleware,
   createBudgetMiddleware,
   createAuditMiddleware,
-  createGuardrailMiddleware,
   createContextWindowMiddleware,
   createTracingMiddleware,
   createResilienceMiddleware,
@@ -276,9 +350,6 @@ export {
   createSecretsMiddleware,
 } from "./middleware/builtin/index.js";
 export type {
-  Guardrail,
-  CodeGuardrail,
-  LLMGuardrail,
   AuditRecord,
   TracingMiddlewareOptions,
   TraceSpan,
@@ -308,8 +379,6 @@ export { Mem0Provider } from "./memory/mem0-provider.js";
 export type { Mem0ProviderOptions } from "./memory/mem0-provider.js";
 export { LettaProvider } from "./memory/letta-provider.js";
 export type { LettaProviderOptions } from "./memory/letta-provider.js";
-export { CompositeMemoryScorer } from "./memory/memory-scorer.js";
-export type { MemoryScoreWeights, MemoryScoreBreakdown } from "./memory/memory-scorer.js";
 
 // Notifications
 export type {
@@ -360,25 +429,13 @@ export type {
 export { SQLiteDeadLetterQueue } from "./spaces/dead-letter.js";
 export type { DeadLetter, DeadLetterQueue, DeadLetterEnqueueParams } from "./spaces/dead-letter.js";
 
-// Dead letter retry
-export { DeadLetterRetryService } from "./spaces/dead-letter-retry.js";
-export type { DeadLetterRetryOptions } from "./spaces/dead-letter-retry.js";
-
-// Supervisor Pattern
-export { generateSupervisorPlan, getExecutableSteps, isPlanComplete } from "./spaces/supervisor.js";
-export type { SupervisorConfig, SupervisorPlan, SupervisorStep } from "./spaces/supervisor.js";
-
-// Swarm Pattern
-export { SwarmManager } from "./spaces/swarm.js";
-export type { SwarmHandoff, SwarmConfig } from "./spaces/swarm.js";
-
 // Session Continuity
 export { SessionContinuityManager } from "./spaces/session-continuity.js";
 export type { SessionState, SessionContinuityOptions } from "./spaces/session-continuity.js";
 
-// Agent-as-Tool Delegation
-export { createDelegationTools, validateDelegation } from "./agents/agent-as-tool.js";
-export type { AgentDelegationConfig, DelegationRequest, DelegationResult, DelegationValidationResult } from "./agents/agent-as-tool.js";
+// Delegation validation
+export { validateDelegation } from "./agents/delegation-validation.js";
+export type { DelegationRequest, DelegationValidationResult } from "./agents/delegation-validation.js";
 
 // Platform Introspection Tools
 export {
@@ -388,6 +445,27 @@ export {
   isPlatformTool,
 } from "./agents/platform-tools.js";
 export type { PlatformToolConfig, PlatformToolExecutionContext } from "./agents/platform-tools.js";
+export {
+  createConciergeEscalationToolDefinitions,
+  createConciergeEscalationToolExecutor,
+  createConciergeEscalationToolFilter,
+  isConciergeEscalationTool,
+  USER_ESCALATION_SKILL_ID,
+} from "./agents/concierge-escalation-tools.js";
+export type {
+  ConciergeEscalationAllowedResponse,
+  ConciergeEscalationCancelInput,
+  ConciergeEscalationDeliveryChannel,
+  ConciergeEscalationFallbackPolicy,
+  ConciergeEscalationRequestInput,
+  ConciergeEscalationRequestResult,
+  ConciergeEscalationResponseMode,
+  ConciergeEscalationStatus,
+  ConciergeEscalationStatusResult,
+  ConciergeEscalationToolConfig,
+  ConciergeEscalationToolExecutionContext,
+  ConciergeEscalationUrgency,
+} from "./agents/concierge-escalation-tools.js";
 
 // Model Router
 export { ModelRouter } from "./agents/model-router.js";
@@ -422,93 +500,9 @@ export type {
   PluginRegistryEntry,
 } from "./plugins/index.js";
 
-// Load Testing
-export { LoadTestRunner, computePercentile, formatDuration } from "./testing/load-test.js";
-export type { LoadTestConfig, LoadTestResult } from "./testing/load-test.js";
-
-// Client SDK
-export {
-  GatewayClient,
-  GatewayAdapterClient,
-  generateAuthKeyPair,
-  signChallenge,
-} from "./client/index.js";
-export type {
-  AuthKeyPair,
-  GatewayClientOptions,
-  MainSpaceBootstrapOptions as ClientMainSpaceBootstrapOptions,
-  MainSpaceBootstrapResult as ClientMainSpaceBootstrapResult,
-  ConnectAndBootstrapResult as ClientConnectAndBootstrapResult,
-  GatewayAdapterClientOptions,
-  AdapterProviderRegistration as ClientAdapterProviderRegistration,
-  AdapterOperationHandler as ClientAdapterOperationHandler,
-  SpaceCreatePayload as ClientSpaceCreatePayload,
-  SpaceGetPayload as ClientSpaceGetPayload,
-  SpaceListPayload as ClientSpaceListPayload,
-  SpaceAddAgentPayload as ClientSpaceAddAgentPayload,
-  SpaceRemoveAgentPayload as ClientSpaceRemoveAgentPayload,
-  SpaceUpdateAgentAssignmentPayload as ClientSpaceUpdateAgentAssignmentPayload,
-  SpaceListAgentAssignmentsPayload as ClientSpaceListAgentAssignmentsPayload,
-  SpaceCreateInitialAgentPayload as ClientSpaceCreateInitialAgentPayload,
-  SpaceAssignmentRole as ClientSpaceAssignmentRole,
-  SpaceAgentAssignment as ClientSpaceAgentAssignment,
-  SpaceSummary as ClientSpaceSummary,
-  SpaceCreateResponsePayload as ClientSpaceCreateResponsePayload,
-  SpaceGetResponsePayload as ClientSpaceGetResponsePayload,
-  SpaceListResponsePayload as ClientSpaceListResponsePayload,
-  SpaceAddAgentResponsePayload as ClientSpaceAddAgentResponsePayload,
-  SpaceRemoveAgentResponsePayload as ClientSpaceRemoveAgentResponsePayload,
-  SpaceUpdateAgentAssignmentResponsePayload as ClientSpaceUpdateAgentAssignmentResponsePayload,
-  SpaceListAgentAssignmentsResponsePayload as ClientSpaceListAgentAssignmentsResponsePayload,
-  TurnResult as ClientTurnResult,
-  CapabilityResult as ClientCapabilityResult,
-  CapabilitiesRegisterPayload as ClientCapabilitiesRegisterPayload,
-  CapabilitiesDeregisterPayload as ClientCapabilitiesDeregisterPayload,
-  AdapterCapabilityProvider as ClientAdapterCapabilityProvider,
-  AdapterCapabilityInvokePayload as ClientAdapterCapabilityInvokePayload,
-  AdapterCapabilityResultPayload as ClientAdapterCapabilityResultPayload,
-  AdapterCapabilityErrorPayload as ClientAdapterCapabilityErrorPayload,
-  AgentMessagePayload as ClientAgentMessagePayload,
-  AgentPokePayload as ClientAgentPokePayload,
-  AgentIdlePayload as ClientAgentIdlePayload,
-  TaskDependencyPayload as ClientTaskDependencyPayload,
-  TaskDependencyResolvedPayload as ClientTaskDependencyResolvedPayload,
-  TurnEventHandler,
-  TurnStreamHandler,
-  SpaceStateHandler,
-  AgentMessageHandler,
-  AgentPokeHandler,
-  AgentIdleHandler,
-  TaskDependencyHandler,
-  TaskDependencyResolvedHandler,
-  CapabilityInvokeHandler as ClientCapabilityInvokeHandler,
-  ErrorHandler as ClientErrorHandler,
-  UnsubscribeHandler,
-} from "./client/index.js";
-
 // Multi-Gateway Sync
 export { GatewaySync } from "./sync/index.js";
 export type { SyncPeer, SyncMessage, GatewaySyncOptions } from "./sync/index.js";
-
-// Compliance / GDPR
-export { DataRetentionManager } from "./compliance/index.js";
-export type {
-  RetentionPolicy,
-  DataExportRequest,
-  DataExportResult,
-  PurgeResult,
-  DataRetentionManagerOptions,
-} from "./compliance/index.js";
-
-// Analytics / Metrics
-export { MetricsCollector } from "./analytics/index.js";
-export type {
-  MetricType,
-  MetricPoint,
-  HistogramBuckets,
-  MetricsSnapshot,
-  MetricsCollectorOptions,
-} from "./analytics/index.js";
 
 // Onboarding
 export type {
@@ -597,3 +591,28 @@ export type {
   RouteResolverInput,
 } from "./sharing/index.js";
 export { encodeInviteLink, decodeInviteLink, isV2Link, resolveInviteRoute } from "./sharing/index.js";
+
+// Concierge Call Service
+export {
+  ConciergeCallService,
+  ConciergeCallServiceError,
+  normalizeOptional as conciergeNormalizeOptional,
+  normalizeRequired as conciergeNormalizeRequired,
+  normalizeTtsMode,
+} from "./concierge/index.js";
+export type {
+  ConciergeCallServiceOptions,
+  ConciergeCallTtsModePayload,
+  ConciergeCallStartPayload,
+  ConciergeCallAnswerPayload,
+  ConciergeCallEndPayload,
+  ConciergeCallSetMutedPayload,
+  ConciergeCallHandoffPreparePayload,
+  ConciergeCallHandoffTokenPayload,
+  ConciergeCallHandoffPrepareResponsePayload,
+  ConciergeCallHandoffAcceptPayload,
+  ConciergeCallRegisterPushPayload,
+  ConciergeVoipPushRegistrationPayload,
+  ConciergeCallMetricsPayload,
+  ConciergeCallEventPayload,
+} from "./concierge/index.js";

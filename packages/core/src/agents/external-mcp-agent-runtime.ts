@@ -7,6 +7,7 @@ import type {
   TurnResult,
   TurnResultMetadata,
 } from "./agent-runtime.js";
+import type { CliLaunchSnapshot } from "./cli-launch-snapshot.js";
 import type { FinishReason, ModelMessage, ToolCall, ToolResult, TokenUsage, TokenUsageDetails } from "./model-provider.js";
 
 export interface ExternalMcpAgentRuntimeOptions {
@@ -45,6 +46,10 @@ export class ExternalMcpAgentRuntime implements AgentRuntime {
 
   get state(): AgentState {
     return this._state;
+  }
+
+  async getLaunchSnapshot(_context: TurnContext): Promise<CliLaunchSnapshot | undefined> {
+    return undefined;
   }
 
   async *executeTurn(context: TurnContext): AsyncIterable<TurnEvent> {

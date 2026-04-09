@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "id": "op.document.list",
+  "displayName": "1Password Document List",
+  "description": "List 1Password documents.",
+  "bundleId": "onepassword-cli",
+  "bundleDisplayName": "1Password CLI",
+  "bundleDescription": "Gateway-managed 1Password CLI bundle for account, vault, item, user, group, Connect, and secret-read operations.",
+  "toolGroupId": "documents",
+  "toolGroupDisplayName": "Documents",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/op-cli-tools/spaces-op.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/op-cli-tools/spaces-op.mjs",
+  "argsTemplate": [
+    "--op",
+    "document.list",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "array",
+            "description": "Optional extra positional arguments to append after the subcommand.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flags": {
+            "type": "object",
+            "description": "Optional 1Password flags. Use raw CLI flag keys such as `vault`, `account`, `expires-in`, or `out-file`.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "presentFlags": {
+            "type": "array",
+            "description": "Optional flag names that should be rendered without values, for example `archive`.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool only after the gateway host is already authenticated to 1Password.",
+  "examples": [
+    {
+      "name": "1Password Document List",
+      "arguments": {
+        "payload": {}
+      }
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 262144,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/op-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-08T20:49:29.627Z",
+  "updatedAt": "2026-04-08T20:49:29.627Z"
+}

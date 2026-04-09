@@ -8,6 +8,7 @@ export interface ProviderConfigRow {
   allow_custom_model: number;
   native_cli_tools_enabled: number;
   api_key_secret_ref: string | null;
+  auth_mode: string;
   source: string;
   created_at: string;
   updated_at: string;
@@ -21,6 +22,7 @@ export interface UpsertProviderConfigInput {
   allowCustomModel: boolean;
   nativeCliToolsEnabled: boolean;
   apiKeySecretRef?: string;
+  authMode?: string;
   source: string;
 }
 
@@ -38,10 +40,11 @@ export class ProviderConfigRepository {
         allow_custom_model,
         native_cli_tools_enabled,
         api_key_secret_ref,
+        auth_mode,
         source,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(provider_id) DO UPDATE SET
         model = excluded.model,
         base_url = excluded.base_url,
@@ -49,6 +52,7 @@ export class ProviderConfigRepository {
         allow_custom_model = excluded.allow_custom_model,
         native_cli_tools_enabled = excluded.native_cli_tools_enabled,
         api_key_secret_ref = excluded.api_key_secret_ref,
+        auth_mode = excluded.auth_mode,
         source = excluded.source,
         updated_at = excluded.updated_at
     `).run(
@@ -59,6 +63,7 @@ export class ProviderConfigRepository {
       input.allowCustomModel ? 1 : 0,
       input.nativeCliToolsEnabled ? 1 : 0,
       input.apiKeySecretRef ?? null,
+      input.authMode ?? "api_key",
       input.source,
       now,
       now,

@@ -135,6 +135,14 @@ describe("ConnectorAdminService", () => {
       expect(selectorSchemas).toBeDefined();
       expect(selectorSchemas?.inbound_route?.allowedKeys).toContain("chatId");
       expect(selectorSchemas?.outbound_action?.allowedKeys).toContain("phoneNumberId");
+
+      const appleMail = families.find((family) => family.familyId === "apple-mail-mailkit");
+      const appleMailSchemas = (appleMail?.features as Record<string, unknown>).selectorSchemas as
+        | Record<string, { allowedKeys?: string[] }>
+        | undefined;
+      expect(appleMail?.kind).toBe("hybrid");
+      expect(appleMail?.capabilityTypes).toEqual(["email"]);
+      expect(appleMailSchemas?.inbound_route?.allowedKeys).toContain("messageId");
     } finally {
       ctx.db.close();
     }

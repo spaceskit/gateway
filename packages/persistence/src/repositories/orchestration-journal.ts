@@ -118,6 +118,28 @@ export class OrchestrationJournalRepository {
     return result.changes;
   }
 
+  deleteBySpace(
+    spaceId: string,
+    options: {
+      createdAtGte?: string;
+      createdAtLte?: string;
+    } = {},
+  ): number {
+    const where = ["space_id = ?"];
+    const values: Array<string | number> = [spaceId];
+    if (options.createdAtGte) {
+      where.push("created_at >= ?");
+      values.push(options.createdAtGte);
+    }
+    if (options.createdAtLte) {
+      where.push("created_at <= ?");
+      values.push(options.createdAtLte);
+    }
+    return this.db
+      .query(`DELETE FROM orchestration_journal WHERE ${where.join(" AND ")}`)
+      .run(...values).changes;
+  }
+
   private nextSequence(spaceId: string): number {
     const row = this.db
       .query(`

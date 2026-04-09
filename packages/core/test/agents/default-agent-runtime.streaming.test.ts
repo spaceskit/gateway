@@ -91,7 +91,7 @@ function buildRuntime(
   });
 }
 
-function makeTurnContext(): TurnContext {
+function makeTurnContext(overrides: Partial<TurnContext> = {}): TurnContext {
   return {
     spaceId: "space-1",
     turnId: "turn-1",
@@ -99,6 +99,7 @@ function makeTurnContext(): TurnContext {
     lineageId: "lineage-1",
     hopCount: 0,
     maxHops: 5,
+    ...overrides,
   };
 }
 
@@ -174,6 +175,35 @@ describe("DefaultAgentRuntime streaming text deltas", () => {
     await runPromise;
   });
 
+  test("forwards turn mode and effort into provider stream options", async () => {
+    const seenOptions: GenerateOptions[] = [];
+    const provider = new StubModelProvider({
+      generate: async () => {
+        throw new Error("generate() should not run when stream succeeds");
+      },
+      stream: (options) => ({
+        async *[Symbol.asyncIterator](): AsyncIterator<StreamChunk> {
+          seenOptions.push(options);
+          yield { type: "finish", finishReason: "stop" };
+        },
+      }),
+    });
+    const runtime = buildRuntime(provider);
+
+    const events: TurnEvent[] = [];
+    for await (const event of runtime.executeTurn(makeTurnContext({
+      mode: "plan",
+      effort: "high",
+    }))) {
+      events.push(event);
+    }
+
+    expect(events.some((event) => event.type === "turn_completed")).toBe(true);
+    expect(seenOptions).toHaveLength(1);
+    expect(seenOptions[0]?.mode).toBe("plan");
+    expect(seenOptions[0]?.effort).toBe("high");
+  });
+
   test("emits real incremental text_delta chunks from provider stream", async () => {
     const provider = new StubModelProvider({
       generate: async () => {
@@ -208,6 +238,66 @@ describe("DefaultAgentRuntime streaming text deltas", () => {
     expect(completed).toBeDefined();
     expect(completed?.result.finalMessage.content).toBe("Hello");
     expect(completed?.result.usage.totalTokens).toBe(7);
+  });
+
+  test("forwards streamed reasoning and tool activity into turn events", async () => {
+    const provider = new StubModelProvider({
+      generate: async () => {
+        throw new Error("generate() should not run when stream succeeds");
+      },
+      stream: () => streamChunks([
+        { type: "reasoning_delta", text: "Planning next step" },
+        {
+          type: "tool_call_start",
+          toolCall: { id: "tool-1", name: "files.read", arguments: { path: "README.md" } },
+        },
+        {
+          type: "tool_result",
+          toolResult: {
+            toolCallId: "tool-1",
+            result: { ok: true },
+          },
+        },
+        { type: "text_delta", text: "done" },
+        { type: "finish", finishReason: "stop" },
+      ]),
+    });
+    const runtime = buildRuntime(provider);
+
+    const events = await collectEvents(runtime);
+    expect(events.some((event) => event.type === "reasoning_delta" && event.text === "Planning next step")).toBe(true);
+    expect(events.some((event) => (
+      event.type === "tool_call_start"
+      && event.toolCall.id === "tool-1"
+      && event.toolCall.name === "files.read"
+    ))).toBe(true);
+    expect(events.some((event) => (
+      event.type === "tool_result"
+      && event.result.toolCallId === "tool-1"
+    ))).toBe(true);
+  });
+
+  test("forwards streamed state_changed updates into turn events", async () => {
+    const provider = new StubModelProvider({
+      generate: async () => {
+        throw new Error("generate() should not run when stream succeeds");
+      },
+      stream: () => streamChunks([
+        { type: "state_changed", state: "thinking" },
+        { type: "state_changed", state: "acting" },
+        { type: "text_delta", text: "ok" },
+        { type: "finish", finishReason: "stop" },
+      ]),
+    });
+    const runtime = buildRuntime(provider);
+
+    const events = await collectEvents(runtime);
+    const streamedStates = events
+      .filter((event): event is Extract<TurnEvent, { type: "state_changed" }> => event.type === "state_changed")
+      .map((event) => event.state);
+
+    expect(streamedStates).toContain("thinking");
+    expect(streamedStates).toContain("acting");
   });
 
   test("uses generate() fallback path when tools are available", async () => {

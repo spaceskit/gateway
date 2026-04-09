@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createHmac } from "node:crypto";
 import { SpacesRestApiService } from "../src/services/spaces-rest-api-service.js";
+import { createHttpPrincipalTestContext } from "./http-principal-test-helpers.js";
 
 describe("SpacesRestApiService", () => {
   test("returns null for unrelated paths", async () => {
@@ -14,7 +14,9 @@ describe("SpacesRestApiService", () => {
 
   test("uploads a changeset file via POST /v1/spaces/:spaceId/changesets/:changeSetId/files", async () => {
     const calls: Array<Record<string, unknown>> = [];
+    const auth = createHttpPrincipalTestContext();
     const service = new SpacesRestApiService({
+      principalAuth: auth.principalAuth,
       spaceChangeSetService: {
         uploadFileInit: async (input) => {
           calls.push({ step: "init", ...input });
@@ -39,7 +41,7 @@ describe("SpacesRestApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-spaceskit-principal-id": "principal-a",
+        ...auth.headers("principal-a"),
       },
       body: JSON.stringify({
         relativePath: "docs/readme.md",
@@ -82,7 +84,10 @@ describe("SpacesRestApiService", () => {
   });
 
   test("returns usage and effective tools endpoints", async () => {
+    const auth = createHttpPrincipalTestContext();
+    let effectiveToolAccessInput: Record<string, unknown> | undefined;
     const service = new SpacesRestApiService({
+      principalAuth: auth.principalAuth,
       spaceQuotaService: {
         getUsage: (spaceId, principalId) => ({
           spaceId,
@@ -90,39 +95,60 @@ describe("SpacesRestApiService", () => {
           spaceUsage: { openChangeSets: 1 },
         }) as any,
       },
-      spaceToolPolicyService: {
-        getEffectiveTools: async (input) => ({
+      toolAccessPolicyService: {
+        getEffectiveToolAccess: async (input) => ({
+          ...(effectiveToolAccessInput = input as Record<string, unknown>),
           spaceId: input.spaceId,
           agentId: input.agentId,
+          policyVersion: "tool_access_policy_v1",
+          dangerousCapabilities: [],
           operations: [],
+          generatedAt: new Date().toISOString(),
         }) as any,
+      },
+      spaceSharingService: {
+        evaluateAccess: () => ({ allowed: true, enforced: false, mode: "collaborator" }),
+        getActiveParticipant: () => null,
       },
     });
 
     const usageRequest = new Request("http://localhost/v1/spaces/space-a/usage", {
       method: "GET",
-      headers: { "x-spaceskit-principal-id": "principal-a" },
+      headers: auth.headers("principal-a"),
     });
     const usageResponse = await service.handleRequest(usageRequest, new URL(usageRequest.url));
     expect(usageResponse?.status).toBe(200);
     const usageBody = await usageResponse!.json() as { spaceId?: string };
     expect(usageBody.spaceId).toBe("space-a");
 
-    const toolsRequest = new Request("http://localhost/v1/spaces/space-a/tools/effective?agentId=agent-1", {
+    const toolsRequest = new Request(
+      "http://localhost/v1/spaces/space-a/tools/effective?agentId=agent-1&accessMode=full_access",
+      {
       method: "GET",
       headers: {
-        "x-spaceskit-principal-id": "principal-a",
+        ...auth.headers("principal-a"),
         "x-spaceskit-device-id": "device-a",
       },
-    });
+    },
+    );
     const toolsResponse = await service.handleRequest(toolsRequest, new URL(toolsRequest.url));
     expect(toolsResponse?.status).toBe(200);
     const toolsBody = await toolsResponse!.json() as { matrix?: { agentId?: string } };
     expect(toolsBody.matrix?.agentId).toBe("agent-1");
+    expect(effectiveToolAccessInput).toMatchObject({
+      spaceId: "space-a",
+      principalId: "principal-a",
+      deviceId: "device-a",
+      executionOrigin: "owner",
+      agentId: "agent-1",
+      accessMode: "full_access",
+    });
   });
 
   test("supports trace, artifacts, and agent usage reset endpoints", async () => {
+    const auth = createHttpPrincipalTestContext();
     const service = new SpacesRestApiService({
+      principalAuth: auth.principalAuth,
       spaceQuotaService: {
         getUsage: () => ({ spaceUsage: {} }) as any,
         resetAgentUsageSession: (spaceId, agentId, principalId) => ({
@@ -188,7 +214,7 @@ describe("SpacesRestApiService", () => {
 
     const traceRequest = new Request("http://localhost/v1/spaces/space-a/turns/turn-1/trace", {
       method: "GET",
-      headers: { "x-spaceskit-principal-id": "principal-a" },
+      headers: auth.headers("principal-a"),
     });
     const traceResponse = await service.handleRequest(traceRequest, new URL(traceRequest.url));
     expect(traceResponse?.status).toBe(200);
@@ -197,7 +223,7 @@ describe("SpacesRestApiService", () => {
 
     const listRequest = new Request("http://localhost/v1/spaces/space-a/artifacts", {
       method: "GET",
-      headers: { "x-spaceskit-principal-id": "principal-a" },
+      headers: auth.headers("principal-a"),
     });
     const listResponse = await service.handleRequest(listRequest, new URL(listRequest.url));
     expect(listResponse?.status).toBe(200);
@@ -206,7 +232,7 @@ describe("SpacesRestApiService", () => {
 
     const getRequest = new Request("http://localhost/v1/spaces/space-a/artifacts/artifact-1", {
       method: "GET",
-      headers: { "x-spaceskit-principal-id": "principal-a" },
+      headers: auth.headers("principal-a"),
     });
     const getResponse = await service.handleRequest(getRequest, new URL(getRequest.url));
     expect(getResponse?.status).toBe(200);
@@ -215,7 +241,7 @@ describe("SpacesRestApiService", () => {
 
     const resetRequest = new Request("http://localhost/v1/spaces/space-a/usage/agents/agent-1/reset", {
       method: "POST",
-      headers: { "x-spaceskit-principal-id": "principal-a" },
+      headers: auth.headers("principal-a"),
     });
     const resetResponse = await service.handleRequest(resetRequest, new URL(resetRequest.url));
     expect(resetResponse?.status).toBe(200);
@@ -243,13 +269,9 @@ describe("SpacesRestApiService", () => {
 
   test("enforces signed bearer tokens in strict principal-auth mode", async () => {
     let seenPrincipalId: string | undefined;
-    const now = new Date("2026-03-02T20:00:00.000Z");
+    const auth = createHttpPrincipalTestContext();
     const service = new SpacesRestApiService({
-      principalAuth: {
-        strictVerification: true,
-        hs256Secret: "test-secret",
-        now: () => now,
-      },
+      principalAuth: auth.strictPrincipalAuth,
       spaceQuotaService: {
         getUsage: (_spaceId, principalId) => {
           seenPrincipalId = principalId;
@@ -271,30 +293,12 @@ describe("SpacesRestApiService", () => {
     const headerOnlyBody = await headerOnlyResponse!.json() as { code?: string };
     expect(headerOnlyBody.code).toBe("UNAUTHENTICATED");
 
-    const signedToken = signHs256Token({
-      sub: "principal-strict",
-      exp: Math.floor(now.getTime() / 1000) + 60,
-    }, "test-secret");
     const signedRequest = new Request("http://localhost/v1/spaces/space-a/usage", {
       method: "GET",
-      headers: {
-        authorization: `Bearer ${signedToken}`,
-      },
+      headers: auth.headers("principal-strict"),
     });
     const signedResponse = await service.handleRequest(signedRequest, new URL(signedRequest.url));
     expect(signedResponse?.status).toBe(200);
     expect(seenPrincipalId).toBe("principal-strict");
   });
 });
-
-function signHs256Token(payload: Record<string, unknown>, secret: string): string {
-  const encodedHeader = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac("sha256", secret).update(signingInput).digest("base64url");
-  return `${encodedHeader}.${encodedPayload}.${signature}`;
-}
-
-function base64UrlEncode(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64url");
-}

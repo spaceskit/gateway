@@ -236,7 +236,6 @@ describe("DefaultAgentRuntime LM Studio bad request handling", () => {
       : "";
 
     expect(provider.calls).toHaveLength(1);
-    expect(finalMessage).toContain("Native executor tools are enabled for claude");
     expect(finalMessage).toContain("native cli response");
     expect(finalMessage).not.toContain("Tool calling is unavailable");
   });

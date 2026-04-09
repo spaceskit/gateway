@@ -132,4 +132,67 @@ describe("GatewayServer turn stream agent id propagation", () => {
     expect((published[0]?.msg.payload.data as any).type).toBe("rate_limited");
     expect((published[0]?.msg.payload.data as any).retryAfterMs).toBe(1200);
   });
+
+  test("maps runtime state_changed events to canonical lifecycle payload", async () => {
+    const server = new GatewayServer({
+      port: 0,
+      host: "127.0.0.1",
+      skipAuth: true,
+      eventBus: new EventBus(),
+      onMessage: async () => null,
+    });
+
+    const published: Array<{ spaceUid: string; msg: any }> = [];
+    server.broadcastToSpace = ((spaceUid: string, msg: any) => {
+      published.push({ spaceUid, msg });
+    }) as GatewayServer["broadcastToSpace"];
+
+    await (server as any).broadcastEvent({
+      type: "space.turn_event",
+      spaceId: "space-1",
+      turnId: "turn-4",
+      event: {
+        type: "state_changed",
+        state: "needs_feedback",
+      },
+      timestamp: new Date(),
+    });
+
+    expect(published).toHaveLength(1);
+    expect(published[0]?.msg.type).toBe(MessageTypes.TURN_EVENT);
+    expect(published[0]?.msg.payload.eventType).toBe("state_changed");
+    expect((published[0]?.msg.payload.data as any).type).toBe("state_changed");
+    expect((published[0]?.msg.payload.data as any).state).toBe("needs_feedback");
+  });
+
+  test("maps reasoning_delta lifecycle chunks to streaming turn_event category", async () => {
+    const server = new GatewayServer({
+      port: 0,
+      host: "127.0.0.1",
+      skipAuth: true,
+      eventBus: new EventBus(),
+      onMessage: async () => null,
+    });
+
+    const published: Array<{ spaceUid: string; msg: any }> = [];
+    server.broadcastToSpace = ((spaceUid: string, msg: any) => {
+      published.push({ spaceUid, msg });
+    }) as GatewayServer["broadcastToSpace"];
+
+    await (server as any).broadcastEvent({
+      type: "space.turn_event",
+      spaceId: "space-1",
+      turnId: "turn-5",
+      event: {
+        type: "reasoning_delta",
+        text: "thinking",
+      },
+      timestamp: new Date(),
+    });
+
+    expect(published).toHaveLength(1);
+    expect(published[0]?.msg.type).toBe(MessageTypes.TURN_EVENT);
+    expect(published[0]?.msg.payload.eventType).toBe("streaming");
+    expect((published[0]?.msg.payload.data as any).type).toBe("reasoning_delta");
+  });
 });

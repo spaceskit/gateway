@@ -8,8 +8,13 @@
  * The executor handles permission gating, timeout enforcement, and audit logging.
  */
 
-import type { ToolCall, ToolResult, ToolDefinition } from "./model-provider.js";
+import type { ToolCall, ToolResult, ToolDefinition, TurnAccessMode } from "./model-provider.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
+
+export interface ToolAvailabilityOptions {
+  /** Suppress injected read-only tools for trivial turns. */
+  suppressInjectedTools?: boolean;
+}
 
 export interface ToolExecutionContext {
   spaceId: string;
@@ -22,6 +27,10 @@ export interface ToolExecutionContext {
   deviceId?: string;
   /** Optional execution-origin hint used by backend routing policy. */
   executionOrigin?: CapabilityExecutionOrigin;
+  /** Optional per-turn access mode used by backend routing policy. */
+  accessMode?: TurnAccessMode;
+  /** Suppress injected read-only tools for trivial turns. */
+  suppressInjectedTools?: boolean;
 }
 
 export interface ToolPermission {
@@ -30,11 +39,16 @@ export interface ToolPermission {
   reason?: string;
   reasonCode?: string;
   requiresApproval?: boolean;
+  approvalContext?: Record<string, unknown>;
 }
 
 export interface ToolExecutor {
   /** Get all tool definitions available to a specific agent in a specific space. */
-  getAvailableTools(spaceId: string, agentId: string): Promise<ToolDefinition[]>;
+  getAvailableTools(
+    spaceId: string,
+    agentId: string,
+    options?: ToolAvailabilityOptions,
+  ): Promise<ToolDefinition[]>;
 
   /** Check if a tool call is permitted before execution. */
   checkPermission(

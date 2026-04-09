@@ -12,8 +12,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.96",
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@lmstudio/sdk": "^1.5.0",
     "@meridius-labs/apple-on-device-ai": "^1.6.2",
-    "@spaceskit/core": "*"
+    "@spaceskit/core": "*",
+    "openai": "^6.32.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

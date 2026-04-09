@@ -1,0 +1,73 @@
+{
+  "id": "shell.fruitmail.search",
+  "toolName": "shell.fruitmail.search",
+  "displayName": "Search Emails",
+  "description": "Search Apple Mail with filters: subject, sender, recipient, unread, attachments, date range.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "messages",
+  "toolGroupDisplayName": "Messages",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "subject": {
+        "type": "string",
+        "description": "Search by subject text."
+      },
+      "sender": {
+        "type": "string",
+        "description": "Search by sender email address."
+      },
+      "to": {
+        "type": "string",
+        "description": "Search by recipient email address."
+      },
+      "fromName": {
+        "type": "string",
+        "description": "Search by sender display name."
+      },
+      "unread": {
+        "type": "boolean",
+        "description": "Only show unread emails."
+      },
+      "read": {
+        "type": "boolean",
+        "description": "Only show read emails."
+      },
+      "days": {
+        "type": "integer",
+        "description": "Days lookback window. Defaults to 7.",
+        "minimum": 1
+      },
+      "hasAttachment": {
+        "type": "boolean",
+        "description": "Only show emails with attachments."
+      },
+      "attachmentType": {
+        "type": "string",
+        "description": "Filter by attachment file extension (e.g., pdf, xlsx)."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of results. Defaults to 20.",
+        "minimum": 1
+      }
+    }
+  },
+  "outputHint": "Returns JSON output.",
+  "schemaVersion": 1,
+  "wrapperVersion": "0.1.0",
+  "enabled": true,
+  "runtime": {
+    "type": "shell",
+    "command": "node",
+    "args": [
+      "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+      "search",
+      "{{payload}}"
+    ],
+    "cwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+    "timeoutMs": 30000
+  }
+}

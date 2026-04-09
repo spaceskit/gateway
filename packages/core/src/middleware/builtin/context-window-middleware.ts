@@ -12,6 +12,11 @@
 import type { Middleware, MiddlewareContext } from "../types.js";
 import type { EventBus } from "../../events/event-bus.js";
 import type { GenerateOptions, ModelMessage } from "../../agents/model-provider.js";
+import {
+  estimateTokens as estimateBudgetTokens,
+  remainingForNextParticipant,
+  type OrchestrationContextBudget,
+} from "../../orchestrator/context-budget.js";
 
 export interface ContextWindowMiddlewareOptions {
   eventBus: EventBus;
@@ -42,14 +47,14 @@ export interface ContextWindowMiddlewareOptions {
  * This is intentionally conservative — better to summarize too early
  * than to hit a context overflow error.
  */
-function estimateTokens(messages: ModelMessage[]): number {
+function estimateTokens(messages: ModelMessage[], calibrationFactor = 1.0): number {
   let chars = 0;
   for (const msg of messages) {
     chars += msg.content.length;
     // Add overhead for role, tool calls, etc.
     chars += 20;
   }
-  return Math.ceil(chars / 4);
+  return estimateBudgetTokens(chars, calibrationFactor);
 }
 
 function buildFallbackSummary(messages: ModelMessage[]): string {
@@ -131,6 +136,7 @@ export function createContextWindowMiddleware(
   const threshold = options.threshold ?? 0.75;
   const keepRecent = Math.max(0, options.keepRecentMessages ?? 10);
   const getWindowSize = options.getContextWindowSize ?? (() => 128_000);
+  const calibrationByScope = new Map<string, number>();
 
   return {
     name: "context-window",
@@ -150,11 +156,32 @@ export function createContextWindowMiddleware(
       }
 
       const contextWindow = getWindowSize(llmInput.modelId);
-      const maxTokens = Math.max(1, Math.floor(contextWindow * threshold));
-      const currentTokens = estimateTokens(llmInput.messages);
+      const calibrationKey = buildCalibrationKey(ctx, llmInput.modelId);
+      const calibrationFactor = calibrationByScope.get(calibrationKey) ?? 1.0;
+      const budget = isOrchestrationBudget(ctx.metadata.orchestrationBudget)
+        ? ctx.metadata.orchestrationBudget
+        : undefined;
+      const orchestrationRemaining = budget
+        ? remainingForNextParticipant(budget)
+        : undefined;
+      const maxTokens = Math.max(
+        1,
+        Math.floor(
+          orchestrationRemaining !== undefined
+            ? Math.min(contextWindow * threshold, orchestrationRemaining)
+            : contextWindow * threshold,
+        ),
+      );
+      const currentTokens = estimateTokens(llmInput.messages, calibrationFactor);
+      ctx.metadata._preEstimateTokens = currentTokens;
 
       if (currentTokens <= maxTokens) {
         await next();
+        updateCalibrationIfAvailable(
+          ctx,
+          calibrationByScope,
+          calibrationKey,
+        );
         return;
       }
 
@@ -247,6 +274,47 @@ export function createContextWindowMiddleware(
       });
 
       await next();
+      updateCalibrationIfAvailable(
+        ctx,
+        calibrationByScope,
+        calibrationKey,
+      );
     },
   };
+}
+
+function buildCalibrationKey(ctx: MiddlewareContext, modelId?: string): string {
+  return [
+    modelId ?? "",
+    ctx.spaceId ?? "",
+    ctx.agentId ?? "",
+  ].join("::");
+}
+
+function isOrchestrationBudget(value: unknown): value is OrchestrationContextBudget {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<OrchestrationContextBudget>;
+  return typeof candidate.totalBudgetTokens === "number"
+    && typeof candidate.reservedForSystemPrompt === "number"
+    && typeof candidate.reservedForUserInput === "number"
+    && candidate.spentByParticipants instanceof Map;
+}
+
+function updateCalibrationIfAvailable(
+  ctx: MiddlewareContext,
+  calibrationByScope: Map<string, number>,
+  calibrationKey: string,
+): void {
+  const estimated = typeof ctx.metadata._preEstimateTokens === "number"
+    ? ctx.metadata._preEstimateTokens
+    : undefined;
+  const output = ctx.output as { usage?: { promptTokens?: number } } | undefined;
+  const actual = output?.usage?.promptTokens;
+  if (!estimated || typeof actual !== "number" || !Number.isFinite(actual) || actual <= 0) {
+    return;
+  }
+
+  const nextFactor = Math.max(0.25, Math.min(8, actual / estimated));
+  calibrationByScope.set(calibrationKey, nextFactor);
+  ctx.metadata.calibrationFactor = nextFactor;
 }

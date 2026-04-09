@@ -8,6 +8,8 @@ import { SpaceResourceRepository } from "../../persistence/src/repositories/spac
 import { SpaceWorkspaceRepository } from "../../persistence/src/repositories/space-workspaces.js";
 import { SpaceWorkspaceService } from "../src/services/space-workspace-service.js";
 
+const TEST_SPACE_UID = "11111111-1111-1111-8111-111111111111";
+
 function createContext() {
   const db = initDatabase({
     path: ":memory:",
@@ -23,7 +25,7 @@ function createContext() {
     goal: "",
     turnModel: "sequential_all",
     configJson: JSON.stringify({
-      spaceUid: "11111111-1111-1111-8111-111111111111",
+      spaceUid: TEST_SPACE_UID,
     }),
   });
 
@@ -39,6 +41,7 @@ describe("SpaceWorkspaceService", () => {
   test("provisions managed workspace layout under .space and managed resource", async () => {
     const context = createContext();
     const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-default-"));
+    const expectedRoot = join(tempRoot, "main-space--11111111");
 
     try {
       const service = new SpaceWorkspaceService({
@@ -50,10 +53,11 @@ describe("SpaceWorkspaceService", () => {
 
       const workspace = await service.ensureWorkspace("space-main");
       expect(workspace.mode).toBe("managed");
-      expect(workspace.effectiveWorkspaceRoot).toBe(join(tempRoot, workspace.spaceUid));
+      expect(workspace.effectiveWorkspaceRoot).toBe(expectedRoot);
       expect(workspace.metadataStatus).toBe("ready");
       expect(workspace.metaPath).toBe(join(workspace.effectiveWorkspaceRoot, ".space"));
       expect(workspace.gitRepoDetected).toBe(false);
+      expect(context.workspaces.getBySpace("space-main")?.managed_folder_name).toBe("main-space--11111111");
 
       await expect(stat(workspace.metaPath)).resolves.toBeDefined();
       await expect(stat(workspace.logsPath)).resolves.toBeDefined();
@@ -67,6 +71,32 @@ describe("SpaceWorkspaceService", () => {
       expect(managedResource).toBeDefined();
       expect(managedResource?.type).toBe("folder");
       expect(managedResource?.uri).toContain(workspace.effectiveWorkspaceRoot);
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the managed folder basename stable after later space renames", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-rename-"));
+
+    try {
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: tempRoot,
+      });
+
+      const firstWorkspace = await service.ensureWorkspace("space-main");
+      context.db.db
+        .query("UPDATE spaces SET name = ?, updated_at = ? WHERE space_id = ?")
+        .run("Renamed Space", new Date().toISOString(), "space-main");
+
+      const secondWorkspace = await service.ensureWorkspace("space-main");
+      expect(secondWorkspace.effectiveWorkspaceRoot).toBe(firstWorkspace.effectiveWorkspaceRoot);
+      expect(context.workspaces.getBySpace("space-main")?.managed_folder_name).toBe("main-space--11111111");
     } finally {
       context.db.close();
       await rm(tempRoot, { recursive: true, force: true });
@@ -106,6 +136,81 @@ describe("SpaceWorkspaceService", () => {
 
       const managedResource = context.resources.get("space-main", "space-workspace-root-space-main");
       expect(managedResource?.uri).toContain(explicitRoot);
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("resets existing UUID-named managed roots onto friendly folder names", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-reset-"));
+    const legacyRoot = join(tempRoot, TEST_SPACE_UID);
+    const expectedRoot = join(tempRoot, "main-space--11111111");
+
+    try {
+      await mkdir(join(legacyRoot, ".space"), { recursive: true });
+      await writeFile(join(legacyRoot, ".space", "space.json"), JSON.stringify({
+        spaceId: "space-main",
+        spaceUid: TEST_SPACE_UID,
+        mode: "managed",
+        effectiveWorkspaceRoot: legacyRoot,
+      }), "utf8");
+      context.workspaces.upsert({
+        spaceId: "space-main",
+        explicitRoot: "",
+        effectiveRoot: legacyRoot,
+        managedFolderName: "",
+        managedResourceId: "space-workspace-root-space-main",
+        layoutVersion: 2,
+      });
+
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: tempRoot,
+      });
+
+      const workspace = await service.ensureWorkspace("space-main");
+      expect(workspace.effectiveWorkspaceRoot).toBe(expectedRoot);
+      expect(workspace.effectiveWorkspaceRoot).not.toBe(legacyRoot);
+      expect(context.workspaces.getBySpace("space-main")?.managed_folder_name).toBe("main-space--11111111");
+      expect(context.workspaces.getBySpace("space-main")?.effective_root).toBe(expectedRoot);
+      expect(context.resources.get("space-main", "space-workspace-root-space-main")?.uri).toContain(expectedRoot);
+      await expect(stat(legacyRoot)).resolves.toBeDefined();
+      await expect(stat(expectedRoot)).resolves.toBeDefined();
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to the full uid suffix when the short friendly folder is already claimed", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-friendly-conflict-"));
+    const shortCandidateRoot = join(tempRoot, "main-space--11111111");
+    const fallbackRoot = join(tempRoot, `main-space--${TEST_SPACE_UID}`);
+
+    try {
+      await mkdir(join(shortCandidateRoot, ".space"), { recursive: true });
+      await writeFile(join(shortCandidateRoot, ".space", "space.json"), JSON.stringify({
+        spaceId: "space-other",
+        spaceUid: "22222222-2222-2222-8222-222222222222",
+      }), "utf8");
+
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: tempRoot,
+      });
+
+      const workspace = await service.ensureWorkspace("space-main");
+      expect(workspace.effectiveWorkspaceRoot).toBe(fallbackRoot);
+      expect(context.workspaces.getBySpace("space-main")?.managed_folder_name).toBe(
+        `main-space--${TEST_SPACE_UID}`,
+      );
     } finally {
       context.db.close();
       await rm(tempRoot, { recursive: true, force: true });

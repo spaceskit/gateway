@@ -11,8 +11,19 @@
  * Model adapters can be used inside the runtime, but they do not own the loop.
  */
 
-import type { ToolCall, ToolResult, ModelMessage, TokenUsage, FinishReason } from "./model-provider.js";
+import type {
+  ToolCall,
+  ToolResult,
+  ModelMessage,
+  TokenUsage,
+  FinishReason,
+  TurnAccessMode,
+  TurnExecutionMode,
+  TurnReasoningEffort,
+  ProviderSessionHandle,
+} from "./model-provider.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
+import type { CliLaunchSnapshot } from "./cli-launch-snapshot.js";
 
 export interface AgentConfig {
   id: string;
@@ -24,7 +35,10 @@ export interface AgentConfig {
   maxSteps: number;        // max tool-call loops before forced stop
   temperature?: number;
   workingDirectory?: string;
+  accessMode?: TurnAccessMode;
+  /** @deprecated Use accessMode instead. */
   nativeCliToolsEnabled?: boolean;
+  resolvedSafetyProfileId?: string;
 }
 
 export interface TurnContext {
@@ -40,6 +54,14 @@ export interface TurnContext {
   deviceId?: string;
   /** Optional execution-origin hint used by backend routing policy. */
   executionOrigin?: CapabilityExecutionOrigin;
+  /** Optional request-level access mode for this turn. */
+  accessMode?: TurnAccessMode;
+  /** Optional request-level chat mode hint for this turn. */
+  mode?: TurnExecutionMode;
+  /** Optional request-level reasoning effort hint for this turn. */
+  effort?: TurnReasoningEffort;
+  /** Opaque provider session handle from a prior turn (e.g. OpenAI previous_response_id). */
+  providerSessionHandle?: ProviderSessionHandle;
 }
 
 export type AgentState =
@@ -47,7 +69,8 @@ export type AgentState =
   | "thinking"
   | "acting"
   | "needs_feedback"
-  | "errored";
+  | "errored"
+  | "interrupted";
 
 export interface TurnResult {
   agentId: string;
@@ -65,11 +88,14 @@ export interface TurnResult {
 export interface TurnResultMetadata {
   providerId?: string;
   modelId?: string;
+  effectiveSafetyProfileId?: string;
   finishReason?: FinishReason;
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
   usage?: TokenUsage;
+  /** Provider session handle to pass to the next turn for session continuity. */
+  providerSessionHandle?: ProviderSessionHandle;
 }
 
 /**
@@ -80,10 +106,26 @@ export interface TurnResultMetadata {
 export interface RuntimeFeedbackCheckpoint {
   id: string;
   agentId: string;
-  triggerClass: "permission_gate" | "budget_gate" | "loop_guard" | "high_impact" | "ambiguity" | "conflict" | "security";
+  triggerClass:
+    | "permission_gate"
+    | "budget_gate"
+    | "loop_guard"
+    | "high_impact"
+    | "ambiguity"
+    | "conflict"
+    | "security"
+    | "policy_escalation";
   description: string;
   options: ("approve" | "reject" | "revise" | "defer")[];
+  context?: Record<string, unknown>;
 }
+
+export interface RuntimeApprovalSelection {
+  mode: "once" | "time_window" | "durable";
+  ttlSeconds?: number;
+}
+
+export type { CliLaunchSnapshot } from "./cli-launch-snapshot.js";
 
 export interface AgentRuntime {
   readonly agentId: string;
@@ -99,6 +141,9 @@ export interface AgentRuntime {
    */
   executeTurn(context: TurnContext): AsyncIterable<TurnEvent>;
 
+  /** Best-effort launch-time snapshot for turn-start UI and telemetry. */
+  getLaunchSnapshot?(context: TurnContext): Promise<CliLaunchSnapshot | undefined>;
+
   /** Resume a paused turn after feedback is provided. */
   resumeWithFeedback(
     turnId: string,
@@ -113,6 +158,7 @@ export interface AgentRuntime {
 export type TurnEvent =
   | { type: "state_changed"; state: AgentState }
   | { type: "text_delta"; text: string }
+  | { type: "reasoning_delta"; text: string; summarized?: boolean }
   | { type: "tool_call_start"; toolCall: ToolCall }
   | { type: "tool_result"; result: ToolResult }
   | {
@@ -126,4 +172,5 @@ export type TurnEvent =
   }
   | { type: "feedback_requested"; request: RuntimeFeedbackCheckpoint }
   | { type: "turn_completed"; result: TurnResult }
+  | { type: "turn_cancelled" }
   | { type: "error"; error: Error };

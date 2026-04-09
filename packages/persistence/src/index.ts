@@ -128,6 +128,35 @@ export type {
 } from "./repositories/gateway-capability-grants.js";
 export { GLOBAL_SCOPE } from "./repositories/gateway-capability-grants.js";
 
+export { GatewayLinkedSkillIndexRepository } from "./repositories/gateway-linked-skill-index.js";
+export type {
+  GatewayLinkedSkillSyncState,
+  GatewayLinkedSkillIndexRow,
+  UpsertGatewayLinkedSkillIndexInput,
+} from "./repositories/gateway-linked-skill-index.js";
+
+export { AccessGrantRepository } from "./repositories/access-grants.js";
+export type {
+  AccessGrantMode,
+  AccessGrantRow,
+  AccessGrantTargetKind,
+  UpsertAccessGrantInput,
+  RevokeAccessGrantInput,
+  ListEffectiveAccessGrantsQuery,
+} from "./repositories/access-grants.js";
+export { ACCESS_GRANT_GLOBAL_SCOPE } from "./repositories/access-grants.js";
+
+export { ToolApprovalGrantRepository } from "./repositories/tool-approval-grants.js";
+export type {
+  ToolApprovalGrantMode,
+  ToolApprovalGrantRow,
+  UpsertToolApprovalGrantInput,
+  RevokeToolApprovalGrantInput,
+  ListToolApprovalGrantsQuery,
+  ListEffectiveToolApprovalGrantsQuery,
+} from "./repositories/tool-approval-grants.js";
+export { TOOL_APPROVAL_GLOBAL_SCOPE } from "./repositories/tool-approval-grants.js";
+
 export { TurnRepository } from "./repositories/turns.js";
 export type { TurnRow, CreateTurnInput, SpaceAgentTurnAggregate } from "./repositories/turns.js";
 
@@ -159,6 +188,19 @@ export type {
   CreateApprovalRequestInput,
 } from "./repositories/approval-requests.js";
 
+export { ConciergeEscalationRequestRepository } from "./repositories/concierge-escalation-requests.js";
+export type {
+  ConciergeEscalationAllowedResponse,
+  ConciergeEscalationDeliveryChannel,
+  ConciergeEscalationFallbackPolicy,
+  ConciergeEscalationRequestRow,
+  ConciergeEscalationResponseMode,
+  ConciergeEscalationStatus,
+  ConciergeEscalationUrgency,
+  CreateConciergeEscalationRequestInput,
+  UpdateConciergeEscalationRequestInput,
+} from "./repositories/concierge-escalation-requests.js";
+
 export { UsageRecordRepository } from "./repositories/usage-records.js";
 export type { UsageRecordRow, CreateUsageRecordInput } from "./repositories/usage-records.js";
 
@@ -187,11 +229,19 @@ export type { AgentTokenAggregate, TokenAggregate, ProviderTokenAggregate } from
 
 export { VoiceUsageRepository } from "./repositories/voice-usage.js";
 export type {
+  VoiceUsageChannel,
   VoiceUsageSource,
   CreateVoiceUsageEventInput,
   VoiceUsageAggregate,
   VoiceUsageSourceAggregate,
+  VoiceUsageProviderChannelAggregate,
 } from "./repositories/voice-usage.js";
+
+export { VoiceProviderConfigRepository } from "./repositories/voice-provider-configs.js";
+export type {
+  VoiceProviderConfigRow,
+  UpsertVoiceProviderConfigInput,
+} from "./repositories/voice-provider-configs.js";
 
 export { ProfileRepository } from "./repositories/profiles.js";
 export type {
@@ -202,8 +252,93 @@ export type {
   UpdateProfileInput,
 } from "./repositories/profiles.js";
 
+export { PersonaRepository } from "./repositories/personas.js";
+export type {
+  PersonaRow,
+  PersonaRevisionRow,
+  CreatePersonaInput,
+  UpdatePersonaInput,
+} from "./repositories/personas.js";
+
 export { ArtifactRepository } from "./repositories/artifacts.js";
 export type { ArtifactRow, CreateArtifactInput } from "./repositories/artifacts.js";
+
+export { PersonalityInsightRepository } from "./repositories/personality-insights.js";
+export type {
+  PersonalityInsightStatusRowValue,
+  PersonalityInsightRow,
+  CreatePersonalityInsightInput,
+} from "./repositories/personality-insights.js";
+
+export { SpaceAgentNotesRepository } from "./repositories/space-agent-notes.js";
+export type {
+  SpaceAgentNoteRow,
+  UpsertSpaceAgentNoteInput,
+} from "./repositories/space-agent-notes.js";
+
+export { SpaceReplaySessionRepository } from "./repositories/space-replay-sessions.js";
+export type {
+  SpaceReplaySessionPrivacyMode,
+  SpaceReplaySessionStatus,
+  SpaceReplaySessionRow,
+  CreateSpaceReplaySessionInput,
+} from "./repositories/space-replay-sessions.js";
+
+export { GatewayMemoryDefaultsRepository } from "./repositories/gateway-memory-defaults.js";
+export type {
+  GatewayMemoryDefaultExperienceCaptureRowValue,
+  GatewayMemoryDefaultPrivacyModeRowValue,
+  GatewayMemoryDefaultsRow,
+  SetGatewayMemoryDefaultsInput,
+} from "./repositories/gateway-memory-defaults.js";
+
+export { GatewayWorkspaceDefaultsRepository } from "./repositories/gateway-workspace-defaults.js";
+export type {
+  GatewayWorkspaceDefaultsRow,
+  SetGatewayWorkspaceDefaultsInput,
+} from "./repositories/gateway-workspace-defaults.js";
+
+export { GatewayExternalConnectivityRepository } from "./repositories/gateway-external-connectivity.js";
+export type {
+  GatewayExternalConnectivityModeRowValue,
+  GatewayExternalConnectivityRow,
+  SetGatewayExternalConnectivityInput,
+} from "./repositories/gateway-external-connectivity.js";
+
+export { UserProfileRepository } from "./repositories/user-profiles.js";
+export type {
+  UserProfileRow,
+  UpsertUserProfileInput,
+  UserPreferencesFallbackRow,
+} from "./repositories/user-profiles.js";
+
+export { GatewaySkillDraftRepository } from "./repositories/gateway-skill-drafts.js";
+export type {
+  GatewaySkillDraftRow,
+  UpsertGatewaySkillDraftInput,
+} from "./repositories/gateway-skill-drafts.js";
+
+export { TaskRecordRepository } from "./repositories/task-records.js";
+export type {
+  TaskState,
+  TaskRecordRow,
+  TaskProgress,
+  CreateTaskRecordInput,
+  UpdateTaskRecordInput,
+} from "./repositories/task-records.js";
+
+export { SafetyProfileRepository } from "./repositories/safety-profiles.js";
+export type {
+  SafetyProfileRow,
+  UpsertSafetyProfileInput,
+} from "./repositories/safety-profiles.js";
+
+export { ToolAccessPolicyRepository } from "./repositories/tool-access-policies.js";
+export type {
+  ToolAccessPolicyScopeType,
+  ToolAccessPolicyRow,
+  UpsertToolAccessPolicyInput,
+} from "./repositories/tool-access-policies.js";
 
 export { SpaceLinkRepository } from "./repositories/space-links.js";
 export type { SpaceLinkRow, UpsertSpaceLinkInput } from "./repositories/space-links.js";

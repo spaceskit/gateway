@@ -1,13 +1,14 @@
 import type { SpaceChangeSetService } from "./space-changeset-service.js";
 import type { SpaceQuotaService } from "./space-quota-service.js";
-import type { SpaceToolPolicyService } from "./space-tool-policy-service.js";
 import type { SpaceSharingService } from "./space-sharing-service.js";
 import type { SpaceTurnTraceService } from "./space-turn-trace-service.js";
 import type { SpaceArtifactService } from "./space-artifact-service.js";
+import type { ToolAccessPolicyService } from "./tool-access-policy-service.js";
 import {
   resolveHttpPrincipalContext,
   type HttpPrincipalAuthOptions,
 } from "./http-principal-auth.js";
+import { resolveExecutionOriginForPrincipal } from "./execution-origin-service.js";
 
 type AccessAction = "read" | "write";
 
@@ -18,10 +19,10 @@ export interface SpacesRestApiServiceOptions {
   >;
   spaceQuotaService?: Pick<SpaceQuotaService, "getUsage">
     & Partial<Pick<SpaceQuotaService, "resetAgentUsageSession">>;
-  spaceTurnTraceService?: Pick<SpaceTurnTraceService, "getTurnTrace">;
+  spaceTurnTraceService?: Pick<SpaceTurnTraceService, "getTurnTrace" | "listActivityLog">;
   spaceArtifactService?: Pick<SpaceArtifactService, "listArtifacts" | "getArtifact">;
-  spaceToolPolicyService?: Pick<SpaceToolPolicyService, "getEffectiveTools">;
-  spaceSharingService?: Pick<SpaceSharingService, "evaluateAccess">;
+  toolAccessPolicyService?: Pick<ToolAccessPolicyService, "getEffectiveToolAccess">;
+  spaceSharingService?: Pick<SpaceSharingService, "evaluateAccess" | "getActiveParticipant">;
   principalAuth?: HttpPrincipalAuthOptions;
   /**
    * If true, all matched routes require an authenticated principal identity.
@@ -37,6 +38,7 @@ export class SpacesRestApiService {
     const diffMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "changesets", ":changeSetId", "diff"]);
     const usageMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "usage"]);
     const resetUsageMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "usage", "agents", ":agentId", "reset"]);
+    const activityLogMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "activity-log"]);
     const traceMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "turns", ":turnId", "trace"]);
     const listArtifactsMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "artifacts"]);
     const getArtifactMatch = matchPath(url.pathname, ["v1", "spaces", ":spaceId", "artifacts", ":artifactId"]);
@@ -46,6 +48,7 @@ export class SpacesRestApiService {
       && !diffMatch
       && !usageMatch
       && !resetUsageMatch
+      && !activityLogMatch
       && !traceMatch
       && !listArtifactsMatch
       && !getArtifactMatch
@@ -86,6 +89,13 @@ export class SpacesRestApiService {
         return jsonError(401, "UNAUTHENTICATED", "Authenticated principal identity is required");
       }
       return this.handleResetAgentUsageSession(req, resetUsageMatch.spaceId, resetUsageMatch.agentId, principalId);
+    }
+
+    if (activityLogMatch) {
+      if (this.options.requireAuthenticatedPrincipal && !principalId) {
+        return jsonError(401, "UNAUTHENTICATED", "Authenticated principal identity is required");
+      }
+      return this.handleListActivityLog(req, url, activityLogMatch.spaceId, principalId);
     }
 
     if (traceMatch) {
@@ -307,6 +317,39 @@ export class SpacesRestApiService {
     }
   }
 
+  private async handleListActivityLog(
+    req: Request,
+    url: URL,
+    spaceIdRaw: string,
+    principalId: string | null,
+  ): Promise<Response> {
+    if (req.method !== "GET") {
+      return jsonError(405, "METHOD_NOT_ALLOWED", "Expected GET");
+    }
+    if (!this.options.spaceTurnTraceService?.listActivityLog) {
+      return jsonError(412, "FAILED_PRECONDITION", "Space activity log service unavailable");
+    }
+
+    const spaceId = normalizeRequired(spaceIdRaw);
+    const access = this.evaluateAccess(spaceId, principalId, "read");
+    if (!access.allowed) {
+      return jsonError(403, "PERMISSION_DENIED", access.reason ?? "Access denied");
+    }
+
+    try {
+      const result = await this.options.spaceTurnTraceService.listActivityLog({
+        spaceId,
+        turnId: normalizeOptionalString(url.searchParams.get("turnId")),
+        limit: parsePositiveInt(url.searchParams.get("limit")),
+        offset: parseNonNegativeInt(url.searchParams.get("offset")),
+        includeSystem: parseBooleanQuery(url.searchParams.get("includeSystem")) ?? true,
+      });
+      return jsonOk(result);
+    } catch (error) {
+      return mapServiceError(error);
+    }
+  }
+
   private async handleListArtifacts(
     req: Request,
     url: URL,
@@ -379,25 +422,44 @@ export class SpacesRestApiService {
     if (req.method !== "GET") {
       return jsonError(405, "METHOD_NOT_ALLOWED", "Expected GET");
     }
-    if (!this.options.spaceToolPolicyService) {
-      return jsonError(412, "FAILED_PRECONDITION", "Space tool policy service unavailable");
+    if (!this.options.toolAccessPolicyService) {
+      return jsonError(412, "FAILED_PRECONDITION", "Tool access policy service unavailable");
     }
 
     const spaceId = normalizeRequired(spaceIdRaw);
     const deviceId = normalizeOptionalString(req.headers.get("x-spaceskit-device-id"));
+    const accessMode = normalizeAccessMode(url.searchParams.get("accessMode"));
     const access = this.evaluateAccess(spaceId, principalId, "read");
     if (!access.allowed) {
       return jsonError(403, "PERMISSION_DENIED", access.reason ?? "Access denied");
     }
 
     try {
-      const matrix = await this.options.spaceToolPolicyService.getEffectiveTools({
+      const access = await this.options.toolAccessPolicyService.getEffectiveToolAccess({
         spaceId,
         principalId: principalId ?? undefined,
         deviceId: deviceId ?? undefined,
+        executionOrigin: resolveExecutionOriginForPrincipal({
+          spaceId,
+          principalId,
+          evaluateAccess: this.options.spaceSharingService
+            ? (candidateSpaceId, candidatePrincipalId) => this.options.spaceSharingService!.evaluateAccess({
+              spaceId: candidateSpaceId,
+              principalId: candidatePrincipalId,
+              action: "read",
+            })
+            : null,
+          getActiveParticipant: this.options.spaceSharingService
+            ? (candidateSpaceId, candidatePrincipalId) => this.options.spaceSharingService!.getActiveParticipant(
+              candidateSpaceId,
+              candidatePrincipalId,
+            )
+            : null,
+        }),
         agentId: normalizeOptionalString(url.searchParams.get("agentId")),
+        accessMode,
       });
-      return jsonOk({ matrix });
+      return jsonOk({ matrix: legacyEffectiveToolMatrixFromAccess(access) });
     } catch (error) {
       return mapServiceError(error);
     }
@@ -424,6 +486,50 @@ export class SpacesRestApiService {
       reason: decision.reason,
     };
   }
+
+}
+
+function legacyEffectiveToolMatrixFromAccess(access: {
+  spaceId: string;
+  agentId?: string;
+  policyVersion: string;
+  generatedAt: string;
+  operations: Array<{
+    operationId: string;
+    capability: string;
+    operation: string;
+    providerIds: string[];
+    allowed: boolean;
+    denialReasonCode?: string;
+    denialReason?: string;
+    escalationAllowed?: boolean;
+  }>;
+}) {
+  return {
+    spaceId: access.spaceId,
+    agentId: access.agentId,
+    policyVersion: access.policyVersion,
+    generatedAt: access.generatedAt,
+    operations: access.operations.map((operation) => ({
+      operationId: operation.operationId,
+      capability: operation.capability,
+      operation: operation.operation,
+      providerIds: operation.providerIds,
+      allowed: operation.allowed,
+      denyReasons: operation.allowed
+        ? []
+        : [{
+          code: operation.denialReasonCode ?? (
+            operation.escalationAllowed ? "policy_escalation_required" : "access_denied"
+          ),
+          message: operation.denialReason ?? (
+            operation.escalationAllowed
+              ? "This operation requires approval before it can continue."
+              : "This operation is blocked by the unified tool access policy."
+          ),
+        }],
+    })),
+  };
 }
 
 function matchPath(
@@ -480,6 +586,14 @@ function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeAccessMode(value: unknown): "default" | "full_access" | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (normalized === "default" || normalized === "full_access") {
+    return normalized;
+  }
+  return undefined;
 }
 
 function parseBooleanQuery(value: string | null): boolean | undefined {

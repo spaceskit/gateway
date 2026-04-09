@@ -82,7 +82,7 @@ describe("bootstrap config env parsing", () => {
     });
   });
 
-  test("defaults HTTP principal auth strict mode to true for external profile when HS256 secret is configured", async () => {
+  test("forces HTTP principal auth strict mode for external profile when HS256 secret is configured", async () => {
     await withEnv({
       SPACESKIT_GATEWAY_PROFILE: "external",
       SPACESKIT_HTTP_PRINCIPAL_AUTH_STRICT: undefined,
@@ -91,10 +91,11 @@ describe("bootstrap config env parsing", () => {
       const config = loadConfig();
       expect(config.gatewayProfile).toBe("external");
       expect(config.httpPrincipalAuthStrict).toBe(true);
+      expect(config.httpPrincipalAuthStrictExplicitDisable).toBe(false);
     });
   });
 
-  test("does not enable strict HTTP principal auth by default for external profile without HS256 secret", async () => {
+  test("keeps strict HTTP principal auth enabled for external profile even when secret is missing", async () => {
     await withEnv({
       SPACESKIT_GATEWAY_PROFILE: "external",
       SPACESKIT_HTTP_PRINCIPAL_AUTH_STRICT: undefined,
@@ -102,7 +103,8 @@ describe("bootstrap config env parsing", () => {
     }, () => {
       const config = loadConfig();
       expect(config.gatewayProfile).toBe("external");
-      expect(config.httpPrincipalAuthStrict).toBe(false);
+      expect(config.httpPrincipalAuthStrict).toBe(true);
+      expect(config.httpPrincipalAuthHs256Secret).toBeUndefined();
     });
   });
 
@@ -120,14 +122,15 @@ describe("bootstrap config env parsing", () => {
     });
   });
 
-  test("allows explicit strict-auth opt-out even when external HS256 secret is configured", async () => {
+  test("records explicit strict-auth disable attempts on external profile but keeps strict mode enabled", async () => {
     await withEnv({
       SPACESKIT_GATEWAY_PROFILE: "external",
       SPACESKIT_HTTP_PRINCIPAL_AUTH_STRICT: "false",
       SPACESKIT_HTTP_PRINCIPAL_AUTH_HS256_SECRET: "test-secret",
     }, () => {
       const config = loadConfig();
-      expect(config.httpPrincipalAuthStrict).toBe(false);
+      expect(config.httpPrincipalAuthStrict).toBe(true);
+      expect(config.httpPrincipalAuthStrictExplicitDisable).toBe(true);
     });
   });
 
@@ -140,6 +143,7 @@ describe("bootstrap config env parsing", () => {
       const config = loadConfig();
       expect(config.gatewayProfile).toBe("embedded");
       expect(config.httpPrincipalAuthStrict).toBe(false);
+      expect(config.httpPrincipalAuthStrictExplicitDisable).toBe(false);
     });
   });
 
@@ -172,6 +176,17 @@ describe("bootstrap config env parsing", () => {
     }, () => {
       const config = loadConfig();
       expect(config.spacesRoot).toBe("/tmp/spaceskit-external/spaces");
+    });
+  });
+
+  test("defaults concierge resource id to canonical hidden backing-space prefix", async () => {
+    await withEnv({
+      SPACESKIT_GATEWAY_PROFILE: "embedded",
+      SPACESKIT_CONCIERGE_SPACE_ID: "concierge-space-custom",
+      SPACESKIT_CONCIERGE_RESOURCE_ID: undefined,
+    }, () => {
+      const config = loadConfig();
+      expect(config.conciergeSpaceResourceId).toBe("system.concierge.backing-space.concierge-space-custom");
     });
   });
 });

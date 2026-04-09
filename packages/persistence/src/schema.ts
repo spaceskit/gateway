@@ -1410,10 +1410,171 @@ export const migrations: Migration[] = [
     ],
   },
   {
+    version: "v2_provider_config_auth_mode",
+    up: [
+      `ALTER TABLE provider_configs
+        ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'api_key'`,
+    ],
+  },
+  {
     version: "v2_usage_record_token_accuracy",
     up: [
       `ALTER TABLE usage_records
         ADD COLUMN token_accuracy TEXT NOT NULL DEFAULT 'reported'`,
+    ],
+  },
+  {
+    version: "v2_space_lifecycle_timestamps",
+    up: [
+      `ALTER TABLE spaces
+        ADD COLUMN archived_at TEXT`,
+      `ALTER TABLE spaces
+        ADD COLUMN deleted_at TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_spaces_status_updated
+        ON spaces(status, updated_at DESC)`,
+    ],
+  },
+  {
+    version: "v2_gateway_workspace_defaults",
+    up: [
+      `CREATE TABLE IF NOT EXISTS gateway_workspace_defaults (
+        singleton_id INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton_id = 1),
+        space_home_root TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+    ],
+  },
+  {
+    version: "v2_gateway_external_connectivity",
+    up: [
+      `CREATE TABLE IF NOT EXISTS gateway_external_connectivity (
+        singleton_id INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton_id = 1),
+        mode TEXT NOT NULL DEFAULT 'DISABLED',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+    ],
+  },
+  {
+    version: "v3_identity_personas",
+    up: [
+      `CREATE TABLE IF NOT EXISTS personas (
+        persona_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        active_revision INTEGER NOT NULL DEFAULT 1,
+        archived INTEGER NOT NULL DEFAULT 0,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_personas_archived ON personas(archived)`,
+      `CREATE TABLE IF NOT EXISTS persona_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        persona_id TEXT NOT NULL REFERENCES personas(persona_id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        tone TEXT NOT NULL DEFAULT '',
+        style TEXT NOT NULL DEFAULT '',
+        emotional_layer TEXT NOT NULL DEFAULT '',
+        constraints_json TEXT NOT NULL DEFAULT '[]',
+        instructions TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'manual',
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_persona_rev_unique ON persona_revisions(persona_id, revision)`,
+    ],
+  },
+  {
+    version: "v4_space_workspace_managed_folder_name",
+    up: [
+      `ALTER TABLE space_workspaces
+        ADD COLUMN managed_folder_name TEXT NOT NULL DEFAULT ''`,
+    ],
+  },
+  {
+    version: "v5_voice_usage_channel_and_provider_registry",
+    up: [
+      `ALTER TABLE voice_usage_events
+        ADD COLUMN channel TEXT NOT NULL DEFAULT 'session'`,
+      `CREATE INDEX IF NOT EXISTS idx_voice_usage_events_channel
+        ON voice_usage_events(channel, created_at)`,
+      `CREATE TABLE IF NOT EXISTS voice_provider_configs (
+        provider_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        source TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100,
+        health_status TEXT NOT NULL DEFAULT 'unknown',
+        cost_profile_json TEXT NOT NULL DEFAULT '{}',
+        secret_ref TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (provider_id, channel)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_voice_provider_configs_channel
+        ON voice_provider_configs(channel, source, priority, updated_at)`,
+    ],
+  },
+  {
+    version: "v6_gateway_linked_skill_index",
+    up: [
+      `CREATE TABLE IF NOT EXISTS gateway_linked_skill_index (
+        entry_id TEXT PRIMARY KEY,
+        skill_id TEXT NOT NULL UNIQUE,
+        source_path TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        content_markdown TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        sync_state TEXT NOT NULL DEFAULT 'ready',
+        file_mtime_ms INTEGER NOT NULL DEFAULT 0,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        content_hash TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_gateway_linked_skill_index_name
+        ON gateway_linked_skill_index(name, updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_gateway_linked_skill_index_sync_state
+        ON gateway_linked_skill_index(sync_state, updated_at DESC)`,
+    ],
+  },
+  {
+    version: "v7_concierge_escalation_requests",
+    up: [
+      `CREATE TABLE IF NOT EXISTS concierge_escalation_requests (
+        request_id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL REFERENCES spaces(space_id) ON DELETE CASCADE,
+        requesting_agent_id TEXT NOT NULL DEFAULT '',
+        target_agent_id TEXT NOT NULL DEFAULT '',
+        requesting_turn_id TEXT NOT NULL DEFAULT '',
+        principal_id TEXT NOT NULL DEFAULT '',
+        device_id TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        question TEXT NOT NULL DEFAULT '',
+        user_message TEXT NOT NULL DEFAULT '',
+        urgency TEXT NOT NULL DEFAULT 'important',
+        response_mode TEXT NOT NULL DEFAULT 'structured',
+        allowed_responses_json TEXT NOT NULL DEFAULT '[]',
+        fallback_policy TEXT NOT NULL DEFAULT 'none',
+        timeout_seconds INTEGER NOT NULL DEFAULT 300,
+        status TEXT NOT NULL DEFAULT 'pending',
+        delivery_channel TEXT NOT NULL DEFAULT 'notification',
+        deep_link TEXT NOT NULL DEFAULT '',
+        response_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT,
+        notified_at TEXT,
+        actioned_at TEXT,
+        cancelled_at TEXT,
+        escalated_to_call_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_concierge_escalation_space_status
+        ON concierge_escalation_requests(space_id, status, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_concierge_escalation_status_expires
+        ON concierge_escalation_requests(status, expires_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_concierge_escalation_principal
+        ON concierge_escalation_requests(principal_id, created_at DESC)`,
     ],
   },
 ];
@@ -1443,4 +1604,31 @@ export const seedStatements: string[] = [
     full_access_warning_accepted, developer_warning_accepted,
     calendar_enabled, reminders_enabled, updated_at
   ) VALUES (1, 'EASY', 'SANDBOX', 'STANDARD', 0, 0, 1, 1, datetime('now'))`,
+
+  `INSERT OR IGNORE INTO personas(
+    persona_id, name, description, active_revision, archived, is_default, created_at, updated_at
+  ) VALUES (
+    'persona-default',
+    'Focused Guide',
+    'Clear, calm, direct guidance with restrained emotion.',
+    1,
+    0,
+    1,
+    datetime('now'),
+    datetime('now')
+  )`,
+
+  `INSERT OR IGNORE INTO persona_revisions(
+    persona_id, revision, tone, style, emotional_layer, constraints_json, instructions, source, created_at
+  ) VALUES (
+    'persona-default',
+    1,
+    'Direct and clear.',
+    'Concise, structured, and practical.',
+    'Steady and supportive without excess chatter.',
+    '["Do not invent facts.","State assumptions when needed.","Prefer simple explanations before advanced detail.","When citing tool results, reference the specific tool and its output.","Use markdown formatting when structure aids clarity, but do not over-format short answers."]',
+    'Be warm enough to feel human, but stay precise and task-focused. Answer questions directly before elaborating. When given a command, confirm what you will do, then do it.',
+    'system',
+    datetime('now')
+  )`,
 ];

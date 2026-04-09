@@ -11,6 +11,7 @@ export interface ArtifactRow {
   turn_id: string;
   agent_id: string;
   artifact_type: string;
+  retention_scope: string;
   title: string;
   mime_type: string;
   size_bytes: number;
@@ -28,6 +29,7 @@ export interface CreateArtifactInput {
   turnId?: string;
   agentId?: string;
   type: string;
+  retentionScope?: string;
   title: string;
   mimeType?: string;
   sizeBytes?: number;
@@ -37,15 +39,17 @@ export interface CreateArtifactInput {
 }
 
 export class ArtifactRepository {
-  constructor(private db: Database) {}
+  constructor(private db: Database) {
+    this.ensureCanonicalColumns();
+  }
 
   create(input: CreateArtifactInput): ArtifactRow {
     const now = new Date().toISOString();
     this.db.query(`
       INSERT INTO space_artifacts(
         artifact_id, space_id, resource_id, turn_id, agent_id, artifact_type, title,
-        mime_type, size_bytes, content_json, tags_json, visibility, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        retention_scope, mime_type, size_bytes, content_json, tags_json, visibility, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.artifactId,
       input.spaceId,
@@ -54,6 +58,7 @@ export class ArtifactRepository {
       input.agentId ?? "",
       input.type,
       input.title,
+      input.retentionScope ?? "space_local",
       input.mimeType ?? "",
       resolveSizeBytes(input),
       input.contentJson,
@@ -178,6 +183,45 @@ export class ArtifactRepository {
 
   delete(artifactId: string): boolean {
     return this.db.query("DELETE FROM space_artifacts WHERE artifact_id = ?").run(artifactId).changes > 0;
+  }
+
+  deleteBySpace(
+    spaceId: string,
+    options: {
+      createdAtGte?: string;
+      createdAtLte?: string;
+      retentionScope?: string;
+    } = {},
+  ): number {
+    const where = ["space_id = ?"];
+    const values: Array<string | number> = [spaceId];
+    if (options.createdAtGte) {
+      where.push("created_at >= ?");
+      values.push(options.createdAtGte);
+    }
+    if (options.createdAtLte) {
+      where.push("created_at <= ?");
+      values.push(options.createdAtLte);
+    }
+    if (options.retentionScope) {
+      where.push("retention_scope = ?");
+      values.push(options.retentionScope);
+    }
+    return this.db
+      .query(`DELETE FROM space_artifacts WHERE ${where.join(" AND ")}`)
+      .run(...values).changes;
+  }
+
+  private ensureCanonicalColumns(): void {
+    const columns = this.db
+      .query("PRAGMA table_info(space_artifacts)")
+      .all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map((column) => column.name));
+    if (!columnNames.has("retention_scope")) {
+      this.db.exec(
+        "ALTER TABLE space_artifacts ADD COLUMN retention_scope TEXT NOT NULL DEFAULT 'space_local'",
+      );
+    }
   }
 }
 

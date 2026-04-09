@@ -40,7 +40,7 @@ function ensureSpace(
   context.spaces.create({
     spaceId: input.spaceId,
     resourceId: input.resourceId,
-    spaceType: "room",
+    spaceType: "space",
     name: input.spaceId,
     goal: "test-space",
   });
@@ -262,7 +262,7 @@ describe("DefaultGatewaySyncService", () => {
       context.spaces.create({
         spaceId: "target-space",
         resourceId: "resource:target",
-        spaceType: "room",
+        spaceType: "space",
         name: "Target",
         goal: "Receive imports",
       });

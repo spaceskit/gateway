@@ -6,8 +6,13 @@
  */
 
 import type { AgentSecurityScope } from "../security/types.js";
+import type {
+  DangerousCapabilityRule,
+  ToolAccessRule,
+} from "../security/tool-access.js";
+import type { ThinkingCapturePolicy } from "./memory-policy.js";
 
-export type SpaceState = "created" | "active" | "paused" | "completed" | "failed";
+export type SpaceState = "created" | "active" | "paused" | "completed" | "failed" | "archived" | "deleted";
 
 export type TurnModelStrategy =
   | "sequential_all"
@@ -18,12 +23,15 @@ export type TurnModelStrategy =
   | "debate_synthesis"
   | "adaptive_auto";
 
+export type ConversationTopology = "direct" | "shared_team_chat" | "broadcast_team";
+
 export type CoordinatorRole = "global_coordinator" | "space_moderator";
 
 export interface SpaceConfig {
   id: string;
   /** Immutable, globally unique space identifier used across communication surfaces. */
   spaceUid: string;
+  status?: SpaceState;
   resourceId: string;
   name: string;
   goal?: string;
@@ -31,6 +39,8 @@ export interface SpaceConfig {
   templateId?: string;
   turnModel: TurnModelStrategy;
   turnModelConfig?: TurnModelConfig;
+  conversationTopology?: ConversationTopology;
+  thinkingCapturePolicy?: ThinkingCapturePolicy;
   /** Space-level skills applied to all assigned agents (additive). */
   skillIds?: string[];
   agents: SpaceAgentAssignment[];
@@ -39,6 +49,8 @@ export interface SpaceConfig {
   maxTurns?: number;
   visibility: "shared" | "private";  // For cross-space artifact access
   moderatorProfileId?: string;
+  archivedAt?: Date;
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -67,6 +79,14 @@ export interface SpaceAgentAssignment {
    * Merged with the profile's default context at runtime.
    */
   contextOverrides?: Record<string, unknown>;
+  safetyProfileId?: string;
+  toolPolicyOverride?: {
+    rules?: ToolAccessRule[];
+    dangerousCapabilities?: DangerousCapabilityRule[];
+    policyVersion?: string;
+    updatedBy?: string;
+    updatedAt?: string;
+  };
 }
 
 export type SpaceResourceType = "folder" | "url";
@@ -121,6 +141,12 @@ export interface TurnModelConfig {
   peerReviewPromptTemplate?: string;
   /** Per-space override for the master synthesis prompt template. */
   masterSynthesisPromptTemplate?: string;
+  /** Max iterations of the master-mode convergence loop (default: 1). */
+  masterModeMaxIterations?: number;
+  /** Minimum average peer-review confidence to accept convergence (0.0–1.0, default: 0.8). */
+  masterModeConvergenceThreshold?: number;
+  /** Total token budget across all guest + review turns. Forces synthesis at 80% usage. */
+  maxTokenBudget?: number;
 }
 
 export interface SpaceSnapshot {

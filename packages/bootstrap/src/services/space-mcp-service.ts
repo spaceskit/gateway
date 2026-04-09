@@ -257,7 +257,9 @@ export class SpaceMcpService {
       );
     }
 
-    const raw = await this.invokeWithTimeout(provider.provider, "spaceskit.agent.list", {});
+    const raw = normalizeMcpToolPayload(
+      await this.invokeWithTimeout(provider.provider, "spaceskit.agent.list", {}),
+    );
     return {
       endpointId: provider.endpointId,
       agents: parseDiscoveredAgents(raw),
@@ -389,7 +391,7 @@ export class SpaceMcpService {
       );
     }
 
-    return this.invokeWithTimeout(mapped.provider, "spaceskit.agent.execute_turn", {
+    const raw = await this.invokeWithTimeout(mapped.provider, "spaceskit.agent.execute_turn", {
       remoteAgentId: binding.remoteAgentId,
       spaceId: input.spaceId,
       turnId: input.turnId,
@@ -400,6 +402,7 @@ export class SpaceMcpService {
       principalId: input.principalId,
       deviceId: input.deviceId,
     });
+    return normalizeMcpToolPayload(raw);
   }
 
   getHealthStats(): {
@@ -810,6 +813,33 @@ function parseDiscoveredAgents(raw: unknown): McpDiscoveredAgent[] {
     });
   }
   return result;
+}
+
+export function normalizeMcpToolPayload(raw: unknown): unknown {
+  const record = isRecord(raw) ? raw : null;
+  if (!record) {
+    return raw;
+  }
+
+  if (isRecord(record.structuredContent)) {
+    return record.structuredContent;
+  }
+
+  const content = Array.isArray(record.content) ? record.content : [];
+  const firstText = content
+    .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+    .map((entry) => entry.text)
+    .find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+
+  if (!firstText) {
+    return raw;
+  }
+
+  try {
+    return JSON.parse(firstText);
+  } catch {
+    return { text: firstText };
+  }
 }
 
 function parseArgsJson(raw: string): string[] {

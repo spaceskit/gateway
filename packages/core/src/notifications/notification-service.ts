@@ -57,6 +57,18 @@ const EVENT_MAPPINGS: Record<string, EventMapping> = {
     title: () => "Space completed",
     message: (e) => `Space ${(e as any).spaceId} completed successfully`,
   },
+  "task.progress": {
+    category: "task.progress",
+    severity: "info",
+    title: () => "Task progress",
+    message: (e) => normalizeEventMessage((e as any).data?.message) ?? "Task is still running",
+  },
+  "task.input-required": {
+    category: "task.input-required",
+    severity: "warning",
+    title: () => "Task input required",
+    message: (e) => normalizeEventMessage((e as any).data?.message) ?? "Task needs additional input",
+  },
   "space.turn_event": {
     category: "turn.completed",
     severity: "info",
@@ -94,6 +106,12 @@ const EVENT_MAPPINGS: Record<string, EventMapping> = {
     message: (e) => `New experience from space ${(e as any).spaceId}`,
   },
 };
+
+function normalizeEventMessage(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Options

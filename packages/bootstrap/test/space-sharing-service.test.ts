@@ -25,7 +25,7 @@ function ensureSpace(context: ReturnType<typeof createContext>, spaceId: string)
   context.spaces.create({
     spaceId,
     resourceId: `resource:${spaceId}`,
-    spaceType: "room",
+    spaceType: "space",
     name: spaceId,
     goal: "test",
   });

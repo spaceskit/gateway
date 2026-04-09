@@ -9,23 +9,47 @@ import type {
   ProfileRepository,
   ProviderConfigRepository,
   ProviderConfigRow,
+  SpaceRepository,
 } from "@spaceskit/persistence";
 import type { SpaceAdminService } from "@spaceskit/core";
+import { inferContextWindow, USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
 import type { GatewayCoreProfileId } from "@spaceskit/gateway-core";
 import type {
+  GatewayConciergeAgentStatePayload,
+  GatewayGetConciergeAgentPayload,
   GatewayGetMainAgentPayload,
   GatewayCreateIntegrationRequestPayload,
   GatewayCreateIntegrationRequestResponsePayload,
+  GatewayProviderAuthAccountPayload,
+  GatewayProviderAuthModePayload,
+  GatewayProviderAuthStatusPayload,
   GatewayIntegrationClassPayload,
   GatewayIntegrationStatusPayload,
+  GatewayListInterconnectorsPayload,
+  GatewayListInterconnectorsResponsePayload,
+  GatewayListToolApprovalGrantsPayload,
+  GatewayListToolApprovalGrantsResponsePayload,
+  GatewayListToolsPayload,
+  GatewayListToolsResponsePayload,
   GatewayListIntegrationRequestsPayload,
   GatewayListIntegrationRequestsResponsePayload,
   GatewayMainAgentStatePayload,
+  GatewaySetConciergeAgentPayload,
+  GatewayRegisterToolPayload,
+  GatewayRegisterToolResponsePayload,
+  GatewayRevokeToolApprovalGrantPayload,
+  GatewayRevokeToolApprovalGrantResponsePayload,
+  GatewayRescanInterconnectorsPayload,
+  GatewayRescanInterconnectorsResponsePayload,
+  GatewayScaffoldToolPayload,
+  GatewayScaffoldToolResponsePayload,
   GatewaySetMainAgentPayload,
   GatewayModelCatalogEntryPayload,
   GatewayModelCatalogSourcePayload,
   GatewayModelDetectionStatusPayload,
   GatewayModelProviderCatalogPayload,
+  GatewaySetToolEnabledPayload,
+  GatewaySetToolEnabledResponsePayload,
   MainAgentSelectionMode,
   GatewayProviderCatalogGroupPayload,
   ProviderTelemetryPayload,
@@ -33,15 +57,27 @@ import type {
   ProviderTelemetryWindowPayload,
   ProviderUsageSnapshotPayload,
   ProviderRuntimeConfigPayload,
+  GatewayGetToolResponsePayload,
+  GatewayRemoveToolResponsePayload,
 } from "@spaceskit/server";
+import {
+  ClaudeAgentSdkModelProvider,
+  type ClaudeAgentSdkAuthAccount,
+  type ClaudeAgentSdkProbeResult,
+} from "@spaceskit/provider-runtime";
 import type {
   ProviderSecretRefService,
   ProviderSecretRefSummary,
 } from "./services/provider-secret-ref-service.js";
+import type { InterconnectorCatalogService } from "./services/interconnector-catalog-service.js";
 import type { UsageSnapshotService } from "./services/usage-snapshot-service.js";
 import type { LocalUsageTelemetryService } from "./services/local-usage-telemetry-service.js";
 import type { LocalProviderUsageTelemetry } from "./services/local-usage-telemetry-types.js";
+import type { CliToolService } from "./services/cli-tool-service.js";
+import type { AccessGrantService } from "./services/access-grant-service.js";
+import type { ToolApprovalGrantService } from "./services/tool-approval-grant-service.js";
 import { classifyExecutionAdapter, mapExecutionClassToCatalogGroup } from "./execution/execution-adapter-factory.js";
+import { LocalExecutableResolver } from "./execution/local-executable-resolver.js";
 
 export interface DiscoveredLocalAgent {
   id: string;
@@ -63,6 +99,9 @@ export type GatewayModelCatalogSource = GatewayModelCatalogSourcePayload;
 export type GatewayProviderCatalogGroup = GatewayProviderCatalogGroupPayload;
 export type GatewayIntegrationClass = GatewayIntegrationClassPayload;
 export type GatewayIntegrationStatus = GatewayIntegrationStatusPayload;
+export type GatewayProviderAuthMode = GatewayProviderAuthModePayload;
+export type GatewayProviderAuthStatus = GatewayProviderAuthStatusPayload;
+export type GatewayProviderAuthAccount = GatewayProviderAuthAccountPayload;
 export type GatewayModelCatalogEntry = GatewayModelCatalogEntryPayload;
 export type GatewayModelProviderCatalog = GatewayModelProviderCatalogPayload;
 
@@ -76,6 +115,7 @@ export interface ProviderRuntimeConfig {
   model: string;
   apiKey?: string;
   apiKeySecretRef?: string;
+  authMode?: GatewayProviderAuthMode;
   baseURL?: string;
   allowedModels: string[];
   allowCustomModel: boolean;
@@ -137,12 +177,19 @@ export interface GatewayAdminServiceOptions {
   logger: Logger;
   profileRepo: ProfileRepository | null;
   spaceAdminService: SpaceAdminService;
+  spaceRepo?: SpaceRepository;
   mainSpaceId?: string;
   mainSpaceName?: string;
   mainSpaceResourceId?: string;
   mainSpaceGoal?: string;
   mainProfileId?: string;
   mainAgentId?: string;
+  conciergeSpaceId?: string;
+  conciergeSpaceName?: string;
+  conciergeSpaceResourceId?: string;
+  conciergeSpaceGoal?: string;
+  conciergeProfileId?: string;
+  conciergeAgentId?: string;
   mainAgentSwapEnabled?: boolean;
   mainAgentAutoRepairEnabled?: boolean;
   providerSecretRefService?: ProviderSecretRefService;
@@ -154,10 +201,21 @@ export interface GatewayAdminServiceOptions {
   usageSnapshotService?: UsageSnapshotService;
   localUsageTelemetryService?: LocalUsageTelemetryService;
   integrationRequestRepo?: IntegrationRequestRepository;
+  cliToolService?: CliToolService;
+  interconnectorCatalogService?: InterconnectorCatalogService;
+  accessGrantService?: AccessGrantService;
+  toolApprovalGrantService?: ToolApprovalGrantService;
   enableAppleFoundationProvider?: boolean;
   appleFoundationAvailability?: AppleFoundationAvailabilitySnapshot;
   hostPlatform?: string;
   hostArch?: string;
+  executableResolver?: LocalExecutableResolver;
+  claudeAgentSdkMetadataProbe?: (input: {
+    providerId: string;
+    model: string;
+    authMode: GatewayProviderAuthMode;
+    apiKey?: string;
+  }) => Promise<ClaudeAgentSdkCatalogProbe>;
 }
 
 export interface AppleFoundationAvailabilitySnapshot {
@@ -183,15 +241,36 @@ interface ResolvedProviderSelection {
   model: string;
   apiKey?: string;
   apiKeySecretRef?: string;
+  authMode?: GatewayProviderAuthMode;
   baseURL?: string;
   isLocal: boolean;
   nativeCliToolsEnabled: boolean;
+}
+
+interface ClaudeAgentSdkCatalogProbe {
+  authStatus: GatewayProviderAuthStatus;
+  authAccount?: GatewayProviderAuthAccount;
+  models: Array<{
+    id: string;
+    displayName: string;
+    contextWindow?: number;
+  }>;
+  detectionError?: string;
 }
 
 interface ProviderRuntimeValidationResult {
   valid: boolean;
   reason?: string;
   fallbackModelHint?: string;
+}
+
+interface ResolvedProviderModelHint {
+  valid: boolean;
+  providerHint?: string;
+  modelHint?: string;
+  fallbackApplied: boolean;
+  fallbackReason?: string;
+  reason?: string;
 }
 
 interface LocalProviderTelemetryProbeResult {
@@ -249,6 +328,8 @@ const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
 
 const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   apple: "apple/apple-on-device",
+  anthropic: "anthropic/claude-sonnet-4-5",
+  "claude-agent-sdk": "claude-agent-sdk/claude-sonnet-4-5",
   claude: "claude/sonnet",
   codex: "codex/gpt-5.1-codex",
   gemini: "gemini/gemini-2.5-flash",
@@ -264,6 +345,17 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
 const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
   apple: [
     "apple/apple-on-device",
+  ],
+  anthropic: [
+    "anthropic/claude-sonnet-4-5",
+    "anthropic/claude-opus-4-5",
+    "anthropic/claude-haiku-4-5",
+  ],
+  "claude-agent-sdk": [
+    "claude-agent-sdk/claude-sonnet-4-6",
+    "claude-agent-sdk/claude-opus-4-6",
+    "claude-agent-sdk/claude-haiku-4-5",
+    "claude-agent-sdk/claude-sonnet-4-5",
   ],
   claude: [
     "claude/sonnet",
@@ -293,6 +385,8 @@ const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
 };
 
 const API_KEY_ENV_BY_PROVIDER: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  "claude-agent-sdk": "ANTHROPIC_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
   groq: "GROQ_API_KEY",
   together: "TOGETHER_API_KEY",
@@ -314,31 +408,54 @@ const OPENAI_COMPATIBLE_PROVIDER_IDS = new Set([
   "mistral",
 ]);
 const OPENAI_COMPATIBLE_DETECTION_CACHE_TTL_MS = 30_000;
+const CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS = 30_000;
+const PROVIDER_AUTH_MODES: Partial<Record<string, GatewayProviderAuthMode[]>> = {
+  anthropic: ["api_key"],
+  "claude-agent-sdk": ["api_key", "host_login"],
+  openai: ["api_key"],
+  openrouter: ["api_key"],
+  groq: ["api_key"],
+  together: ["api_key"],
+  mistral: ["api_key"],
+};
 
 export class DefaultGatewayAdminService {
   private readonly logger: Logger;
   private readonly profileRepo: ProfileRepository | null;
   private readonly spaceAdminService: SpaceAdminService;
+  private readonly spaceRepo?: SpaceRepository;
   private readonly mainSpaceId: string;
   private readonly mainSpaceName: string;
   private readonly mainSpaceResourceId: string;
   private readonly mainSpaceGoal: string;
   private readonly mainProfileId: string;
   private readonly mainAgentId: string;
+  private readonly conciergeSpaceId: string;
+  private readonly conciergeSpaceName: string;
+  private readonly conciergeSpaceResourceId: string;
+  private readonly conciergeSpaceGoal: string;
+  private readonly conciergeProfileId: string;
+  private readonly conciergeAgentId: string;
   private readonly mainAgentSwapEnabled: boolean;
   private readonly mainAgentAutoRepairEnabled: boolean;
   private readonly providerSecretRefService?: ProviderSecretRefService;
   private readonly providerConfigRepo?: ProviderConfigRepository;
   private readonly integrationRequestRepo?: IntegrationRequestRepository;
+  private readonly cliToolService?: CliToolService;
+  private readonly interconnectorCatalogService?: InterconnectorCatalogService;
+  private readonly accessGrantService?: AccessGrantService;
+  private readonly toolApprovalGrantService?: ToolApprovalGrantService;
   private readonly gatewayProfile: GatewayCoreProfileId;
   private readonly defaultProviderId?: string;
   private readonly defaultModelId?: string;
   private readonly enableAppleFoundationProvider: boolean;
   private readonly hostPlatform: string;
   private readonly hostArch: string;
+  private readonly executableResolver: LocalExecutableResolver;
   private appleFoundationAvailability?: AppleFoundationAvailabilitySnapshot;
   private usageSnapshotService?: UsageSnapshotService;
   private localUsageTelemetryService?: LocalUsageTelemetryService;
+  private readonly claudeAgentSdkMetadataProbe?: GatewayAdminServiceOptions["claudeAgentSdkMetadataProbe"];
   private readonly providerConfigs = new Map<string, ProviderRuntimeConfig>();
   private readonly openAICompatibleDetectionCache = new Map<string, {
     expiresAt: number;
@@ -353,11 +470,17 @@ export class DefaultGatewayAdminService {
     models: OpenAICompatibleDetectedModel[];
     detectionError?: string;
   }>>();
+  private readonly claudeAgentSdkDetectionCache = new Map<string, {
+    expiresAt: number;
+    value: ClaudeAgentSdkCatalogProbe;
+  }>();
+  private readonly claudeAgentSdkDetectionInFlight = new Map<string, Promise<ClaudeAgentSdkCatalogProbe>>();
 
   constructor(options: GatewayAdminServiceOptions) {
     this.logger = options.logger;
     this.profileRepo = options.profileRepo;
     this.spaceAdminService = options.spaceAdminService;
+    this.spaceRepo = options.spaceRepo;
     const profileLabel = (options.gatewayProfile ?? "external") === "external" ? "External" : "Embedded";
     this.mainSpaceId = options.mainSpaceId?.trim() || "main-space";
     this.mainSpaceName = options.mainSpaceName?.trim() || `${profileLabel} Main Space`;
@@ -367,18 +490,33 @@ export class DefaultGatewayAdminService {
       || "Default shared space for gateway startup and orchestrator coordination.";
     this.mainProfileId = options.mainProfileId?.trim() || "main-profile";
     this.mainAgentId = options.mainAgentId?.trim() || "main-agent";
+    this.conciergeSpaceId = options.conciergeSpaceId?.trim()
+      || ((options.gatewayProfile ?? "external") === "external" ? "external-concierge-space" : "concierge-space");
+    this.conciergeSpaceName = options.conciergeSpaceName?.trim() || `${profileLabel} Concierge`;
+    this.conciergeSpaceResourceId = options.conciergeSpaceResourceId?.trim()
+      || `system.concierge.backing-space.${this.conciergeSpaceId}`;
+    this.conciergeSpaceGoal = options.conciergeSpaceGoal?.trim()
+      || "Dedicated concierge backing space for app navigation, routing, and call continuity.";
+    this.conciergeProfileId = options.conciergeProfileId?.trim() || "concierge-profile";
+    this.conciergeAgentId = options.conciergeAgentId?.trim() || "concierge-agent";
     this.mainAgentSwapEnabled = options.mainAgentSwapEnabled ?? true;
     this.mainAgentAutoRepairEnabled = options.mainAgentAutoRepairEnabled ?? true;
     this.providerSecretRefService = options.providerSecretRefService;
     this.providerConfigRepo = options.providerConfigRepo;
     this.integrationRequestRepo = options.integrationRequestRepo;
+    this.cliToolService = options.cliToolService;
+    this.interconnectorCatalogService = options.interconnectorCatalogService;
+    this.accessGrantService = options.accessGrantService;
+    this.toolApprovalGrantService = options.toolApprovalGrantService;
     this.gatewayProfile = options.gatewayProfile ?? "external";
     this.defaultProviderId = normalizeProviderId(options.defaultProviderId);
     this.defaultModelId = options.defaultModelId;
     this.enableAppleFoundationProvider = options.enableAppleFoundationProvider ?? false;
     this.hostPlatform = options.hostPlatform ?? process.platform;
     this.hostArch = options.hostArch ?? process.arch;
+    this.executableResolver = options.executableResolver ?? new LocalExecutableResolver();
     this.appleFoundationAvailability = options.appleFoundationAvailability;
+    this.claudeAgentSdkMetadataProbe = options.claudeAgentSdkMetadataProbe;
     this.usageSnapshotService = options.usageSnapshotService;
     this.localUsageTelemetryService = options.localUsageTelemetryService;
 
@@ -578,10 +716,25 @@ export class DefaultGatewayAdminService {
     return this.mainSpaceId;
   }
 
+  resolveConciergeSpaceId(): string {
+    return this.conciergeSpaceId;
+  }
+
   async getMainAgent(input: GetMainAgentInput = {}): Promise<GatewayMainAgentStatePayload> {
     const spaceId = this.resolveMainTargetSpaceId(input.spaceId);
     const repairIfMissing = input.repairIfMissing ?? this.mainAgentAutoRepairEnabled;
     return this.resolveMainAgentState({
+      spaceId,
+      repairIfMissing,
+    });
+  }
+
+  async getConciergeAgent(
+    input: GatewayGetConciergeAgentPayload = {},
+  ): Promise<GatewayConciergeAgentStatePayload> {
+    const spaceId = this.resolveConciergeTargetSpaceId(input.spaceId);
+    const repairIfMissing = input.repairIfMissing ?? this.mainAgentAutoRepairEnabled;
+    return this.resolveConciergeAgentState({
       spaceId,
       repairIfMissing,
     });
@@ -599,7 +752,7 @@ export class DefaultGatewayAdminService {
     if (!selectionMode) {
       throwGatewayError(
         "INVALID_ARGUMENT",
-        "selectionMode must be either provider_model or profile_template",
+        "selectionMode must be either provider_model or agent_definition",
       );
     }
 
@@ -663,6 +816,10 @@ export class DefaultGatewayAdminService {
         profileId: this.mainProfileId,
         providerHint: providerId,
         modelHint: modelId,
+        defaultSkillIds: mergeSkillIds(
+          parseStringArray(profileRepo.getActiveRevision(this.mainProfileId)?.default_skill_set_ids_json),
+          [USER_ESCALATION_SKILL_ID],
+        ),
         modelConfig: {
           preferredModels: [modelId],
           fallbackModels: [],
@@ -670,27 +827,27 @@ export class DefaultGatewayAdminService {
         source: "gateway_main_agent_swap",
       });
     } else {
-      const sourceProfileId = input.sourceProfileId?.trim();
-      if (!sourceProfileId) {
+      const sourceAgentDefinitionId = input.sourceAgentDefinitionId?.trim();
+      if (!sourceAgentDefinitionId) {
         throwGatewayError(
           "INVALID_ARGUMENT",
-          "sourceProfileId is required for profile_template selection",
+          "sourceAgentDefinitionId is required for agent_definition selection",
         );
       }
 
-      const sourceProfile = profileRepo.getActiveById(sourceProfileId);
+      const sourceProfile = profileRepo.getActiveById(sourceAgentDefinitionId);
       if (!sourceProfile) {
-        throwGatewayError("NOT_FOUND", `Profile not found: ${sourceProfileId}`);
+        throwGatewayError("NOT_FOUND", `Agent Definition not found: ${sourceAgentDefinitionId}`);
       }
-      const sourceRevision = profileRepo.getActiveRevision(sourceProfileId);
+      const sourceRevision = profileRepo.getActiveRevision(sourceAgentDefinitionId);
       if (!sourceRevision) {
         throwGatewayError(
           "FAILED_PRECONDITION",
-          `Active profile revision not found: ${sourceProfileId}`,
+          `Active agent definition revision not found: ${sourceAgentDefinitionId}`,
         );
       }
 
-      const copyPersonality = input.copyPersonality ?? true;
+      const applyPersonaInstructions = input.applyPersonaInstructions ?? true;
       const sourceModelConfig = parseModelConfig(
         sourceRevision.model_config_json,
         sourceRevision.model_hint,
@@ -710,7 +867,8 @@ export class DefaultGatewayAdminService {
       if (!sourcePinned.valid || !sourcePinned.providerHint || !sourcePinned.modelHint) {
         throwGatewayError(
           "FAILED_PRECONDITION",
-          sourcePinned.reason || `Profile ${sourceProfileId} is missing a valid runtime/model configuration.`,
+          sourcePinned.reason
+            || `Agent Definition ${sourceAgentDefinitionId} is missing a valid runtime/model configuration.`,
         );
       }
       const runtimeValidation = await this.validateProviderRuntimeSelection(
@@ -721,14 +879,17 @@ export class DefaultGatewayAdminService {
         throwGatewayError(
           "FAILED_PRECONDITION",
           runtimeValidation.reason
-            || `Profile ${sourceProfileId} is pinned to a runtime model that is unavailable.`,
+            || `Agent Definition ${sourceAgentDefinitionId} is pinned to a runtime model that is unavailable.`,
         );
       }
 
       profileRepo.update({
         profileId: this.mainProfileId,
-        personalityPrompt: copyPersonality ? sourceRevision.personality_prompt : undefined,
-        defaultSkillIds: parseStringArray(sourceRevision.default_skill_set_ids_json),
+        personalityPrompt: applyPersonaInstructions ? sourceRevision.personality_prompt : undefined,
+        defaultSkillIds: mergeSkillIds(
+          parseStringArray(sourceRevision.default_skill_set_ids_json),
+          [USER_ESCALATION_SKILL_ID],
+        ),
         providerHint: sourceProviderHint ?? undefined,
         modelHint: sourceModelHint,
         modelConfig: sourceModelConfig,
@@ -738,6 +899,172 @@ export class DefaultGatewayAdminService {
 
     await this.normalizeMainAssignment(spaceId);
     return this.resolveMainAgentState({
+      spaceId,
+      repairIfMissing: true,
+    });
+  }
+
+  async setConciergeAgent(
+    input: GatewaySetConciergeAgentPayload,
+  ): Promise<GatewayConciergeAgentStatePayload> {
+    if (!this.mainAgentSwapEnabled) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        "Concierge-agent swap is disabled by SPACESKIT_MAIN_AGENT_SWAP_V1",
+      );
+    }
+
+    const selectionMode = normalizeSelectionMode(input.selectionMode);
+    if (!selectionMode) {
+      throwGatewayError(
+        "INVALID_ARGUMENT",
+        "selectionMode must be either provider_model or agent_definition",
+      );
+    }
+
+    const spaceId = this.resolveConciergeTargetSpaceId(input.spaceId);
+    await this.resolveConciergeAgentState({
+      spaceId,
+      repairIfMissing: true,
+    });
+    const profileRepo = this.requireProfileRepo();
+
+    if (selectionMode === "provider_model") {
+      const providerId = normalizeProviderId(input.providerId);
+      const modelIdRaw = input.modelId?.trim();
+      if (!providerId || !modelIdRaw) {
+        throwGatewayError(
+          "INVALID_ARGUMENT",
+          "providerId and modelId are required for provider_model selection",
+        );
+      }
+
+      const modelProviderPrefix = deriveProviderFromModel(modelIdRaw);
+      if (modelProviderPrefix && modelProviderPrefix !== providerId) {
+        throwGatewayError(
+          "INVALID_ARGUMENT",
+          `modelId provider prefix ${modelProviderPrefix} does not match providerId ${providerId}`,
+        );
+      }
+
+      const providerConfig = this.listProviderConfigs()
+        .find((entry) => entry.providerId.trim().toLowerCase() === providerId);
+      if (!providerConfig) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Provider is not configured: ${providerId}`,
+        );
+      }
+
+      const modelId = withProviderPrefix(providerId, modelIdRaw);
+      const allowedModels = this.mergeAllowedModels(
+        providerId,
+        providerConfig.model,
+        providerConfig.allowedModels,
+      );
+      if (!providerConfig.allowCustomModel && !allowedModels.includes(modelId)) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Model ${modelId} is not allowed for provider ${providerId}.`,
+        );
+      }
+
+      const runtimeValidation = await this.validateProviderRuntimeSelection(providerId, modelId);
+      if (!runtimeValidation.valid) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          runtimeValidation.reason
+            || `Provider runtime rejected model ${modelId} for ${providerId}.`,
+        );
+      }
+
+      profileRepo.update({
+        profileId: this.conciergeProfileId,
+        providerHint: providerId,
+        modelHint: modelId,
+        defaultSkillIds: mergeSkillIds(
+          parseStringArray(profileRepo.getActiveRevision(this.conciergeProfileId)?.default_skill_set_ids_json),
+          [USER_ESCALATION_SKILL_ID],
+        ),
+        modelConfig: {
+          preferredModels: [modelId],
+          fallbackModels: [],
+        },
+        source: "gateway_concierge_agent_swap",
+      });
+    } else {
+      const sourceAgentDefinitionId = input.sourceAgentDefinitionId?.trim();
+      if (!sourceAgentDefinitionId) {
+        throwGatewayError(
+          "INVALID_ARGUMENT",
+          "sourceAgentDefinitionId is required for agent_definition selection",
+        );
+      }
+
+      const sourceProfile = profileRepo.getActiveById(sourceAgentDefinitionId);
+      if (!sourceProfile) {
+        throwGatewayError("NOT_FOUND", `Agent Definition not found: ${sourceAgentDefinitionId}`);
+      }
+      const sourceRevision = profileRepo.getActiveRevision(sourceAgentDefinitionId);
+      if (!sourceRevision) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Active agent definition revision not found: ${sourceAgentDefinitionId}`,
+        );
+      }
+
+      const applyPersonaInstructions = input.applyPersonaInstructions ?? true;
+      const sourceModelConfig = parseModelConfig(
+        sourceRevision.model_config_json,
+        sourceRevision.model_hint,
+      );
+      const sourceProviderHint = normalizeProviderId(sourceRevision.provider_hint)
+        || deriveProviderFromModel(sourceRevision.model_hint);
+      const sourceModelHint = sourceRevision.model_hint?.trim() || undefined;
+      this.validateProfileModelSelection({
+        providerHint: sourceProviderHint ?? undefined,
+        modelHint: sourceModelHint,
+        modelConfig: sourceModelConfig,
+      });
+      const sourcePinned = this.validatePinnedProviderModel(
+        sourceProviderHint ?? undefined,
+        sourceModelHint,
+      );
+      if (!sourcePinned.valid || !sourcePinned.providerHint || !sourcePinned.modelHint) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          sourcePinned.reason
+            || `Agent Definition ${sourceAgentDefinitionId} is missing a valid runtime/model configuration.`,
+        );
+      }
+      const runtimeValidation = await this.validateProviderRuntimeSelection(
+        sourcePinned.providerHint,
+        sourcePinned.modelHint,
+      );
+      if (!runtimeValidation.valid) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          runtimeValidation.reason
+            || `Agent Definition ${sourceAgentDefinitionId} is pinned to a runtime model that is unavailable.`,
+        );
+      }
+
+      profileRepo.update({
+        profileId: this.conciergeProfileId,
+        personalityPrompt: applyPersonaInstructions ? sourceRevision.personality_prompt : undefined,
+        defaultSkillIds: mergeSkillIds(
+          parseStringArray(sourceRevision.default_skill_set_ids_json),
+          [USER_ESCALATION_SKILL_ID],
+        ),
+        providerHint: sourceProviderHint ?? undefined,
+        modelHint: sourceModelHint,
+        modelConfig: sourceModelConfig,
+        source: "gateway_concierge_agent_swap",
+      });
+    }
+
+    await this.normalizeConciergeAssignment(spaceId);
+    return this.resolveConciergeAgentState({
       spaceId,
       repairIfMissing: true,
     });
@@ -757,11 +1084,39 @@ export class DefaultGatewayAdminService {
     return normalized;
   }
 
+  private resolveConciergeTargetSpaceId(spaceId?: string): string {
+    const normalized = spaceId?.trim();
+    if (!normalized) {
+      return this.conciergeSpaceId;
+    }
+    if (normalized !== this.conciergeSpaceId) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Concierge-agent operations are restricted to configured concierge space: ${this.conciergeSpaceId}`,
+      );
+    }
+    return normalized;
+  }
+
   private requireProfileRepo(): ProfileRepository {
     if (!this.profileRepo) {
       throwGatewayError("FAILED_PRECONDITION", "Profile repository unavailable");
     }
     return this.profileRepo;
+  }
+
+  private requireCliToolService(): CliToolService {
+    if (!this.cliToolService) {
+      throwGatewayError("FAILED_PRECONDITION", "CLI tool service unavailable");
+    }
+    return this.cliToolService;
+  }
+
+  private requireToolApprovalGrantService(): ToolApprovalGrantService {
+    if (!this.toolApprovalGrantService) {
+      throwGatewayError("FAILED_PRECONDITION", "Tool approval grant service unavailable");
+    }
+    return this.toolApprovalGrantService;
   }
 
   private async ensureMainProfileActive(
@@ -783,6 +1138,7 @@ export class DefaultGatewayAdminService {
         description: `Default ${this.gatewayProfile} gateway startup profile for the main agent.`,
         canModerate: true,
         personalityPrompt: `You are the default ${this.gatewayProfile} main gateway agent. Coordinate spaces clearly and safely.`,
+        defaultSkillIds: [USER_ESCALATION_SKILL_ID],
       });
       const created = profileRepo.getById(this.mainProfileId);
       if (!created) {
@@ -798,6 +1154,7 @@ export class DefaultGatewayAdminService {
     }
 
     if (existing.archived !== 1) {
+      this.ensureProfileDefaultSkills(this.mainProfileId, [USER_ESCALATION_SKILL_ID], "gateway_main_defaults");
       return {
         repaired: false,
         updatedAt: existing.updated_at,
@@ -818,10 +1175,110 @@ export class DefaultGatewayAdminService {
         `Unable to restore archived main profile: ${this.mainProfileId}`,
       );
     }
+    this.ensureProfileDefaultSkills(this.mainProfileId, [USER_ESCALATION_SKILL_ID], "gateway_main_defaults");
     return {
       repaired: true,
       updatedAt: restored.updated_at,
     };
+  }
+
+  private async ensureConciergeProfileActive(
+    repairIfMissing: boolean,
+  ): Promise<{ repaired: boolean; updatedAt: string }> {
+    const profileRepo = this.requireProfileRepo();
+    const profileLabel = this.gatewayProfile === "external" ? "External" : "Embedded";
+    const existing = profileRepo.getById(this.conciergeProfileId);
+    if (!existing) {
+      if (!repairIfMissing) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Concierge profile is missing: ${this.conciergeProfileId}`,
+        );
+      }
+
+      const legacyProfile = this.findLegacyConciergeProfile();
+      const legacyRevision = legacyProfile
+        ? profileRepo.getActiveRevision(legacyProfile.profile_id)
+        : undefined;
+      profileRepo.create({
+        profileId: this.conciergeProfileId,
+        personaId: legacyProfile?.persona_id || "",
+        name: `${profileLabel} Concierge`,
+        description: "General-purpose system concierge for workspace status, routing, and setup.",
+        canModerate: true,
+        personalityPrompt: legacyRevision?.personality_prompt
+          || "You are the Spaces concierge. Be concise, route users to the right workspace or settings surface, and escalate runtime issues clearly.",
+        defaultSkillIds: mergeSkillIds(
+          legacyRevision ? parseStringArray(legacyRevision.default_skill_set_ids_json) : [],
+          [USER_ESCALATION_SKILL_ID],
+        ),
+        providerHint: legacyRevision?.provider_hint?.trim() || undefined,
+        modelHint: legacyRevision?.model_hint?.trim() || undefined,
+        modelConfig: legacyRevision
+          ? parseModelConfig(legacyRevision.model_config_json, legacyRevision.model_hint)
+          : undefined,
+        source: legacyProfile ? "gateway_concierge_profile_migration" : "gateway_concierge_defaults",
+      });
+      const created = profileRepo.getById(this.conciergeProfileId);
+      if (!created) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Unable to create concierge profile: ${this.conciergeProfileId}`,
+        );
+      }
+      return {
+        repaired: true,
+        updatedAt: created.updated_at,
+      };
+    }
+
+    if (existing.archived !== 1) {
+      this.ensureProfileDefaultSkills(this.conciergeProfileId, [USER_ESCALATION_SKILL_ID], "gateway_concierge_defaults");
+      return {
+        repaired: false,
+        updatedAt: existing.updated_at,
+      };
+    }
+
+    if (!repairIfMissing) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Concierge profile is archived: ${this.conciergeProfileId}`,
+      );
+    }
+    profileRepo.restore(this.conciergeProfileId);
+    const restored = profileRepo.getById(this.conciergeProfileId);
+    if (!restored || restored.archived === 1) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Unable to restore archived concierge profile: ${this.conciergeProfileId}`,
+      );
+    }
+    this.ensureProfileDefaultSkills(this.conciergeProfileId, [USER_ESCALATION_SKILL_ID], "gateway_concierge_defaults");
+    return {
+      repaired: true,
+      updatedAt: restored.updated_at,
+    };
+  }
+
+  private ensureProfileDefaultSkills(
+    profileId: string,
+    requiredSkillIds: readonly string[],
+    source: string,
+  ): void {
+    const profileRepo = this.requireProfileRepo();
+    const activeRevision = profileRepo.getActiveRevision(profileId);
+    if (!activeRevision) return;
+    const existingSkillIds = parseStringArray(activeRevision.default_skill_set_ids_json);
+    const mergedSkillIds = mergeSkillIds(existingSkillIds, requiredSkillIds);
+    if (mergedSkillIds.length === existingSkillIds.length) {
+      return;
+    }
+    profileRepo.update({
+      profileId,
+      defaultSkillIds: mergedSkillIds,
+      source,
+    });
   }
 
   private async ensureMainSpace(
@@ -960,11 +1417,214 @@ export class DefaultGatewayAdminService {
     };
   }
 
+  private async ensureConciergeSpace(
+    repairIfMissing: boolean,
+  ): Promise<{ spaceUid: string; repaired: boolean; assignedProfileId?: string; updatedAt: string }> {
+    let space = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
+    let repaired = false;
+
+    if (!space) {
+      if (!repairIfMissing) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Concierge space is missing: ${this.conciergeSpaceId}`,
+        );
+      }
+      space = await this.spaceAdminService.createSpace({
+        spaceId: this.conciergeSpaceId,
+        resourceId: this.conciergeSpaceResourceId,
+        spaceType: "concierge",
+        name: this.conciergeSpaceName,
+        goal: this.conciergeSpaceGoal,
+        turnModel: "sequential_all",
+        visibility: "private",
+        initialAgents: [
+          {
+            agentId: this.conciergeAgentId,
+            profileId: this.conciergeProfileId,
+            role: "global_coordinator",
+            turnOrder: 0,
+            isPrimary: true,
+          },
+        ],
+      });
+      repaired = true;
+    }
+
+    const rawSpace = this.spaceRepo?.getById(this.conciergeSpaceId);
+    const desiredConfigJson = this.buildCanonicalConciergeSpaceConfigJson(rawSpace?.space_config_json);
+    const requiresMetadataRepair = Boolean(rawSpace) && (
+      rawSpace?.resource_id !== this.conciergeSpaceResourceId
+      || rawSpace?.space_type !== "concierge"
+      || rawSpace?.name !== this.conciergeSpaceName
+      || rawSpace?.goal !== this.conciergeSpaceGoal
+      || rawSpace?.turn_model !== "sequential_all"
+      || rawSpace?.space_config_json !== desiredConfigJson
+    );
+    if (requiresMetadataRepair) {
+      if (!repairIfMissing) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Concierge space metadata is out of policy for ${this.conciergeSpaceId}`,
+        );
+      }
+      this.updateRawSpaceMetadata({
+        spaceId: this.conciergeSpaceId,
+        resourceId: this.conciergeSpaceResourceId,
+        spaceType: "concierge",
+        name: this.conciergeSpaceName,
+        goal: this.conciergeSpaceGoal,
+        turnModel: "sequential_all",
+        configJson: desiredConfigJson,
+      });
+      repaired = true;
+    }
+
+    const conciergeAssignment = space.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
+    if (!conciergeAssignment) {
+      if (!repairIfMissing) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Concierge agent assignment is missing: ${this.conciergeAgentId}`,
+        );
+      }
+      await this.spaceAdminService.addAgent({
+        spaceId: this.conciergeSpaceId,
+        agentId: this.conciergeAgentId,
+        profileId: this.conciergeProfileId,
+        role: "global_coordinator",
+        turnOrder: 0,
+        isPrimary: true,
+      });
+      repaired = true;
+    } else {
+      const requiresNormalization = (
+        conciergeAssignment.profileId !== this.conciergeProfileId
+        || conciergeAssignment.role !== "global_coordinator"
+        || conciergeAssignment.turnOrder !== 0
+        || !conciergeAssignment.isPrimary
+      );
+      if (requiresNormalization) {
+        if (!repairIfMissing) {
+          throwGatewayError(
+            "FAILED_PRECONDITION",
+            `Concierge assignment is out of policy for agent ${this.conciergeAgentId}`,
+          );
+        }
+        await this.spaceAdminService.updateAgentAssignment({
+          spaceId: this.conciergeSpaceId,
+          agentId: this.conciergeAgentId,
+          profileId: this.conciergeProfileId,
+          role: "global_coordinator",
+          turnOrder: 0,
+          isPrimary: true,
+        });
+        repaired = true;
+      }
+    }
+
+    let refreshed = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
+    if (!refreshed) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Unable to load concierge space after repair: ${this.conciergeSpaceId}`,
+      );
+    }
+    let refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
+    if (!refreshedAssignment) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Unable to load canonical concierge assignment after repair: ${this.conciergeSpaceId}/${this.conciergeAgentId}`,
+      );
+    }
+
+    if (this.hasConciergeAssignmentPolicyConflicts(refreshed.agents)) {
+      if (!repairIfMissing) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Concierge assignment policy conflict detected for canonical agent ${this.conciergeAgentId}`,
+        );
+      }
+      await this.spaceAdminService.updateAgentAssignment({
+        spaceId: this.conciergeSpaceId,
+        agentId: this.conciergeAgentId,
+        profileId: this.conciergeProfileId,
+        role: "global_coordinator",
+        turnOrder: 0,
+        isPrimary: true,
+      });
+      repaired = true;
+
+      refreshed = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
+      if (!refreshed) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Unable to load concierge space after policy normalization: ${this.conciergeSpaceId}`,
+        );
+      }
+      refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
+      if (!refreshedAssignment) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Unable to load canonical concierge assignment after policy normalization: ${this.conciergeSpaceId}/${this.conciergeAgentId}`,
+        );
+      }
+    }
+
+    if (refreshed.orchestratorProfileId !== this.conciergeProfileId) {
+      if (!repairIfMissing) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Concierge orchestrator profile is out of policy for ${this.conciergeSpaceId}`,
+        );
+      }
+      await this.spaceAdminService.setSpaceOrchestrator({
+        spaceId: this.conciergeSpaceId,
+        profileId: this.conciergeProfileId,
+      });
+      repaired = true;
+
+      refreshed = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
+      if (!refreshed) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Unable to load concierge space after orchestrator normalization: ${this.conciergeSpaceId}`,
+        );
+      }
+      refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
+      if (!refreshedAssignment) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          `Unable to load canonical concierge assignment after orchestrator normalization: ${this.conciergeSpaceId}/${this.conciergeAgentId}`,
+        );
+      }
+    }
+
+    return {
+      spaceUid: refreshed.spaceUid,
+      repaired,
+      assignedProfileId: refreshedAssignment?.profileId,
+      updatedAt: String(refreshed.updatedAt),
+    };
+  }
+
   private hasMainAssignmentPolicyConflicts(
     assignments: Array<{ agentId: string; role: string; isPrimary: boolean }>,
   ): boolean {
     return assignments.some((assignment) => {
       if (assignment.agentId === this.mainAgentId) {
+        return false;
+      }
+      const role = assignment.role.trim().toLowerCase();
+      return assignment.isPrimary || role === "global_coordinator";
+    });
+  }
+
+  private hasConciergeAssignmentPolicyConflicts(
+    assignments: Array<{ agentId: string; role: string; isPrimary: boolean }>,
+  ): boolean {
+    return assignments.some((assignment) => {
+      if (assignment.agentId === this.conciergeAgentId) {
         return false;
       }
       const role = assignment.role.trim().toLowerCase();
@@ -979,10 +1639,76 @@ export class DefaultGatewayAdminService {
     await this.ensureMainSpace(true);
   }
 
+  private async normalizeConciergeAssignment(spaceId: string): Promise<void> {
+    if (spaceId !== this.conciergeSpaceId) {
+      return;
+    }
+    await this.ensureConciergeSpace(true);
+  }
+
+  private buildCanonicalConciergeSpaceConfigJson(existingJson: string | null | undefined): string {
+    const parsed = this.parseSpaceConfigRecord(existingJson);
+    parsed.visibility = "private";
+    parsed.orchestratorProfileId = this.conciergeProfileId;
+    return JSON.stringify(parsed);
+  }
+
+  private parseSpaceConfigRecord(existingJson: string | null | undefined): Record<string, unknown> {
+    if (!existingJson?.trim()) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(existingJson) as Record<string, unknown> | null;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? { ...parsed }
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private updateRawSpaceMetadata(input: {
+    spaceId: string;
+    resourceId: string;
+    spaceType: string;
+    name: string;
+    goal: string;
+    turnModel: string;
+    configJson: string;
+  }): void {
+    const db = (this.spaceRepo as { db?: { query: (sql: string) => { run: (...args: unknown[]) => unknown } } } | undefined)?.db;
+    if (!db) {
+      throw new Error("Space persistence unavailable for concierge metadata repair");
+    }
+    db.query(
+      `UPDATE spaces
+       SET resource_id = ?,
+           space_type = ?,
+           name = ?,
+           goal = ?,
+           turn_model = ?,
+           space_config_json = ?,
+           updated_at = ?
+       WHERE space_id = ?`,
+    ).run(
+      input.resourceId,
+      input.spaceType,
+      input.name,
+      input.goal,
+      input.turnModel,
+      input.configJson,
+      new Date().toISOString(),
+      input.spaceId,
+    );
+  }
+
   private resolveFallbackProviderModel(): { providerHint: string; modelHint: string } | null {
     const providerConfigs = this.listProviderConfigs();
     if (providerConfigs.length > 0) {
-      const fallback = providerConfigs[0];
+      // Prefer non-Apple provider as fallback; Apple is always-available on macOS
+      // but should not shadow user-configured or detected CLI providers.
+      const fallback = providerConfigs.find((c) => c.providerId !== "apple")
+        ?? providerConfigs[0];
       return {
         providerHint: fallback.providerId,
         modelHint: fallback.model,
@@ -1004,13 +1730,10 @@ export class DefaultGatewayAdminService {
   }
 
   private resolveEmbeddedMacDefaultProvider(): string | undefined {
-    if (!this.embeddedLocalIntegrationsAllowed()) {
-      return undefined;
-    }
-    if (!this.providerVisibleInCatalog("apple")) {
-      return undefined;
-    }
-    return "apple";
+    // CLI providers are now auto-seeded during bootstrap; Apple should only
+    // be selected through the normal priority order in providerConfigs,
+    // not silently injected as a hidden default.
+    return undefined;
   }
 
   private validatePinnedProviderModel(
@@ -1120,75 +1843,54 @@ export class DefaultGatewayAdminService {
     };
   }
 
-  private async resolveMainAgentState(input: {
-    spaceId: string;
-    repairIfMissing: boolean;
-  }): Promise<GatewayMainAgentStatePayload> {
-    const profileRepo = this.requireProfileRepo();
-    const profileRepair = await this.ensureMainProfileActive(input.repairIfMissing);
-    const spaceRepair = await this.ensureMainSpace(input.repairIfMissing);
-    let repaired = profileRepair.repaired || spaceRepair.repaired;
+  private async resolveValidatedProviderModel(input: {
+    providerHintRaw?: string;
+    modelHintRaw?: string;
+    repairIfInvalid: boolean;
+    allowFallbackRepair?: boolean;
+  }): Promise<ResolvedProviderModelHint> {
+    const allowFallbackRepair = input.allowFallbackRepair ?? true;
     let fallbackApplied = false;
     let fallbackReason: string | undefined;
 
-    const activeRevision = profileRepo.getActiveRevision(this.mainProfileId);
-    if (!activeRevision) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Active main profile revision missing: ${this.mainProfileId}`,
-      );
-    }
-
     let pinned = this.validatePinnedProviderModel(
-      activeRevision.provider_hint,
-      activeRevision.model_hint,
+      input.providerHintRaw,
+      input.modelHintRaw,
     );
     if (!pinned.valid) {
-      if (!input.repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          pinned.reason || "Main profile runtime/model selection is invalid",
-        );
+      if (!input.repairIfInvalid || !allowFallbackRepair) {
+        return {
+          valid: false,
+          fallbackApplied: false,
+          reason: pinned.reason || "Runtime/model selection is invalid",
+        };
       }
+
       const fallback = this.resolveFallbackProviderModel();
       if (!fallback) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          "Unable to repair main profile runtime/model selection: no runtimes configured",
-        );
+        return {
+          valid: false,
+          fallbackApplied: false,
+          reason: "Unable to repair runtime/model selection: no runtimes configured",
+        };
       }
-      profileRepo.update({
-        profileId: this.mainProfileId,
+
+      fallbackApplied = true;
+      fallbackReason = pinned.reason ?? "Configured runtime/model unavailable";
+      pinned = {
+        valid: true,
         providerHint: fallback.providerHint,
         modelHint: fallback.modelHint,
-        modelConfig: {
-          preferredModels: [fallback.modelHint],
-          fallbackModels: [],
-        },
-        source: "gateway_main_agent_fallback",
-      });
-      repaired = true;
-      fallbackApplied = true;
-      fallbackReason = pinned.reason ?? "Configured runtime/model unavailable on restart";
-
-      const refreshedRevision = profileRepo.getActiveRevision(this.mainProfileId);
-      if (!refreshedRevision) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Failed to read repaired main profile revision: ${this.mainProfileId}`,
-        );
-      }
-      pinned = this.validatePinnedProviderModel(
-        refreshedRevision.provider_hint,
-        refreshedRevision.model_hint,
-      );
+      };
     }
 
     if (!pinned.valid || !pinned.providerHint || !pinned.modelHint) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        pinned.reason || "Main profile runtime/model selection is invalid",
-      );
+      return {
+        valid: false,
+        fallbackApplied,
+        fallbackReason,
+        reason: pinned.reason || "Runtime/model selection is invalid",
+      };
     }
 
     const runtimeValidation = await this.validateProviderRuntimeSelection(
@@ -1196,11 +1898,13 @@ export class DefaultGatewayAdminService {
       pinned.modelHint,
     );
     if (!runtimeValidation.valid) {
-      if (!input.repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          runtimeValidation.reason || "Main profile runtime model selection is invalid",
-        );
+      if (!input.repairIfInvalid || !allowFallbackRepair) {
+        return {
+          valid: false,
+          fallbackApplied,
+          fallbackReason,
+          reason: runtimeValidation.reason || "Runtime model selection is invalid",
+        };
       }
 
       let fallbackProviderHint: string | undefined;
@@ -1226,56 +1930,94 @@ export class DefaultGatewayAdminService {
       }
 
       if (!fallbackProviderHint || !fallbackModelHint) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          runtimeValidation.reason || "Unable to repair runtime model selection for main profile",
-        );
+        return {
+          valid: false,
+          fallbackApplied,
+          fallbackReason,
+          reason: runtimeValidation.reason || "Unable to repair runtime model selection",
+        };
       }
 
-      profileRepo.update({
-        profileId: this.mainProfileId,
-        providerHint: fallbackProviderHint,
-        modelHint: fallbackModelHint,
-        modelConfig: {
-          preferredModels: [fallbackModelHint],
-          fallbackModels: [],
-        },
-        source: "gateway_main_agent_fallback",
-      });
-      repaired = true;
+      const fallbackPinned = this.validatePinnedProviderModel(
+        fallbackProviderHint,
+        fallbackModelHint,
+      );
+      if (!fallbackPinned.valid || !fallbackPinned.providerHint || !fallbackPinned.modelHint) {
+        return {
+          valid: false,
+          fallbackApplied,
+          fallbackReason,
+          reason: fallbackPinned.reason
+            || runtimeValidation.reason
+            || "Fallback runtime/model selection is invalid",
+        };
+      }
+
+      const fallbackRuntimeValidation = await this.validateProviderRuntimeSelection(
+        fallbackPinned.providerHint,
+        fallbackPinned.modelHint,
+      );
+      if (!fallbackRuntimeValidation.valid) {
+        return {
+          valid: false,
+          fallbackApplied,
+          fallbackReason,
+          reason: fallbackRuntimeValidation.reason
+            || runtimeValidation.reason
+            || "Fallback runtime model selection is invalid",
+        };
+      }
+
       fallbackApplied = true;
-      fallbackReason = runtimeValidation.reason
-        ?? "Configured runtime model unavailable on restart";
-
-      const refreshedRevision = profileRepo.getActiveRevision(this.mainProfileId);
-      if (!refreshedRevision) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Failed to read repaired main profile revision: ${this.mainProfileId}`,
-        );
-      }
-      pinned = this.validatePinnedProviderModel(
-        refreshedRevision.provider_hint,
-        refreshedRevision.model_hint,
-      );
-      if (!pinned.valid || !pinned.providerHint || !pinned.modelHint) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          pinned.reason || "Main profile runtime/model selection is invalid",
-        );
-      }
-
-      const repairedRuntimeValidation = await this.validateProviderRuntimeSelection(
-        pinned.providerHint,
-        pinned.modelHint,
-      );
-      if (!repairedRuntimeValidation.valid) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          repairedRuntimeValidation.reason || "Main profile runtime model selection is invalid",
-        );
-      }
+      fallbackReason = runtimeValidation.reason ?? "Configured runtime model unavailable";
+      pinned = fallbackPinned;
     }
+
+    return {
+      valid: true,
+      providerHint: pinned.providerHint,
+      modelHint: pinned.modelHint,
+      fallbackApplied,
+      fallbackReason,
+    };
+  }
+
+  private async resolveMainAgentState(input: {
+    spaceId: string;
+    repairIfMissing: boolean;
+  }): Promise<GatewayMainAgentStatePayload> {
+    const profileRepo = this.requireProfileRepo();
+    const profileRepair = await this.ensureMainProfileActive(input.repairIfMissing);
+    const spaceRepair = await this.ensureMainSpace(input.repairIfMissing);
+    let repaired = profileRepair.repaired || spaceRepair.repaired;
+    let fallbackApplied = false;
+    let fallbackReason: string | undefined;
+
+    const activeRevision = profileRepo.getActiveRevision(this.mainProfileId);
+    if (!activeRevision) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Active main profile revision missing: ${this.mainProfileId}`,
+      );
+    }
+
+    const resolvedPinned = await this.resolveValidatedProviderModel({
+      providerHintRaw: activeRevision.provider_hint,
+      modelHintRaw: activeRevision.model_hint,
+      repairIfInvalid: input.repairIfMissing,
+      allowFallbackRepair: true,
+    });
+    if (!resolvedPinned.valid || !resolvedPinned.providerHint || !resolvedPinned.modelHint) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        resolvedPinned.reason || "Main profile runtime/model selection is invalid",
+      );
+    }
+    if (resolvedPinned.fallbackApplied) {
+      repaired = true;
+    }
+    fallbackApplied = resolvedPinned.fallbackApplied;
+    fallbackReason = resolvedPinned.fallbackReason;
 
     const refreshedProfile = profileRepo.getById(this.mainProfileId);
     const updatedAt = new Date().toISOString();
@@ -1285,8 +2027,8 @@ export class DefaultGatewayAdminService {
       mainAgentId: this.mainAgentId,
       mainProfileId: this.mainProfileId,
       assignedProfileId: spaceRepair.assignedProfileId,
-      providerHint: pinned.providerHint,
-      modelHint: pinned.modelHint,
+      providerHint: resolvedPinned.providerHint,
+      modelHint: resolvedPinned.modelHint,
       status: fallbackApplied ? "fallback" : repaired ? "repaired" : "healthy",
       repaired,
       fallbackApplied,
@@ -1295,8 +2037,75 @@ export class DefaultGatewayAdminService {
     };
   }
 
+  private async resolveConciergeAgentState(input: {
+    spaceId: string;
+    repairIfMissing: boolean;
+  }): Promise<GatewayConciergeAgentStatePayload> {
+    const profileRepo = this.requireProfileRepo();
+    const profileRepair = await this.ensureConciergeProfileActive(input.repairIfMissing);
+    const spaceRepair = await this.ensureConciergeSpace(input.repairIfMissing);
+    let repaired = profileRepair.repaired || spaceRepair.repaired;
+    let fallbackApplied = false;
+    let fallbackReason: string | undefined;
+
+    const activeRevision = profileRepo.getActiveRevision(this.conciergeProfileId);
+    if (!activeRevision) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Active concierge profile revision missing: ${this.conciergeProfileId}`,
+      );
+    }
+
+    const resolvedPinned = await this.resolveValidatedProviderModel({
+      providerHintRaw: activeRevision.provider_hint,
+      modelHintRaw: activeRevision.model_hint,
+      repairIfInvalid: input.repairIfMissing,
+      allowFallbackRepair: false,
+    });
+    if (!resolvedPinned.valid || !resolvedPinned.providerHint || !resolvedPinned.modelHint) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        resolvedPinned.reason || "Concierge profile runtime/model selection is invalid",
+      );
+    }
+    if (resolvedPinned.fallbackApplied) {
+      repaired = true;
+    }
+    fallbackApplied = resolvedPinned.fallbackApplied;
+    fallbackReason = resolvedPinned.fallbackReason;
+
+    const refreshedProfile = profileRepo.getById(this.conciergeProfileId);
+    const updatedAt = new Date().toISOString();
+    return {
+      spaceId: input.spaceId,
+      spaceUid: spaceRepair.spaceUid,
+      conciergeAgentId: this.conciergeAgentId,
+      conciergeProfileId: this.conciergeProfileId,
+      assignedProfileId: spaceRepair.assignedProfileId,
+      providerHint: resolvedPinned.providerHint,
+      modelHint: resolvedPinned.modelHint,
+      status: fallbackApplied ? "fallback" : repaired ? "repaired" : "healthy",
+      repaired,
+      fallbackApplied,
+      fallbackReason,
+      updatedAt: refreshedProfile?.updated_at || updatedAt,
+    };
+  }
+
+  private findLegacyConciergeProfile() {
+    const profileRepo = this.requireProfileRepo();
+    const candidates = profileRepo
+      .list({ includeArchived: true })
+      .filter((entry) => entry.profile_id.startsWith("system.concierge.profile."));
+    if (candidates.length === 0) {
+      return undefined;
+    }
+    return candidates.sort((lhs, rhs) => rhs.updated_at.localeCompare(lhs.updated_at))[0];
+  }
+
   async listProviderCatalogs(input?: {
     providerId?: string;
+    refresh?: boolean;
   }): Promise<GatewayModelProviderCatalog[]> {
     await this.ensureAppleFoundationAvailability();
     const requestedProvider = normalizeProviderId(input?.providerId);
@@ -1327,6 +2136,7 @@ export class DefaultGatewayAdminService {
       models: OpenAICompatibleDetectedModel[];
       detectionError?: string;
     }>();
+    const claudeAgentSdkDetections = new Map<string, ClaudeAgentSdkCatalogProbe>();
 
     await Promise.all(
       providerIds
@@ -1334,8 +2144,20 @@ export class DefaultGatewayAdminService {
         .map(async (providerId) => {
           const config = this.providerConfigs.get(providerId);
           const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
-          const detection = await this.detectOpenAICompatibleModels(baseURL);
+          const detection = await this.detectOpenAICompatibleModels(baseURL, {
+            forceRefresh: input?.refresh === true,
+          });
           openAIDetections.set(providerId, detection);
+        }),
+    );
+
+    await Promise.all(
+      providerIds
+        .filter((providerId) => providerId === "claude-agent-sdk" && this.isProviderConfigAllowed(providerId))
+        .map(async (providerId) => {
+          const config = this.providerConfigs.get(providerId);
+          const detection = await this.detectClaudeAgentSdkCatalog(config, input?.refresh === true);
+          claudeAgentSdkDetections.set(providerId, detection);
         }),
     );
 
@@ -1345,7 +2167,11 @@ export class DefaultGatewayAdminService {
       const configAllowed = this.isProviderConfigAllowed(providerId);
       const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
       const hasApiKey = Boolean(config?.apiKey || config?.apiKeySecretRef || keyFromEnvironment(providerId));
-      const requiresApiKey = providerRequiresApiKey(providerId, baseURL);
+      const supportedAuthModes = providerSupportedAuthModes(providerId);
+      const authMode = resolveProviderAuthMode(providerId, config?.authMode);
+      let authStatus = inferDefaultProviderAuthStatus(providerId, authMode, hasApiKey);
+      let authAccount: GatewayProviderAuthAccount | undefined;
+      const requiresApiKey = providerRequiresApiKey(providerId, baseURL, authMode);
       const localAgent = localAgentsByProvider.get(providerId);
       const localRuntimeDetected = localAgent ? localAgent.detected : true;
       let runtimeAvailable = configAllowed && (requiresApiKey ? hasApiKey : true) && localRuntimeDetected;
@@ -1359,7 +2185,7 @@ export class DefaultGatewayAdminService {
       ) => {
         const idTrimmed = idRaw?.trim();
         if (!idTrimmed) return;
-        const inferredContextWindow = contextWindow ?? inferCatalogContextWindow(providerId, idTrimmed);
+        const inferredContextWindow = contextWindow ?? inferContextWindow(providerId, idTrimmed);
         const id = withProviderPrefix(providerId, idTrimmed);
         const existingIndex = models.findIndex((entry) => entry.id === id);
         if (existingIndex >= 0) {
@@ -1435,16 +2261,80 @@ export class DefaultGatewayAdminService {
         }
       }
 
+      const claudeAgentSdkDetection = claudeAgentSdkDetections.get(providerId);
+      if (claudeAgentSdkDetection && configAllowed) {
+        authStatus = claudeAgentSdkDetection.authStatus;
+        authAccount = claudeAgentSdkDetection.authAccount;
+        if (claudeAgentSdkDetection.models.length > 0) {
+          for (const model of claudeAgentSdkDetection.models) {
+            addModel(model.id, "detected", authStatus === "authenticated", model.contextWindow);
+          }
+          detectionStatus = "available";
+          detectionError = undefined;
+        } else if (claudeAgentSdkDetection.detectionError) {
+          detectionError = claudeAgentSdkDetection.detectionError;
+          detectionStatus = authStatus === "error" ? "error" : models.length > 0 ? "available" : "unavailable";
+        }
+      }
+
       for (const modelId of config?.allowedModels ?? []) {
         addModel(modelId, "allowlist", runtimeAvailable);
       }
       addModel(config?.model, "configured", runtimeAvailable);
-      addModel(DEFAULT_MODEL_BY_PROVIDER[providerId], "fallback", runtimeAvailable);
+      const shouldUseFallbackManifest = providerId !== "claude-agent-sdk"
+        || !models.some((entry) => entry.source === "detected");
+      if (shouldUseFallbackManifest) {
+        for (const modelId of LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []) {
+          addModel(modelId, "fallback", runtimeAvailable);
+        }
+        addModel(DEFAULT_MODEL_BY_PROVIDER[providerId], "fallback", runtimeAvailable);
+      }
+
+      // Sort models for cloud providers with dynamically detected model lists.
+      // CLI executor providers (claude, codex, gemini) keep manifest insertion order.
+      if (
+        (isOpenAICompatibleProvider(providerId) && !isCliExecutorProvider(providerId))
+        || providerId === "claude-agent-sdk"
+      ) {
+        models.sort((a, b) => {
+          const sourcePriority = (s: GatewayModelCatalogSource): number => {
+            if (providerId === "claude-agent-sdk") {
+              switch (s) {
+                case "detected": return 0;
+                case "configured": return 1;
+                case "allowlist": return 2;
+                case "fallback": return 3;
+                default: return 4;
+              }
+            }
+            switch (s) {
+              case "configured": return 0;
+              case "detected": return 1;
+              case "allowlist": return 2;
+              case "fallback": return 3;
+              default: return 4;
+            }
+          };
+          const aPriority = sourcePriority(a.source);
+          const bPriority = sourcePriority(b.source);
+          if (aPriority !== bPriority) return aPriority - bPriority;
+          const aCtx = a.contextWindow ?? 0;
+          const bCtx = b.contextWindow ?? 0;
+          if (aCtx !== bCtx) return bCtx - aCtx;
+          return a.displayName.localeCompare(b.displayName);
+        });
+      }
 
       if (!configAllowed) {
         integrationStatus = "policy_blocked";
+      } else if (authStatus === "needs_auth") {
+        integrationStatus = "needs_auth";
+      } else if (authStatus === "needs_key") {
+        integrationStatus = "needs_key";
       } else if (requiresApiKey && !hasApiKey) {
         integrationStatus = "needs_key";
+      } else if (authStatus === "error") {
+        integrationStatus = "error";
       } else if (detectionStatus === "error") {
         integrationStatus = "error";
       } else if (models.length === 0 && isOpenAICompatibleProvider(providerId) && runtimeAvailable) {
@@ -1459,6 +2349,10 @@ export class DefaultGatewayAdminService {
         status: integrationStatus,
         hasApiKey,
         requiresApiKey,
+        ...(supportedAuthModes.length > 0 ? { supportedAuthModes } : {}),
+        ...(authMode ? { authMode } : {}),
+        ...(authStatus ? { authStatus } : {}),
+        ...(authAccount ? { authAccount } : {}),
         baseURL,
         detectionStatus,
         ...(detectionError ? { detectionError } : {}),
@@ -1473,8 +2367,134 @@ export class DefaultGatewayAdminService {
 
   async listAvailableModels(input?: {
     providerId?: string;
+    refresh?: boolean;
   }): Promise<GatewayModelProviderCatalog[]> {
     return this.listProviderCatalogs(input);
+  }
+
+  listTools(_input: GatewayListToolsPayload = {}): GatewayListToolsResponsePayload["tools"] {
+    return this.cliToolService?.listTools() ?? [];
+  }
+
+  getTool(toolId: string): GatewayGetToolResponsePayload["tool"] {
+    return this.cliToolService?.getTool(toolId) ?? null;
+  }
+
+  listInterconnectors(
+    _input: GatewayListInterconnectorsPayload = {},
+  ): GatewayListInterconnectorsResponsePayload["interconnectors"] {
+    return this.interconnectorCatalogService?.listBundles() ?? [];
+  }
+
+  async rescanInterconnectors(
+    _input: GatewayRescanInterconnectorsPayload = {},
+  ): Promise<GatewayRescanInterconnectorsResponsePayload["interconnectors"]> {
+    if (!this.interconnectorCatalogService) {
+      return [];
+    }
+    const result = await this.interconnectorCatalogService.rescan();
+    return result.interconnectors;
+  }
+
+  scaffoldTool(
+    input: GatewayScaffoldToolPayload,
+  ): GatewayScaffoldToolResponsePayload {
+    const cliToolService = this.requireCliToolService();
+    return cliToolService.scaffoldTool({
+      id: input.id,
+      displayName: input.displayName,
+      description: input.description,
+      outputMode: input.outputMode,
+    });
+  }
+
+  async registerTool(
+    input: GatewayRegisterToolPayload,
+  ): Promise<GatewayRegisterToolResponsePayload["tool"]> {
+    const cliToolService = this.requireCliToolService();
+    return cliToolService.registerTool({
+      schemaVersion: input.schemaVersion,
+      id: input.id,
+      displayName: input.displayName,
+      description: input.description,
+      bundleId: input.bundleId,
+      bundleDisplayName: input.bundleDisplayName,
+      bundleDescription: input.bundleDescription,
+      toolGroupId: input.toolGroupId,
+      toolGroupDisplayName: input.toolGroupDisplayName,
+      executable: input.executable,
+      argsTemplate: input.argsTemplate,
+      inputSchema: input.inputSchema,
+      instructions: input.instructions,
+      examples: input.examples,
+      timeoutMs: input.timeoutMs,
+      maxOutputBytes: input.maxOutputBytes,
+      cwdMode: input.cwdMode,
+      fixedCwd: input.fixedCwd,
+      outputMode: input.outputMode,
+      dangerLevel: input.dangerLevel,
+      readme: input.readme,
+      enabled: input.enabled,
+    });
+  }
+
+  async removeTool(toolId: string): Promise<GatewayRemoveToolResponsePayload> {
+    const cliToolService = this.requireCliToolService();
+    const removed = await cliToolService.removeTool(toolId);
+    return {
+      toolId,
+      removed,
+    };
+  }
+
+  async setToolEnabled(
+    input: GatewaySetToolEnabledPayload,
+  ): Promise<GatewaySetToolEnabledResponsePayload> {
+    const cliToolService = this.requireCliToolService();
+    return {
+      tools: await cliToolService.setToolEnabled(input.toolId, input.enabled),
+    };
+  }
+
+  listToolApprovalGrants(
+    input: GatewayListToolApprovalGrantsPayload,
+    principalId: string,
+    deviceId?: string,
+  ): GatewayListToolApprovalGrantsResponsePayload["grants"] {
+    const toolApprovalGrantService = this.requireToolApprovalGrantService();
+    return toolApprovalGrantService.listGrants({
+      principalId,
+      deviceId: asString(input.deviceId) ?? deviceId,
+      spaceId: asString(input.spaceId),
+      toolId: asString(input.toolId),
+      includeExpired: input.includeExpired,
+      includeRevoked: input.includeRevoked,
+    });
+  }
+
+  revokeToolApprovalGrant(
+    input: GatewayRevokeToolApprovalGrantPayload,
+    principalId: string,
+    deviceId?: string,
+  ): GatewayRevokeToolApprovalGrantResponsePayload {
+    const toolApprovalGrantService = this.requireToolApprovalGrantService();
+    const resolvedDeviceId = asString(input.deviceId) ?? deviceId;
+    const result = toolApprovalGrantService.revokeGrant({
+      principalId,
+      deviceId: resolvedDeviceId,
+      spaceId: input.spaceId,
+      toolId: input.toolId,
+      reason: input.reason,
+    });
+    this.accessGrantService?.revokeAccess({
+      principalId,
+      deviceId: resolvedDeviceId,
+      spaceId: input.spaceId,
+      targetKind: "tool_selector",
+      targetId: `tool_operation:${input.toolId}`,
+      reason: input.reason ?? `Revoked tool approval for ${input.toolId}.`,
+    });
+    return result;
   }
 
   createIntegrationRequest(
@@ -1543,32 +2563,10 @@ export class DefaultGatewayAdminService {
       throw new Error(`Unknown providerId: ${requestedProvider}`);
     }
 
-    const usageByProvider = this.providerUsageById();
     const targetConfigs = requestedProvider
       ? [configuredById.get(requestedProvider)!]
       : configured;
-
-    return Promise.all(
-      targetConfigs.map(async (config): Promise<ProviderTelemetry> => {
-        const providerId = config.providerId.trim().toLowerCase();
-        const usage = usageByProvider.get(providerId);
-        const fallbackStatus = usage?.status ?? "unknown";
-        const fetchedAt = new Date().toISOString();
-
-        const probe = await this.probeLocalProviderTelemetry(config, usage);
-
-        return {
-          providerId,
-          status: probe?.status ?? fallbackStatus,
-          source: probe?.source ?? "usage_snapshot",
-          fetchedAt,
-          message: probe?.message ?? usage?.message,
-          accountLabel: probe?.accountLabel,
-          windows: probe?.windows ?? [],
-          usage,
-        };
-      }),
-    );
+    return this.buildProviderTelemetryEntries(targetConfigs);
   }
 
   async getLocalUsageTelemetry(input?: {
@@ -1588,14 +2586,13 @@ export class DefaultGatewayAdminService {
       throw new Error(`Unknown providerId: ${requestedProvider}`);
     }
 
-    const targetProviderIds = (requestedProvider
-      ? [requestedProvider]
-      : configured.map((entry) => entry.providerId.trim().toLowerCase())
-    ).filter((providerId) => providerId.length > 0);
-
-    const fallbackTelemetry = await this.getProviderTelemetry(
-      requestedProvider ? { providerId: requestedProvider } : undefined,
-    );
+    const targetConfigs = requestedProvider
+      ? [configuredById.get(requestedProvider)!]
+      : configured;
+    const targetProviderIds = targetConfigs
+      .map((entry) => entry.providerId.trim().toLowerCase())
+      .filter((providerId) => providerId.length > 0);
+    const fallbackTelemetry = await this.buildProviderTelemetryEntries(targetConfigs);
     if (!this.localUsageTelemetryService) {
       const fetchedAt = new Date().toISOString();
       return fallbackTelemetry.map((entry) => ({
@@ -1637,6 +2634,40 @@ export class DefaultGatewayAdminService {
     });
   }
 
+  private async buildProviderTelemetryEntries(
+    configs: PublicProviderRuntimeConfig[],
+  ): Promise<ProviderTelemetry[]> {
+    const usageByProvider = this.providerUsageById();
+
+    return Promise.all(
+      configs.map(async (config) => this.buildProviderTelemetryEntry(
+        config,
+        usageByProvider.get(config.providerId.trim().toLowerCase()),
+      )),
+    );
+  }
+
+  private async buildProviderTelemetryEntry(
+    config: PublicProviderRuntimeConfig,
+    usage?: ProviderUsageSnapshotPayload,
+  ): Promise<ProviderTelemetry> {
+    const providerId = config.providerId.trim().toLowerCase();
+    const fallbackStatus = usage?.status ?? "unknown";
+    const fetchedAt = new Date().toISOString();
+    const probe = await this.probeLocalProviderTelemetry(config, usage);
+
+    return {
+      providerId,
+      status: probe?.status ?? fallbackStatus,
+      source: probe?.source ?? "usage_snapshot",
+      fetchedAt,
+      message: probe?.message ?? usage?.message,
+      accountLabel: probe?.accountLabel,
+      windows: probe?.windows ?? [],
+      usage,
+    };
+  }
+
   getProviderSettings(providerIdRaw: string): PublicProviderRuntimeConfig {
     const providerId = normalizeProviderId(providerIdRaw);
     if (!providerId) {
@@ -1675,6 +2706,7 @@ export class DefaultGatewayAdminService {
       baseURL,
       hasApiKey,
       apiKeySecretRef: existing?.apiKeySecretRef,
+      authMode: resolveProviderAuthMode(providerId, existing?.authMode),
       allowedModels,
       allowCustomModel,
       nativeCliToolsEnabled,
@@ -1688,6 +2720,7 @@ export class DefaultGatewayAdminService {
     model?: string;
     apiKey?: string;
     apiKeySecretRef?: string;
+    authMode?: GatewayProviderAuthMode;
     baseURL?: string;
     allowedModels?: string[];
     allowCustomModel?: boolean;
@@ -1701,6 +2734,7 @@ export class DefaultGatewayAdminService {
     model?: string;
     apiKey?: string;
     apiKeySecretRef?: string;
+    authMode?: GatewayProviderAuthMode;
     baseURL?: string;
     allowedModels?: string[];
     allowCustomModel?: boolean;
@@ -1729,6 +2763,7 @@ export class DefaultGatewayAdminService {
 
     const requestedApiKey = input.apiKey?.trim();
     const requestedSecretRef = input.apiKeySecretRef?.trim();
+    const authMode = resolveRequestedProviderAuthMode(providerId, input.authMode, existing?.authMode);
     if (requestedSecretRef) {
       if (!this.providerSecretRefService) {
         throw new Error("Provider secret ref service unavailable");
@@ -1761,8 +2796,11 @@ export class DefaultGatewayAdminService {
     const config: ProviderRuntimeConfig = {
       providerId,
       model,
-      apiKey: requestedApiKey || (requestedSecretRef ? undefined : existing?.apiKey),
+      apiKey: authMode === "api_key"
+        ? (requestedApiKey || (requestedSecretRef ? undefined : existing?.apiKey))
+        : undefined,
       apiKeySecretRef: requestedSecretRef || (requestedApiKey ? undefined : existing?.apiKeySecretRef),
+      authMode,
       baseURL: inputHasBaseURL ? normalizedInputBaseURL : existing?.baseURL,
       allowedModels,
       allowCustomModel,
@@ -1773,6 +2811,7 @@ export class DefaultGatewayAdminService {
 
     this.providerConfigs.set(providerId, config);
     this.applyConfigToEnvironment(config);
+    this.invalidateProviderRuntimeCaches(providerId);
 
     if (this.providerConfigRepo) {
       this.providerConfigRepo.upsert({
@@ -1783,6 +2822,7 @@ export class DefaultGatewayAdminService {
         allowCustomModel: config.allowCustomModel,
         nativeCliToolsEnabled: config.nativeCliToolsEnabled,
         apiKeySecretRef: config.apiKeySecretRef,
+        authMode: config.authMode,
         source: config.source,
       });
     }
@@ -1801,6 +2841,7 @@ export class DefaultGatewayAdminService {
       baseURL: config.baseURL,
       hasApiKey: Boolean(config.apiKey || config.apiKeySecretRef),
       apiKeySecretRef: config.apiKeySecretRef,
+      authMode: config.authMode,
       allowedModels: [...config.allowedModels],
       allowCustomModel: config.allowCustomModel,
       nativeCliToolsEnabled: config.nativeCliToolsEnabled,
@@ -1836,6 +2877,7 @@ export class DefaultGatewayAdminService {
         apiKeySecretRef: undefined,
         updatedAt: new Date().toISOString(),
       });
+      this.invalidateProviderRuntimeCaches(providerId);
     }
 
     return deleted;
@@ -1850,6 +2892,7 @@ export class DefaultGatewayAdminService {
     const existing = this.providerConfigs.get(providerId);
     this.providerConfigs.delete(providerId);
     this.providerConfigRepo?.remove(providerId);
+    this.invalidateProviderRuntimeCaches(providerId);
 
     const keyEnv = API_KEY_ENV_BY_PROVIDER[providerId];
     if (keyEnv) {
@@ -1960,10 +3003,10 @@ export class DefaultGatewayAdminService {
     };
   }
 
-  resolveProviderForProfile(
+  async resolveProviderForProfile(
     providerHintRaw?: string,
     modelHint?: string,
-  ): ResolvedProviderSelection {
+  ): Promise<ResolvedProviderSelection> {
     const providerHint = normalizeProviderId(providerHintRaw);
     const providerFromModel = deriveProviderFromModel(modelHint);
     if (providerHint && providerFromModel && providerHint !== providerFromModel) {
@@ -1980,11 +3023,12 @@ export class DefaultGatewayAdminService {
       || this.resolveEmbeddedMacDefaultProvider()
       || "openrouter";
     let enforcedModelHint = modelHint?.trim() || undefined;
+    const explicitSelection = Boolean(providerFromModel || providerHint);
     const policyRestrictionReason = this.providerPolicyRestrictionReason(selectedProvider);
     if (policyRestrictionReason) {
       const fallback = this.resolveFallbackProviderModel();
       if (!fallback) {
-        throw new Error(policyRestrictionReason);
+        throwGatewayError("FAILED_PRECONDITION", policyRestrictionReason);
       }
       this.logger.warn("Profile runtime blocked by embedded policy; using fallback runtime/model", {
         requestedProvider: selectedProvider,
@@ -1994,6 +3038,33 @@ export class DefaultGatewayAdminService {
       selectedProvider = fallback.providerHint;
       enforcedModelHint = fallback.modelHint;
     }
+
+    const configuredSelection = this.providerConfigs.get(selectedProvider);
+    if (explicitSelection || configuredSelection) {
+      const resolvedModel = await this.resolveValidatedProviderModel({
+        providerHintRaw: selectedProvider,
+        modelHintRaw: enforcedModelHint || configuredSelection?.model,
+        repairIfInvalid: true,
+      });
+      if (!resolvedModel.valid || !resolvedModel.providerHint || !resolvedModel.modelHint) {
+        throwGatewayError(
+          "FAILED_PRECONDITION",
+          resolvedModel.reason || "Runtime/model selection is invalid",
+        );
+      }
+      if (resolvedModel.fallbackApplied) {
+        this.logger.warn("Profile runtime unavailable; using fallback runtime/model", {
+          requestedProvider: selectedProvider,
+          requestedModel: enforcedModelHint || configuredSelection?.model || "",
+          fallbackProvider: resolvedModel.providerHint,
+          fallbackModel: resolvedModel.modelHint,
+          reason: resolvedModel.fallbackReason,
+        });
+      }
+      selectedProvider = resolvedModel.providerHint;
+      enforcedModelHint = resolvedModel.modelHint;
+    }
+
     if (selectedProvider === "apple") {
       this.ensureAppleProviderRuntimeEligibleSync("resolveProviderForProfile");
     }
@@ -2012,8 +3083,11 @@ export class DefaultGatewayAdminService {
 
     const baseURL = this.resolveProviderBaseURL(selectedProvider, config?.baseURL);
     const apiKeySecretRef = config?.apiKeySecretRef;
-    let apiKey = config?.apiKey || keyFromEnvironment(selectedProvider);
-    if (!apiKey && apiKeySecretRef) {
+    const authMode = resolveProviderAuthMode(selectedProvider, config?.authMode);
+    let apiKey = authMode === "api_key"
+      ? (config?.apiKey || keyFromEnvironment(selectedProvider))
+      : undefined;
+    if (!apiKey && apiKeySecretRef && authMode === "api_key") {
       if (!this.providerSecretRefService) {
         throw new Error(`Provider secret ref service unavailable for ref: ${apiKeySecretRef}`);
       }
@@ -2029,6 +3103,7 @@ export class DefaultGatewayAdminService {
       model,
       apiKey,
       apiKeySecretRef,
+      authMode,
       baseURL,
       isLocal: isLocalProvider(selectedProvider)
         || (selectedProvider === "openai" && isLikelyLocalBaseURL(baseURL)),
@@ -2117,7 +3192,7 @@ export class DefaultGatewayAdminService {
         return this.probeCodexRateLimits(usage);
 
       case "claude":
-        return this.probeClaudeAuthStatus();
+        return this.probeClaudeCliStatus(usage);
 
       case "gemini":
         return this.probeGeminiCliStatus();
@@ -2386,9 +3461,10 @@ export class DefaultGatewayAdminService {
     });
   }
 
-  private probeClaudeAuthStatus(): LocalProviderTelemetryProbeResult {
-    const executablePath = this.findExecutable(["claude"]);
-    if (!executablePath) {
+  private probeClaudeCliStatus(
+    usage?: ProviderUsageSnapshotPayload,
+  ): LocalProviderTelemetryProbeResult {
+    if (!this.findExecutable(["claude"])) {
       return {
         source: "claude_cli",
         status: "unavailable",
@@ -2396,42 +3472,18 @@ export class DefaultGatewayAdminService {
       };
     }
 
-    const result = spawnSync(executablePath, ["auth", "status", "--json"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 1_500,
-    });
+    const status = usage?.status ?? "available";
+    const hasRecentUsage = Boolean(
+      usage && (usage.totalTokens > 0 || usage.spentUsd > 0 || usage.status === "available"),
+    );
 
-    if (result.status !== 0 || !result.stdout?.trim()) {
-      return {
-        source: "claude_cli",
-        status: "unknown",
-        message: result.stderr?.trim() || "Unable to read Claude CLI auth status.",
-      };
-    }
-
-    try {
-      const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
-      const loggedIn = parsed.loggedIn === true;
-      const accountLabel = joinNonEmpty(
-        [asString(parsed.subscriptionType), asString(parsed.email)],
-        " • ",
-      );
-      return {
-        source: "claude_cli",
-        status: loggedIn ? "available" : "unavailable",
-        accountLabel: accountLabel || undefined,
-        message: loggedIn
-          ? "Claude CLI does not expose quota windows via public auth status output."
-          : "Claude CLI is not logged in.",
-      };
-    } catch {
-      return {
-        source: "claude_cli",
-        status: "unknown",
-        message: "Unable to parse Claude CLI auth status output.",
-      };
-    }
+    return {
+      source: "claude_cli",
+      status,
+      message: hasRecentUsage
+        ? "Claude CLI is installed; background auth status is not probed. Recent usage indicates the runtime is active."
+        : "Claude CLI is installed; background auth status is not probed during telemetry refresh.",
+    };
   }
 
   private probeGeminiCliStatus(): LocalProviderTelemetryProbeResult {
@@ -2562,6 +3614,7 @@ export class DefaultGatewayAdminService {
           model: normalizedDefaultModel,
           apiKey: defaultApiKey || keyFromEnvironment(this.defaultProviderId),
           apiKeySecretRef: undefined,
+          authMode: resolveProviderAuthMode(this.defaultProviderId),
           baseURL: this.resolveProviderBaseURL(
             this.defaultProviderId,
             this.defaultProviderId === "openai" ? process.env[OPENAI_BASE_URL_ENV] : undefined,
@@ -2586,8 +3639,11 @@ export class DefaultGatewayAdminService {
           providerId,
           existing?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || this.defaultModelId || "",
         ),
-        apiKey: apiKey || existing?.apiKey,
+        apiKey: resolveProviderAuthMode(providerId, existing?.authMode) === "api_key"
+          ? (apiKey || existing?.apiKey)
+          : undefined,
         apiKeySecretRef: existing?.apiKeySecretRef,
+        authMode: resolveProviderAuthMode(providerId, existing?.authMode),
         baseURL: this.resolveProviderBaseURL(
           providerId,
           providerId === "openai" ? (process.env[OPENAI_BASE_URL_ENV] || existing?.baseURL) : existing?.baseURL,
@@ -2616,12 +3672,40 @@ export class DefaultGatewayAdminService {
         model,
         apiKey: undefined,
         apiKeySecretRef: undefined,
+        authMode: undefined,
         baseURL: undefined,
         allowedModels: normalizeProviderModelList("apple", existing?.allowedModels?.length ? existing.allowedModels : [model]),
         allowCustomModel: false,
         nativeCliToolsEnabled: false,
         updatedAt: now,
         source: existing?.source ?? "env",
+      });
+    }
+
+    // Auto-seed detected CLI executor providers (claude, codex, gemini).
+    // These runtimes use their own auth (Max subscription, Google account, etc.)
+    // and don't require API keys — seed them if the executable is on the host.
+    const cliExecutorIds = ["claude", "codex", "gemini"] as const;
+    for (const providerId of cliExecutorIds) {
+      if (this.providerConfigs.has(providerId)) continue;
+      if (!this.providerVisibleInCatalog(providerId)) continue;
+      if (!this.findExecutable([providerId])) continue;
+      const defaultModel = DEFAULT_MODEL_BY_PROVIDER[providerId];
+      if (!defaultModel) continue;
+      const model = withProviderPrefix(providerId, defaultModel);
+      const manifest = LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? [];
+      this.providerConfigs.set(providerId, {
+        providerId,
+        model,
+        apiKey: undefined,
+        apiKeySecretRef: undefined,
+        authMode: undefined,
+        baseURL: undefined,
+        allowedModels: normalizeProviderModelList(providerId, manifest.length > 0 ? manifest : [model]),
+        allowCustomModel: false,
+        nativeCliToolsEnabled: false,
+        updatedAt: now,
+        source: "env",
       });
     }
   }
@@ -2886,23 +3970,96 @@ export class DefaultGatewayAdminService {
     };
   }
 
-  private findExecutable(commands: string[]): string | null {
-    for (const command of commands) {
-      try {
-        const result = spawnSync("which", [command], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
+  private async detectClaudeAgentSdkCatalog(
+    config?: ProviderRuntimeConfig,
+    forceRefresh = false,
+  ): Promise<ClaudeAgentSdkCatalogProbe> {
+    const providerId = "claude-agent-sdk";
+    const cacheKey = providerId;
+    const now = Date.now();
+    if (forceRefresh) {
+      this.claudeAgentSdkDetectionCache.delete(cacheKey);
+      this.claudeAgentSdkDetectionInFlight.delete(cacheKey);
+    }
+
+    const cached = this.claudeAgentSdkDetectionCache.get(cacheKey);
+    if (!forceRefresh && cached && cached.expiresAt > now) {
+      return cloneClaudeAgentSdkCatalogProbe(cached.value);
+    }
+
+    const inFlight = forceRefresh ? undefined : this.claudeAgentSdkDetectionInFlight.get(cacheKey);
+    if (inFlight) {
+      return cloneClaudeAgentSdkCatalogProbe(await inFlight);
+    }
+
+    const requestPromise = (async () => {
+      const model = withProviderPrefix(
+        providerId,
+        config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
+      );
+      const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "api_key";
+      if (this.claudeAgentSdkMetadataProbe) {
+        return await this.claudeAgentSdkMetadataProbe({
+          providerId,
+          model,
+          authMode,
+          apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
         });
-        if (result.status === 0 && result.stdout) {
-          const resolved = result.stdout.trim();
-          if (resolved) return resolved;
-        }
-      } catch {
-        // Ignore and continue.
+      }
+
+      const provider = new ClaudeAgentSdkModelProvider({
+        id: providerId,
+        name: providerDisplayName(providerId),
+        model,
+        apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+        authMode: authMode as "api_key" | "host_login",
+      });
+      const probe = await provider.probeMetadata();
+      return mapClaudeAgentSdkProbeResult(probe);
+    })();
+
+    this.claudeAgentSdkDetectionInFlight.set(cacheKey, requestPromise);
+    const value = await requestPromise;
+    this.claudeAgentSdkDetectionInFlight.delete(cacheKey);
+    this.claudeAgentSdkDetectionCache.set(cacheKey, {
+      expiresAt: Date.now() + CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
+      value,
+    });
+    return cloneClaudeAgentSdkCatalogProbe(value);
+  }
+
+  private resolveConfiguredProviderApiKey(
+    providerId: string,
+    config?: ProviderRuntimeConfig,
+  ): string | undefined {
+    if (config?.apiKey) {
+      return config.apiKey;
+    }
+
+    if (config?.apiKeySecretRef) {
+      const resolved = this.providerSecretRefService?.resolveSecret(config.apiKeySecretRef);
+      if (resolved?.secret?.trim()) {
+        return resolved.secret.trim();
       }
     }
 
-    return null;
+    return keyFromEnvironment(providerId);
+  }
+
+  private invalidateProviderRuntimeCaches(providerId: string): void {
+    if (providerId === "claude-agent-sdk") {
+      this.claudeAgentSdkDetectionCache.delete(providerId);
+      this.claudeAgentSdkDetectionInFlight.delete(providerId);
+    }
+  }
+
+  private findExecutable(commands: string[]): string | null {
+    const resolved = this.executableResolver.resolve({
+      cacheKey: commands.join("|"),
+      commands,
+      versionProbe: { args: ["--version"], timeoutMs: 750 },
+    });
+    return resolved.path ?? null;
   }
 
   private detectCodexCliModels(): string[] {
@@ -3028,6 +4185,7 @@ function rowToProviderConfig(row: ProviderConfigRow): ProviderRuntimeConfig {
     providerId: row.provider_id,
     model: row.model,
     apiKeySecretRef: row.api_key_secret_ref ?? undefined,
+    authMode: normalizeProviderAuthMode(row.auth_mode),
     baseURL: row.base_url ?? undefined,
     allowedModels,
     allowCustomModel: row.allow_custom_model === 1,
@@ -3035,6 +4193,48 @@ function rowToProviderConfig(row: ProviderConfigRow): ProviderRuntimeConfig {
     updatedAt: row.updated_at,
     source: row.source === "env" ? "env" : "runtime",
   };
+}
+
+function cloneClaudeAgentSdkCatalogProbe(
+  probe: ClaudeAgentSdkCatalogProbe,
+): ClaudeAgentSdkCatalogProbe {
+  return {
+    authStatus: probe.authStatus,
+    authAccount: probe.authAccount ? { ...probe.authAccount } : undefined,
+    models: (probe.models ?? []).map((model) => ({ ...model })),
+    detectionError: probe.detectionError,
+  };
+}
+
+function mapClaudeAgentSdkProbeResult(
+  probe: ClaudeAgentSdkProbeResult,
+): ClaudeAgentSdkCatalogProbe {
+  return {
+    authStatus: probe.authStatus,
+    authAccount: mapClaudeAgentSdkAuthAccount(probe.authAccount),
+    models: probe.models.map((model) => ({
+      id: model.id,
+      displayName: model.displayName,
+      contextWindow: model.contextWindow,
+    })),
+    detectionError: probe.detectionError,
+  };
+}
+
+function mapClaudeAgentSdkAuthAccount(
+  account?: ClaudeAgentSdkAuthAccount,
+): GatewayProviderAuthAccount | undefined {
+  if (!account) {
+    return undefined;
+  }
+  const normalized: GatewayProviderAuthAccount = {
+    email: account.email?.trim() || undefined,
+    organization: account.organization?.trim() || undefined,
+    subscriptionType: account.subscriptionType?.trim() || undefined,
+    apiProvider: account.apiProvider?.trim() || undefined,
+    tokenSource: account.tokenSource?.trim() || undefined,
+  };
+  return Object.values(normalized).some(Boolean) ? normalized : undefined;
 }
 
 function normalizeProviderId(providerId?: string): string | undefined {
@@ -3053,6 +4253,10 @@ function parseStringArray(value: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+function mergeSkillIds(existing: string[], required: readonly string[]): string[] {
+  return Array.from(new Set([...existing, ...required].map((entry) => entry.trim()).filter(Boolean)));
 }
 
 function parseModelConfig(
@@ -3150,23 +4354,6 @@ function withProviderPrefix(providerId: string, modelId: string): string {
     return `${providerId}/${trimmed.slice(providerPrefix.length)}`;
   }
   return `${providerId}/${trimmed}`;
-}
-
-function inferCatalogContextWindow(providerIdRaw: string, modelIdRaw: string): number | undefined {
-  const providerId = providerIdRaw.trim().toLowerCase();
-  if (!providerId) return undefined;
-
-  // Cloud API catalogs do not consistently expose max-context metadata via
-  // runtime catalog endpoints. Provide conservative defaults for providers
-  // where model families are known to share a stable context window.
-  if (providerId === "claude") {
-    const normalizedModelId = withProviderPrefix(providerId, modelIdRaw).trim().toLowerCase();
-    if (normalizedModelId.startsWith(`${providerId}/`)) {
-      return 200_000;
-    }
-  }
-
-  return undefined;
 }
 
 function normalizeProviderBaseURL(providerId: string, baseURLRaw?: string): string | undefined {
@@ -3268,7 +4455,7 @@ function normalizeSelectionMode(value: unknown): MainAgentSelectionMode | null {
     return null;
   }
   const normalized = value.trim();
-  if (normalized === "provider_model" || normalized === "profile_template") {
+  if (normalized === "provider_model" || normalized === "agent_definition") {
     return normalized;
   }
   return null;
@@ -3286,6 +4473,10 @@ function providerDisplayName(providerId: string): string {
   switch (providerId) {
     case "apple":
       return "Apple Foundation";
+    case "anthropic":
+      return "Anthropic";
+    case "claude-agent-sdk":
+      return "Claude Agent SDK";
     case "openai":
       return "OpenAI";
     case "openrouter":
@@ -3311,9 +4502,16 @@ function providerDisplayName(providerId: string): string {
   }
 }
 
-function providerRequiresApiKey(providerId: string, baseURL?: string): boolean {
+function providerRequiresApiKey(
+  providerId: string,
+  baseURL?: string,
+  authMode?: GatewayProviderAuthMode,
+): boolean {
   if (isLocalProvider(providerId)) {
     return false;
+  }
+  if (providerId === "claude-agent-sdk") {
+    return authMode !== "host_login";
   }
   if (providerId === "openai") {
     return !isLikelyLocalBaseURL(baseURL);
@@ -3325,6 +4523,10 @@ function providerInstallHint(providerId: string): string | undefined {
   switch (providerId) {
     case "apple":
       return "Runs on-device on Apple Silicon Macs with Apple Intelligence enabled.";
+    case "anthropic":
+      return "Add ANTHROPIC_API_KEY or configure a runtime key for direct Anthropic API access.";
+    case "claude-agent-sdk":
+      return "Use ANTHROPIC_API_KEY for direct SDK API access, or sign in with Claude on this gateway host to use a local subscription session.";
     case "claude":
       return "Install Claude Code and sign in locally.";
     case "codex":
@@ -3348,6 +4550,70 @@ function providerInstallHint(providerId: string): string | undefined {
     default:
       return undefined;
   }
+}
+
+function providerSupportedAuthModes(providerId: string): GatewayProviderAuthMode[] {
+  return [...(PROVIDER_AUTH_MODES[providerId] ?? [])];
+}
+
+function resolveProviderAuthMode(
+  providerId: string,
+  preferred?: GatewayProviderAuthMode,
+): GatewayProviderAuthMode | undefined {
+  const supported = providerSupportedAuthModes(providerId);
+  if (supported.length === 0) {
+    return undefined;
+  }
+  if (preferred && supported.includes(preferred)) {
+    return preferred;
+  }
+  return supported[0];
+}
+
+function resolveRequestedProviderAuthMode(
+  providerId: string,
+  requested?: GatewayProviderAuthMode,
+  existing?: GatewayProviderAuthMode,
+): GatewayProviderAuthMode | undefined {
+  const supported = providerSupportedAuthModes(providerId);
+  if (supported.length === 0) {
+    if (requested) {
+      throw new Error(`Provider ${providerId} does not support configurable authentication modes.`);
+    }
+    return undefined;
+  }
+  if (!requested) {
+    return resolveProviderAuthMode(providerId, existing);
+  }
+  if (!supported.includes(requested)) {
+    throw new Error(`Provider ${providerId} does not support auth mode ${requested}.`);
+  }
+  return requested;
+}
+
+function normalizeProviderAuthMode(value?: string | null): GatewayProviderAuthMode | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "api_key" || normalized === "host_login") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function inferDefaultProviderAuthStatus(
+  providerId: string,
+  authMode: GatewayProviderAuthMode | undefined,
+  hasApiKey: boolean,
+): GatewayProviderAuthStatus | undefined {
+  if (authMode === "host_login" && providerId === "claude-agent-sdk") {
+    return "needs_auth";
+  }
+  if (authMode === "api_key") {
+    return hasApiKey ? "authenticated" : "needs_key";
+  }
+  return undefined;
 }
 
 function providerRecommended(providerId: string): boolean {
@@ -3386,7 +4652,8 @@ function isLikelyLocalBaseURL(baseURL?: string): boolean {
 function keyFromEnvironment(providerId: string): string | undefined {
   const envName = API_KEY_ENV_BY_PROVIDER[providerId];
   if (!envName) return undefined;
-  return process.env[envName];
+  const value = process.env[envName]?.trim();
+  return value || undefined;
 }
 
 function mapFallbackTelemetrySource(source: ProviderTelemetrySourcePayload): string {

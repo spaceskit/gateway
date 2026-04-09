@@ -6,6 +6,7 @@ import type { Database } from "bun:sqlite";
 
 export interface ProfileRow {
   profile_id: string;
+  persona_id: string;
   name: string;
   description: string;
   can_moderate: number;
@@ -38,6 +39,7 @@ export interface ProfileRevisionRow {
 
 export interface CreateProfileInput {
   profileId: string;
+  personaId?: string;
   name: string;
   description?: string;
   canModerate?: boolean;
@@ -52,6 +54,7 @@ export interface CreateProfileInput {
 
 export interface UpdateProfileInput {
   profileId: string;
+  personaId?: string;
   name?: string;
   description?: string;
   personalityPrompt?: string;
@@ -65,7 +68,9 @@ export interface UpdateProfileInput {
 }
 
 export class ProfileRepository {
-  constructor(private db: Database) {}
+  constructor(private db: Database) {
+    this.ensureCanonicalColumns();
+  }
 
   create(input: CreateProfileInput): ProfileRow {
     const now = new Date().toISOString();
@@ -74,11 +79,12 @@ export class ProfileRepository {
     this.db.transaction(() => {
       this.db.query(`
         INSERT INTO agent_profiles(
-          profile_id, name, description, can_moderate, visibility,
+          profile_id, persona_id, name, description, can_moderate, visibility,
           is_default, active_revision, archived, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 1, ?, 1, 0, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, 1, 0, ?, ?)
       `).run(
         input.profileId,
+        input.personaId ?? "",
         input.name,
         input.description ?? "",
         input.canModerate ? 1 : 0,
@@ -193,6 +199,7 @@ export class ProfileRepository {
       this.db.query(`
         UPDATE agent_profiles
         SET
+          persona_id = ?,
           name = ?,
           description = ?,
           can_moderate = ?,
@@ -201,6 +208,7 @@ export class ProfileRepository {
           updated_at = ?
         WHERE profile_id = ?
       `).run(
+        input.personaId ?? profile.persona_id ?? "",
         input.name ?? profile.name,
         input.description ?? profile.description,
         input.canModerate === undefined ? profile.can_moderate : input.canModerate ? 1 : 0,
@@ -227,6 +235,18 @@ export class ProfileRepository {
     this.db
       .query("UPDATE agent_profiles SET archived = 0, updated_at = ? WHERE profile_id = ?")
       .run(new Date().toISOString(), profileId);
+  }
+
+  private ensureCanonicalColumns(): void {
+    const columns = this.db
+      .query("PRAGMA table_info(agent_profiles)")
+      .all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map((column) => column.name));
+    if (!columnNames.has("persona_id")) {
+      this.db.exec(
+        "ALTER TABLE agent_profiles ADD COLUMN persona_id TEXT NOT NULL DEFAULT ''",
+      );
+    }
   }
 }
 

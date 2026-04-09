@@ -180,4 +180,26 @@ export class ExperienceRepository {
       "SELECT * FROM agent_observations WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?",
     ).all(agentId, limit) as AgentObservationRow[];
   }
+
+  deleteBySpace(
+    spaceId: string,
+    options: {
+      createdAtGte?: string;
+      createdAtLte?: string;
+    } = {},
+  ): number {
+    const where = ["space_id = ?"];
+    const values: Array<string | number> = [spaceId];
+    if (options.createdAtGte) {
+      where.push("created_at >= ?");
+      values.push(options.createdAtGte);
+    }
+    if (options.createdAtLte) {
+      where.push("created_at <= ?");
+      values.push(options.createdAtLte);
+    }
+    return this.db.prepare(
+      `DELETE FROM experiences WHERE ${where.join(" AND ")}`,
+    ).run(...values).changes;
+  }
 }

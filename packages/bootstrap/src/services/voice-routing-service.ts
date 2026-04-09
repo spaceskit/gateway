@@ -4,6 +4,8 @@ export type VoiceProviderSource =
   | "local_model"
   | "apple_speech";
 
+export type VoiceChannel = "stt" | "tts";
+
 export type VoiceFallbackReason =
   | "default"
   | "manual_override"
@@ -11,6 +13,19 @@ export type VoiceFallbackReason =
   | "local_forced";
 
 export interface VoiceRoutePreferences {
+  preferredSource?: VoiceProviderSource;
+  preferredProviderId?: string;
+  byokProviderId?: string;
+  localModelProviderId?: string;
+  appleSpeechProviderId?: string;
+  allowByokFallback?: boolean;
+  allowLocalFallback?: boolean;
+  allowAppleSpeechFallback?: boolean;
+  stt?: Partial<VoiceChannelRoutePreferences>;
+  tts?: Partial<VoiceChannelRoutePreferences>;
+}
+
+export interface VoiceChannelRoutePreferences {
   preferredSource?: VoiceProviderSource;
   preferredProviderId?: string;
   byokProviderId?: string;
@@ -29,6 +44,15 @@ export interface VoiceRoutingDecision {
   message?: string;
 }
 
+export interface VoiceChannelRoutingDecision extends VoiceRoutingDecision {
+  channel: VoiceChannel;
+}
+
+export interface VoiceChannelRoutes {
+  stt: VoiceChannelRoutingDecision;
+  tts: VoiceChannelRoutingDecision;
+}
+
 /**
  * Voice routing policy for the speech session MVP runtime.
  * Keeps decisions deterministic and simple:
@@ -37,14 +61,45 @@ export interface VoiceRoutingDecision {
  * - When managed is blocked, fall back in fixed order.
  */
 export class VoiceRoutingService {
+  resolveStartRoutes(
+    preferences: VoiceRoutePreferences,
+    managedAllowed: Partial<Record<VoiceChannel, boolean>> = {},
+  ): VoiceChannelRoutes {
+    return {
+      stt: this.resolveStartRouteForChannel(
+        "stt",
+        this.preferencesForChannel("stt", preferences),
+        managedAllowed.stt ?? true,
+      ),
+      tts: this.resolveStartRouteForChannel(
+        "tts",
+        this.preferencesForChannel("tts", preferences),
+        managedAllowed.tts ?? true,
+      ),
+    };
+  }
+
   resolveStartRoute(
     preferences: VoiceRoutePreferences,
     managedAllowed: boolean,
   ): VoiceRoutingDecision {
+    return this.resolveStartRouteForChannel(
+      "stt",
+      this.preferencesForChannel("stt", preferences),
+      managedAllowed,
+    );
+  }
+
+  resolveStartRouteForChannel(
+    channel: VoiceChannel,
+    preferences: VoiceChannelRoutePreferences,
+    managedAllowed: boolean,
+  ): VoiceChannelRoutingDecision {
     const preferredSource = preferences.preferredSource ?? "managed";
 
     if (preferredSource !== "managed") {
       return {
+        channel,
         allowed: true,
         source: preferredSource,
         providerId: this.providerIdForSource(preferredSource, preferences),
@@ -56,6 +111,7 @@ export class VoiceRoutingService {
 
     if (managedAllowed) {
       return {
+        channel,
         allowed: true,
         source: "managed",
         providerId: preferences.preferredProviderId?.trim() || "managed/default",
@@ -63,15 +119,28 @@ export class VoiceRoutingService {
       };
     }
 
-    return this.resolveFallback(preferences, "quota_fallback");
+    return this.resolveFallbackForChannel(channel, preferences, "quota_fallback");
   }
 
   resolveFallback(
     preferences: VoiceRoutePreferences,
     reason: VoiceFallbackReason = "quota_fallback",
   ): VoiceRoutingDecision {
+    return this.resolveFallbackForChannel(
+      "stt",
+      this.preferencesForChannel("stt", preferences),
+      reason,
+    );
+  }
+
+  resolveFallbackForChannel(
+    channel: VoiceChannel,
+    preferences: VoiceChannelRoutePreferences,
+    reason: VoiceFallbackReason = "quota_fallback",
+  ): VoiceChannelRoutingDecision {
     if (preferences.allowByokFallback && preferences.byokProviderId?.trim()) {
       return {
+        channel,
         allowed: true,
         source: "byok",
         providerId: preferences.byokProviderId.trim(),
@@ -81,6 +150,7 @@ export class VoiceRoutingService {
 
     if (preferences.allowLocalFallback) {
       return {
+        channel,
         allowed: true,
         source: "local_model",
         providerId: preferences.localModelProviderId?.trim() || "local/default",
@@ -90,6 +160,7 @@ export class VoiceRoutingService {
 
     if (preferences.allowAppleSpeechFallback) {
       return {
+        channel,
         allowed: true,
         source: "apple_speech",
         providerId: preferences.appleSpeechProviderId?.trim() || "apple/speech",
@@ -98,15 +169,33 @@ export class VoiceRoutingService {
     }
 
     return {
+      channel,
       allowed: false,
       reason: "no_route",
       message: "No fallback voice route is available",
     };
   }
 
+  private preferencesForChannel(
+    channel: VoiceChannel,
+    preferences: VoiceRoutePreferences,
+  ): VoiceChannelRoutePreferences {
+    const channelPreferences = channel === "stt" ? preferences.stt : preferences.tts;
+    return {
+      preferredSource: channelPreferences?.preferredSource ?? preferences.preferredSource,
+      preferredProviderId: channelPreferences?.preferredProviderId ?? preferences.preferredProviderId,
+      byokProviderId: channelPreferences?.byokProviderId ?? preferences.byokProviderId,
+      localModelProviderId: channelPreferences?.localModelProviderId ?? preferences.localModelProviderId,
+      appleSpeechProviderId: channelPreferences?.appleSpeechProviderId ?? preferences.appleSpeechProviderId,
+      allowByokFallback: channelPreferences?.allowByokFallback ?? preferences.allowByokFallback,
+      allowLocalFallback: channelPreferences?.allowLocalFallback ?? preferences.allowLocalFallback,
+      allowAppleSpeechFallback: channelPreferences?.allowAppleSpeechFallback ?? preferences.allowAppleSpeechFallback,
+    };
+  }
+
   private providerIdForSource(
     source: VoiceProviderSource,
-    preferences: VoiceRoutePreferences,
+    preferences: VoiceChannelRoutePreferences,
   ): string {
     switch (source) {
       case "managed":

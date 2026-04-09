@@ -18,6 +18,7 @@ export type CapabilityType =
   | "calendar"
   | "notes"
   | "contacts"
+  | "email"
   | "messaging"
   | "speech"
   | "notifications"
@@ -36,6 +37,7 @@ export const CAPABILITY_TYPES = [
   "calendar",
   "notes",
   "contacts",
+  "email",
   "messaging",
   "speech",
   "notifications",

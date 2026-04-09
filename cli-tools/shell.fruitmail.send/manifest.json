@@ -1,0 +1,52 @@
+{
+  "id": "shell.fruitmail.send",
+  "toolName": "shell.fruitmail.send",
+  "displayName": "Send Email",
+  "description": "Send an email via the macOS mail command. No additional permissions required.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "send",
+  "toolGroupDisplayName": "Send",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "Recipient email address."
+      },
+      "subject": {
+        "type": "string",
+        "description": "Email subject line."
+      },
+      "body": {
+        "type": "string",
+        "description": "Email body text."
+      },
+      "cc": {
+        "type": "string",
+        "description": "Optional CC recipient email address."
+      }
+    },
+    "required": [
+      "to",
+      "subject",
+      "body"
+    ]
+  },
+  "outputHint": "Returns send confirmation.",
+  "schemaVersion": 1,
+  "wrapperVersion": "0.1.0",
+  "enabled": true,
+  "runtime": {
+    "type": "shell",
+    "command": "node",
+    "args": [
+      "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+      "send",
+      "{{payload}}"
+    ],
+    "cwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+    "timeoutMs": 30000
+  }
+}

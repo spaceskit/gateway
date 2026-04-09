@@ -1,7 +1,8 @@
-import type { CapabilityType, SpaceAdminService } from "@spaceskit/core";
+import { randomUUID } from "node:crypto";
+import type { CapabilityProvider, CapabilityType, SpaceAdminService } from "@spaceskit/core";
 import type { CapabilityRegistry } from "@spaceskit/core";
 import type { GatewayCoreProfileId } from "@spaceskit/gateway-core";
-import { SpaceToolPolicyRepository } from "@spaceskit/persistence";
+import { type AuditEventsRepository, SpaceToolPolicyRepository } from "@spaceskit/persistence";
 import { DefaultGatewayPolicyService } from "./gateway-policy-service.js";
 import { GatewayCapabilityAccessService } from "./gateway-capability-access-service.js";
 
@@ -11,6 +12,7 @@ export type ToolDenyReasonCode =
   | "principal_grant_denied"
   | "space_tool_denied"
   | "space_tool_allowlist_miss"
+  | "space_connector_disabled"
   | "agent_scope_denied"
   | "mcp_unavailable";
 
@@ -48,19 +50,59 @@ export interface SpaceToolPolicyServiceOptions {
   spaceMcpService?: {
     isConfiguredForSpace: (spaceId: string) => boolean;
   };
+  cliToolService?: {
+    getTool: (toolId: string) => { id: string; bundleId?: string } | undefined;
+  };
+  auditRepo?: AuditEventsRepository;
   now?: () => Date;
 }
 
 interface SpaceToolPolicyConfig {
   allowed: Set<string>;
   denied: Set<string>;
+  connectorMode: SpaceConnectorPolicyMode;
+  connectorEntries: SpaceConnectorPolicyEntry[];
+  connectorDisabledSelectors: Set<string>;
   version: string;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+export type SpaceConnectorPolicyMode = "all_enabled" | "custom";
+export type SpaceConnectorPolicySourceKind = "connector_family" | "cli_bundle" | "connector_instance";
+export type SpaceConnectorPolicyEntryState = "enabled" | "disabled";
+
+export interface SpaceConnectorPolicyEntry {
+  sourceKind: SpaceConnectorPolicySourceKind;
+  sourceId: string;
+  state: SpaceConnectorPolicyEntryState;
+}
+
+export interface SpaceConnectorPolicyRecord {
+  spaceId: string;
+  mode: SpaceConnectorPolicyMode;
+  entries: SpaceConnectorPolicyEntry[];
+  policyVersion: string;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+export interface ToolProviderVisibility {
+  visibleProviderIds: string[];
+  deniedProviderIds: string[];
+  denyReasonCode?: ToolDenyReasonCode;
+  denyReason?: string;
 }
 
 const NETWORK_CAPABILITIES = new Set<CapabilityType>(["browser", "messaging", "mcp"]);
 const HARD_BLOCKS_BY_PROFILE: Record<GatewayCoreProfileId, Set<string>> = {
   embedded: new Set<string>(),
   external: new Set<string>(),
+};
+const SOURCE_SELECTOR_PREFIXES: Record<SpaceConnectorPolicySourceKind, string> = {
+  connector_family: "connector_family:",
+  cli_bundle: "cli_bundle:",
+  connector_instance: "connector_instance:",
 };
 
 export class SpaceToolPolicyService {
@@ -75,6 +117,7 @@ export class SpaceToolPolicyService {
     principalId?: string;
     deviceId?: string;
     agentId?: string;
+    accessMode?: "default" | "full_access";
   }): Promise<EffectiveToolMatrix> {
     const spaceId = normalizeRequired(input.spaceId, "spaceId");
     const principalId = normalizeOptional(input.principalId);
@@ -94,6 +137,11 @@ export class SpaceToolPolicyService {
     const matrix: EffectiveToolOperation[] = operations.map((candidate) => {
       const reasons: ToolDenyReason[] = [];
       const operationId = `${candidate.capability}.${candidate.operation}`;
+      const providerVisibility = this.resolveToolProviderVisibility({
+        spaceId,
+        capability: candidate.capability,
+        operation: candidate.operation,
+      });
 
       if (this.isHardBlocked(operationId)) {
         reasons.push({
@@ -137,6 +185,12 @@ export class SpaceToolPolicyService {
           message: `Not included in space tool allowlist: ${operationId}`,
         });
       }
+      if (providerVisibility.visibleProviderIds.length === 0 && providerVisibility.deniedProviderIds.length > 0) {
+        reasons.push({
+          code: "space_connector_disabled",
+          message: providerVisibility.denyReason ?? `All providers for ${operationId} are disabled by space connector policy.`,
+        });
+      }
 
       if (assignment?.securityScope) {
         const scope = assignment.securityScope;
@@ -176,7 +230,9 @@ export class SpaceToolPolicyService {
         operationId,
         capability: candidate.capability,
         operation: candidate.operation,
-        providerIds: candidate.providerIds,
+        providerIds: providerVisibility.visibleProviderIds.length > 0
+          ? providerVisibility.visibleProviderIds
+          : candidate.providerIds,
         allowed: reasons.length === 0,
         denyReasons: reasons,
       };
@@ -191,6 +247,141 @@ export class SpaceToolPolicyService {
       operations: matrix,
       generatedAt: this.now().toISOString(),
     };
+  }
+
+  getConnectorPolicy(input: {
+    spaceId: string;
+  }): SpaceConnectorPolicyRecord {
+    const spaceId = normalizeRequired(input.spaceId, "spaceId");
+    const policy = this.resolveSpaceToolPolicy(spaceId);
+    return {
+      spaceId,
+      mode: policy.connectorMode,
+      entries: policy.connectorEntries,
+      policyVersion: policy.version,
+      updatedBy: policy.updatedBy,
+      updatedAt: policy.updatedAt,
+    };
+  }
+
+  async updateConnectorPolicy(input: {
+    spaceId: string;
+    mode: SpaceConnectorPolicyMode;
+    entries?: SpaceConnectorPolicyEntry[];
+    updatedBy?: string;
+  }): Promise<SpaceConnectorPolicyRecord> {
+    const spaceId = normalizeRequired(input.spaceId, "spaceId");
+    const current = this.resolveSpaceToolPolicy(spaceId);
+    const normalizedEntries = input.mode === "custom"
+      ? normalizeConnectorEntries(input.entries ?? [])
+      : [];
+    const allowedRaw = parseToolListExcludingSourceSelectors(current.allowed);
+    const deniedRaw = parseToolListExcludingSourceSelectors(current.denied);
+    const allowedTools = [
+      ...allowedRaw,
+      ...normalizedEntries
+        .filter((entry) => entry.state === "enabled")
+        .map((entry) => selectorFromEntry(entry)),
+    ];
+    const deniedTools = [
+      ...deniedRaw,
+      ...normalizedEntries
+        .filter((entry) => entry.state === "disabled")
+        .map((entry) => selectorFromEntry(entry)),
+    ];
+
+    const row = this.options.toolPolicies.upsert({
+      spaceId,
+      allowedTools,
+      deniedTools,
+      policyVersion: current.version,
+      updatedBy: normalizeOptional(input.updatedBy) ?? "system",
+    });
+
+    const record: SpaceConnectorPolicyRecord = {
+      spaceId,
+      mode: input.mode,
+      entries: normalizedEntries,
+      policyVersion: row.policy_version,
+      updatedBy: row.updated_by,
+      updatedAt: row.updated_at,
+    };
+    this.recordAudit(
+      "space_connector_policy.updated",
+      normalizeOptional(input.updatedBy) ?? "system",
+      spaceId,
+      {
+        mode: record.mode,
+        entries: record.entries,
+      },
+    );
+    return record;
+  }
+
+  resolveToolProviderVisibility(input: {
+    spaceId: string;
+    capability: CapabilityType;
+    operation: string;
+    targetProvider?: string;
+  }): ToolProviderVisibility {
+    const spaceId = normalizeRequired(input.spaceId, "spaceId");
+    const targetProvider = normalizeOptional(input.targetProvider);
+    const policy = this.resolveSpaceToolPolicy(spaceId);
+    const providers = this.resolveProviders(input.capability, spaceId)
+      .filter((provider) => provider.operations.includes(input.operation))
+      .filter((provider) => !targetProvider || provider.id === targetProvider);
+
+    const visibleProviderIds: string[] = [];
+    const deniedProviderIds: string[] = [];
+    for (const provider of providers) {
+      const selectors = this.buildConnectorSelectors({
+        capability: input.capability,
+        operation: input.operation,
+        provider,
+      });
+      const denied = selectors.some((selector) => policy.connectorDisabledSelectors.has(selector));
+      if (denied) {
+        deniedProviderIds.push(provider.id);
+        continue;
+      }
+      visibleProviderIds.push(provider.id);
+    }
+
+    const operationId = `${input.capability}.${input.operation}`;
+    return {
+      visibleProviderIds,
+      deniedProviderIds,
+      denyReasonCode: visibleProviderIds.length === 0 && deniedProviderIds.length > 0
+        ? "space_connector_disabled"
+        : undefined,
+      denyReason: visibleProviderIds.length === 0 && deniedProviderIds.length > 0
+        ? `All providers for ${operationId} are disabled by space connector policy.`
+        : undefined,
+    };
+  }
+
+  recordBlockedToolInvocation(input: {
+    spaceId: string;
+    agentId?: string;
+    toolName: string;
+    reasonCode: string;
+    reason: string;
+    principalId?: string;
+    deviceId?: string;
+  }): void {
+    this.recordAudit(
+      "space_connector_policy.blocked_tool_call",
+      normalizeOptional(input.principalId) ?? normalizeOptional(input.agentId) ?? "system",
+      normalizeRequired(input.spaceId, "spaceId"),
+      {
+        agentId: normalizeOptional(input.agentId),
+        toolName: input.toolName,
+        reasonCode: input.reasonCode,
+        reason: input.reason,
+        principalId: normalizeOptional(input.principalId),
+        deviceId: normalizeOptional(input.deviceId),
+      },
+    );
   }
 
   private resolveCandidateOperations(spaceId: string): Array<{
@@ -227,15 +418,82 @@ export class SpaceToolPolicyService {
 
   private resolveSpaceToolPolicy(spaceId: string): SpaceToolPolicyConfig {
     const row = this.options.toolPolicies.getBySpace(spaceId);
+    const allowedEntries = parseToolList(row?.allowed_tools_json);
+    const deniedEntries = parseToolList(row?.denied_tools_json);
+    const connectorEntries = [
+      ...allowedEntries
+        .map((entry) => parseSourceSelector(entry, "enabled"))
+        .filter((entry): entry is SpaceConnectorPolicyEntry => entry != null),
+      ...deniedEntries
+        .map((entry) => parseSourceSelector(entry, "disabled"))
+        .filter((entry): entry is SpaceConnectorPolicyEntry => entry != null),
+    ];
     return {
-      allowed: new Set(parseToolList(row?.allowed_tools_json)),
-      denied: new Set(parseToolList(row?.denied_tools_json)),
+      allowed: new Set(allowedEntries),
+      denied: new Set(deniedEntries),
+      connectorMode: connectorEntries.length > 0 ? "custom" : "all_enabled",
+      connectorEntries,
+      connectorDisabledSelectors: new Set(
+        connectorEntries
+          .filter((entry) => entry.state === "disabled")
+          .map((entry) => selectorFromEntry(entry)),
+      ),
       version: normalizeOptional(row?.policy_version) ?? "v1",
+      updatedBy: normalizeOptional(row?.updated_by),
+      updatedAt: normalizeOptional(row?.updated_at),
     };
   }
 
   private isHardBlocked(operationId: string): boolean {
     return HARD_BLOCKS_BY_PROFILE[this.options.gatewayProfile].has(operationId);
+  }
+
+  private resolveProviders(capability: CapabilityType, spaceId: string): CapabilityProvider[] {
+    return this.options.capabilities.getProvidersForSpace(capability, spaceId);
+  }
+
+  private buildConnectorSelectors(input: {
+    capability: CapabilityType;
+    operation: string;
+    provider: CapabilityProvider;
+  }): string[] {
+    const selectors: string[] = [];
+    if (input.capability === "calendar" && input.provider.id === "apple-calendar-eventkit") {
+      selectors.push("connector_family:apple-calendar-eventkit");
+    }
+    if (input.capability === "lists" && input.provider.id === "apple-reminders-eventkit") {
+      selectors.push("connector_family:apple-reminders-eventkit");
+    }
+    if (input.capability === "email" && input.provider.id === "apple-mail-mailkit") {
+      selectors.push("connector_family:apple-mail-mailkit");
+    }
+    if (input.capability === "shell") {
+      const tool = this.options.cliToolService?.getTool(input.operation);
+      const bundleId = normalizeOptional(tool?.bundleId);
+      if (bundleId) {
+        selectors.push(`cli_bundle:${bundleId}`);
+      }
+    }
+    if (input.provider.source === "connector") {
+      selectors.push(`connector_instance:${input.provider.id}`);
+    }
+    return Array.from(new Set(selectors));
+  }
+
+  private recordAudit(
+    eventType: string,
+    actor: string,
+    spaceId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    this.options.auditRepo?.create({
+      auditEventId: randomUUID(),
+      eventType,
+      actor,
+      spaceId,
+      payload,
+      createdAt: this.now().toISOString(),
+    });
   }
 }
 
@@ -260,6 +518,59 @@ function parseToolList(raw: string | undefined): string[] {
     // Ignore parse failures.
   }
   return [];
+}
+
+function parseToolListExcludingSourceSelectors(entries: Set<string>): string[] {
+  return Array.from(entries).filter((entry) => parseSourceSelector(entry, "enabled") == null);
+}
+
+function normalizeConnectorEntries(entries: SpaceConnectorPolicyEntry[]): SpaceConnectorPolicyEntry[] {
+  const output: SpaceConnectorPolicyEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!isSourceKind(entry?.sourceKind)) continue;
+    const sourceId = normalizeOptional(entry?.sourceId);
+    if (!sourceId) continue;
+    const state = entry?.state === "disabled" ? "disabled" : "enabled";
+    const key = `${entry.sourceKind}:${sourceId}:${state}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push({
+      sourceKind: entry.sourceKind,
+      sourceId,
+      state,
+    });
+  }
+  return output;
+}
+
+function selectorFromEntry(entry: SpaceConnectorPolicyEntry): string {
+  return `${SOURCE_SELECTOR_PREFIXES[entry.sourceKind]}${entry.sourceId}`;
+}
+
+function parseSourceSelector(
+  value: string,
+  state: SpaceConnectorPolicyEntryState,
+): SpaceConnectorPolicyEntry | undefined {
+  const normalized = normalizeOptional(value);
+  if (!normalized) return undefined;
+  for (const [sourceKind, prefix] of Object.entries(SOURCE_SELECTOR_PREFIXES) as Array<[SpaceConnectorPolicySourceKind, string]>) {
+    if (!normalized.startsWith(prefix)) continue;
+    const sourceId = normalizeOptional(normalized.slice(prefix.length));
+    if (!sourceId) return undefined;
+    return {
+      sourceKind,
+      sourceId,
+      state,
+    };
+  }
+  return undefined;
+}
+
+function isSourceKind(value: unknown): value is SpaceConnectorPolicySourceKind {
+  return value === "connector_family"
+    || value === "cli_bundle"
+    || value === "connector_instance";
 }
 
 function normalizeRequired(value: string | undefined, field: string): string {

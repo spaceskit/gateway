@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { SpaceAdminService, SpaceManager } from "@spaceskit/core";
+import type { ReflectionService, SpaceAdminService, SpaceManager } from "@spaceskit/core";
 import {
   OrchestratorCommandRepository,
   type OrchestratorCommandStatus,
+  type TurnRepository,
 } from "@spaceskit/persistence";
 import {
   SpaceContextError,
@@ -10,21 +11,23 @@ import {
 } from "./space-context-service.js";
 
 export type OrchestratorCommandType =
-  | "list_rooms"
-  | "create_room"
+  | "list_spaces"
+  | "get_space_digest"
+  | "create_space"
   | "list_skills"
   | "create_skill"
-  | "handoff_room"
+  | "handoff_space"
   | "add_agent"
   | "share_context"
   | "run_space_prompt";
 
 const CONTROL_ONLY_COMMANDS = new Set<OrchestratorCommandType>([
-  "list_rooms",
-  "create_room",
+  "list_spaces",
+  "get_space_digest",
+  "create_space",
   "list_skills",
   "create_skill",
-  "handoff_room",
+  "handoff_space",
 ]);
 
 export interface OrchestratorCommandInput {
@@ -89,6 +92,8 @@ export interface OrchestratorCommandServiceOptions {
   spaceManager: Pick<SpaceManager, "executeTurn">;
   spaceContextService: SpaceContextService;
   defaultTargetSpaceId: string;
+  turnRepo?: Pick<TurnRepository, "listBySpace">;
+  reflectionService?: Pick<ReflectionService, "runSummaryJob">;
   /**
    * If true, non-trusted callers must provide a caller principal.
    */
@@ -250,7 +255,7 @@ export class OrchestratorCommandService {
     const payload = input.payload ?? {};
 
     switch (commandType) {
-      case "list_rooms": {
+      case "list_spaces": {
         const statuses = normalizeSpaceStatusList(payload.statuses);
         const spaces = await this.options.spaceAdminService.listSpaces({
           statuses: statuses.length > 0 ? statuses : undefined,
@@ -258,18 +263,60 @@ export class OrchestratorCommandService {
           limit: asNumber(payload.limit),
         });
         return {
-          rooms: spaces,
+          spaces,
           count: spaces.length,
         };
       }
 
-      case "create_room": {
+      case "get_space_digest": {
+        const requestedSpaceId = asString(payload.spaceId) ?? targetSpaceId;
+        const digestWindow = normalizeDigestWindow(payload.window);
+        const turnLimit = digestWindow === "recent" ? 10 : 3;
+        const space = await this.options.spaceAdminService.getSpace(requestedSpaceId);
+        if (!space) {
+          throw new OrchestratorCommandError("NOT_FOUND", `Space not found: ${requestedSpaceId}`);
+        }
+        if (!this.options.turnRepo) {
+          throw new OrchestratorCommandError(
+            "FAILED_PRECONDITION",
+            "Turn repository is unavailable for get_space_digest",
+          );
+        }
+
+        const turns = this.options.turnRepo.listBySpace(requestedSpaceId, turnLimit).map((turn) => ({
+          agentId: turn.actor_id,
+          status: turn.status,
+          output: extractTextPreview(turn.output_json),
+          createdAt: turn.created_at,
+        }));
+        const digest = await this.options.reflectionService?.runSummaryJob({
+          kind: "space_digest",
+          spaceId: requestedSpaceId,
+          spaceName: space.name,
+          goal: space.goal ?? undefined,
+          activeAgents: space.agents.length,
+          turns,
+          pendingActions: [],
+        });
+
+        return {
+          spaceId: requestedSpaceId,
+          name: space.name,
+          summary: digest?.summaryText ?? buildSpaceDigestFallback(space.name, turns),
+          activeAgents: space.agents.length,
+          lastTurnAt: turns[0]?.createdAt ?? null,
+          pendingActions: [],
+          trace: digest?.trace ?? null,
+        };
+      }
+
+      case "create_space": {
         const resourceId = asString(payload.resourceId) ?? asString(payload.resource_id);
         const name = asString(payload.name);
         if (!resourceId || !name) {
           throw new OrchestratorCommandError(
             "INVALID_ARGUMENT",
-            "create_room requires payload.resourceId and payload.name",
+            "create_space requires payload.resourceId and payload.name",
           );
         }
 
@@ -333,20 +380,18 @@ export class OrchestratorCommandService {
         return created;
       }
 
-      case "handoff_room": {
+      case "handoff_space": {
         const handoffSpaceId = asString(payload.handoffSpaceId)
-          ?? asString(payload.roomSpaceId)
-          ?? asString(payload.targetRoomSpaceId)
           ?? asString(payload.targetSpaceId);
         if (!handoffSpaceId) {
           throw new OrchestratorCommandError(
             "INVALID_ARGUMENT",
-            "handoff_room requires payload.handoffSpaceId",
+            "handoff_space requires payload.handoffSpaceId",
           );
         }
-        const room = await this.options.spaceAdminService.getSpace(handoffSpaceId);
-        if (!room) {
-          throw new OrchestratorCommandError("NOT_FOUND", `Room not found: ${handoffSpaceId}`);
+        const space = await this.options.spaceAdminService.getSpace(handoffSpaceId);
+        if (!space) {
+          throw new OrchestratorCommandError("NOT_FOUND", `Space not found: ${handoffSpaceId}`);
         }
 
         const promptText = asString(payload.promptText);
@@ -363,7 +408,7 @@ export class OrchestratorCommandService {
           handoff: {
             fromSpaceId: targetSpaceId,
             toSpaceId: handoffSpaceId,
-            room,
+            space,
             initiated: true,
           },
           ...(turn ? { turnId: turn.turnId } : {}),
@@ -459,6 +504,41 @@ function parseObject(raw: string | null): Record<string, unknown> | undefined {
   return undefined;
 }
 
+function extractTextPreview(raw: string | null): string {
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === "string") return parsed;
+    if (parsed && typeof parsed === "object" && "text" in parsed && typeof (parsed as Record<string, unknown>).text === "string") {
+      return (parsed as Record<string, unknown>).text as string;
+    }
+  } catch {
+    return raw;
+  }
+  return "";
+}
+
+function buildSpaceDigestFallback(
+  spaceName: string,
+  turns: Array<{ agentId: string; output: string }>,
+): string {
+  if (turns.length === 0) {
+    return `${spaceName} has no recent activity.`;
+  }
+
+  const highlights = turns
+    .slice(0, 3)
+    .map((turn) => {
+      const normalizedOutput = turn.output.trim();
+      const preview = normalizedOutput.length > 140
+        ? `${normalizedOutput.slice(0, 137)}...`
+        : normalizedOutput;
+      return `${turn.agentId}: ${preview}`;
+    });
+
+  return `${spaceName} has recent activity. ${highlights.join(" ")}`;
+}
+
 function asString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
@@ -531,6 +611,10 @@ function normalizeSkillWriteStatus(value: unknown): "active" | "archived" | unde
     return value;
   }
   return undefined;
+}
+
+function normalizeDigestWindow(value: unknown): "latest" | "recent" {
+  return asString(value)?.toLowerCase() === "recent" ? "recent" : "latest";
 }
 
 function normalizeError(error: unknown): { code: string; message: string } {

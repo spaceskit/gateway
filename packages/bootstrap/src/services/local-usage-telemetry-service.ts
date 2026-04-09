@@ -173,7 +173,9 @@ export class LocalUsageTelemetryService {
 
     let codexBarQuota: CodexBarQuota;
     try {
-      codexBarQuota = this.codexBarAdapter.readProviderUsage(providerId);
+      codexBarQuota = this.codexBarAdapter.readProviderUsage(providerId, {
+        allowCommandProbe: this.codexBarMode === "prefer",
+      });
     } catch (err) {
       this.logger.warn("CodexBar usage probe failed", {
         providerId,

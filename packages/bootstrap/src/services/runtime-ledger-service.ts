@@ -73,24 +73,32 @@ export class RuntimeLedgerService {
     requestedByPrincipalId?: string;
     requestedByDeviceId?: string;
     targetAgentId?: string;
-  }): RunRow {
+  }): RunRow | null {
     const existing = this.runs.getByCompatibilityTurnId(input.turnId);
     if (existing) {
       this.runIdByTurnId.set(input.turnId, existing.run_id);
       return existing;
     }
 
-    const run = this.runs.create({
-      runId: randomUUID(),
-      spaceId: input.spaceId,
-      compatibilityTurnId: input.turnId,
-      status: "running",
-      triggerSource: "space_input",
-      requestedByPrincipalId: input.requestedByPrincipalId,
-      requestedByDeviceId: input.requestedByDeviceId,
-      targetAgentId: input.targetAgentId,
-      inputText: input.inputText,
-    });
+    let run: RunRow;
+    try {
+      run = this.runs.create({
+        runId: randomUUID(),
+        spaceId: input.spaceId,
+        compatibilityTurnId: input.turnId,
+        status: "running",
+        triggerSource: "space_input",
+        requestedByPrincipalId: input.requestedByPrincipalId,
+        requestedByDeviceId: input.requestedByDeviceId,
+        targetAgentId: input.targetAgentId,
+        inputText: input.inputText,
+      });
+    } catch (error) {
+      if (isMissingSpaceForeignKeyError(error)) {
+        return null;
+      }
+      throw error;
+    }
     this.runIdByTurnId.set(input.turnId, run.run_id);
     return run;
   }
@@ -102,6 +110,9 @@ export class RuntimeLedgerService {
     event: TurnEventLike;
   }): void {
     const run = this.ensureRun(input.spaceId, input.turnId);
+    if (!run) {
+      return;
+    }
     const agentId = normalizeString(input.agentId) ?? this.resolveEventAgentId(input.event);
 
     switch (input.event.type) {
@@ -110,20 +121,6 @@ export class RuntimeLedgerService {
         return;
       case "text_delta": {
         this.runs.setStatus(run.run_id, { status: "running", completedAt: null });
-        const stepId = this.outputStepId(run.run_id, input.turnId, agentId);
-        if (!this.runSteps.getById(stepId)) {
-          this.runSteps.create({
-            stepId,
-            runId: run.run_id,
-            spaceId: input.spaceId,
-            agentId,
-            sequenceNo: this.nextSequence(run.run_id),
-            kind: "output_stream",
-            status: "running",
-            title: "Streaming output",
-            detailText: truncate(input.event.text, 220),
-          });
-        }
         return;
       }
       case "tool_call_start": {
@@ -293,7 +290,7 @@ export class RuntimeLedgerService {
     }
   }
 
-  private ensureRun(spaceId: string, turnId: string): RunRow {
+  private ensureRun(spaceId: string, turnId: string): RunRow | null {
     const mapped = this.runIdByTurnId.get(turnId);
     if (mapped) {
       const run = this.runs.getById(mapped);
@@ -358,6 +355,17 @@ function normalizeProviderId(providerId?: string, modelId?: string): string | un
   }
   const [prefix] = normalizedModelId.split("/");
   return normalizeString(prefix);
+}
+
+function isMissingSpaceForeignKeyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const record = error as { code?: unknown; message?: unknown };
+  if (record.code === "SQLITE_CONSTRAINT_FOREIGNKEY") {
+    return true;
+  }
+  return typeof record.message === "string" && record.message.includes("FOREIGN KEY constraint failed");
 }
 
 function truncate(value: string, maxLength: number): string {

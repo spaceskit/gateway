@@ -82,7 +82,34 @@ describe("Provider config persistence", () => {
       expect(row).not.toBeNull();
       expect(row!.provider_id).toBe("anthropic");
       expect(row!.model).toBe("anthropic/claude-sonnet-4-5");
+      expect(row!.auth_mode).toBe("api_key");
       expect(row!.source).toBe("runtime");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("host login auth mode persists and reloads for claude-agent-sdk", () => {
+    const ctx = createContext();
+    try {
+      const config = ctx.admin.setProviderConfig({
+        providerId: "claude-agent-sdk",
+        model: "claude-agent-sdk/claude-sonnet-4-5",
+        authMode: "host_login",
+      });
+
+      expect(config.authMode).toBe("host_login");
+      expect(config.hasApiKey).toBe(false);
+
+      const row = ctx.providerConfigRepo.getById("claude-agent-sdk");
+      expect(row).not.toBeNull();
+      expect(row!.auth_mode).toBe("host_login");
+
+      const admin2 = createAdminWithRepo(ctx.db, ctx.providerConfigRepo);
+      const reloaded = admin2.getProviderSettings("claude-agent-sdk");
+      expect(reloaded.authMode).toBe("host_login");
+      expect(reloaded.hasApiKey).toBe(false);
     } finally {
       ctx.db.close();
       ctx.restoreEnv();

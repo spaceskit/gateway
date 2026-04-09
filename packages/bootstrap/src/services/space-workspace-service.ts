@@ -15,6 +15,17 @@ export const SPACE_WORKSPACE_LAYOUT_VERSION = 2;
 export const SPACE_WORKSPACE_MANAGED_RESOURCE_PREFIX = "space-workspace-root-";
 const SPACE_DIR_FOLDER = ".space";
 const SPACE_DIR_GITIGNORE_ENTRY = ".space/";
+const MANAGED_FOLDER_UID_SUFFIX_LENGTH = 8;
+const MANAGED_FOLDER_SLUG_MAX_LENGTH = 48;
+
+export const WELL_KNOWN_PROJECT_FILES = [
+  "CLAUDE.md", ".claude/CLAUDE.md",
+  "AGENTS.md",
+  ".cursorrules", ".cursor/rules",
+  "package.json", "Makefile", "Cargo.toml",
+  "pyproject.toml", "go.mod",
+  "README.md", ".gitignore",
+] as const;
 
 export type SpaceWorkspaceMode = "managed" | "folder_bound";
 export type SpaceWorkspaceMetadataStatus = "unknown" | "ready" | "conflict";
@@ -33,6 +44,7 @@ export interface SpaceWorkspacePayload {
   layoutVersion: number;
   gitRepoDetected: boolean;
   metadataStatus: SpaceWorkspaceMetadataStatus;
+  discoveredProjectFiles: string[];
   updatedAt: string;
 }
 
@@ -114,10 +126,22 @@ export class SpaceWorkspaceService {
     const spaceUid = this.resolveOrCreateSpaceUid(space);
     const managedResourceId = this.managedResourceId(spaceId);
     const existing = this.options.workspaces.getBySpace(spaceId);
-    const explicitRoot = normalizeOptionalString(existing?.explicit_root) ?? "";
-    const effectiveRoot = explicitRoot
-      ? normalizeAbsolutePath(explicitRoot, "explicit workspace root")
-      : this.defaultWorkspaceRoot(spaceUid);
+    const existingManagedFolderName = normalizeOptionalString(existing?.managed_folder_name) ?? "";
+    const existingExplicitRoot = normalizeOptionalString(existing?.explicit_root);
+    const explicitRoot = existingExplicitRoot
+      ? normalizeAbsolutePath(existingExplicitRoot, "explicit workspace root")
+      : "";
+    const managedFolderName = explicitRoot
+      ? existingManagedFolderName
+      : await this.resolveManagedFolderName(spaceId, space.name, spaceUid, existingManagedFolderName);
+    const effectiveRoot = explicitRoot || this.defaultWorkspaceRoot(managedFolderName);
+    this.logManagedWorkspaceReset(
+      spaceId,
+      existing?.effective_root,
+      existingManagedFolderName,
+      explicitRoot,
+      effectiveRoot,
+    );
     const metadataState = await this.provisionWorkspaceLayout(spaceId, spaceUid, explicitRoot, effectiveRoot);
 
     this.ensureManagedWorkspaceResource(spaceId, effectiveRoot, managedResourceId);
@@ -125,6 +149,7 @@ export class SpaceWorkspaceService {
       spaceId,
       explicitRoot,
       effectiveRoot,
+      managedFolderName,
       managedResourceId,
       layoutVersion: existing?.layout_version || SPACE_WORKSPACE_LAYOUT_VERSION,
       metadataPath: metadataState.path,
@@ -145,10 +170,15 @@ export class SpaceWorkspaceService {
     const spaceId = normalizeRequiredString(spaceIdRaw, "spaceId");
     const space = this.requireSpace(spaceId);
     const spaceUid = this.resolveOrCreateSpaceUid(space);
+    const existing = this.options.workspaces.getBySpace(spaceId);
+    const existingManagedFolderName = normalizeOptionalString(existing?.managed_folder_name) ?? "";
     const explicitRoot = normalizeOptionalString(explicitWorkspaceRoot)
       ? normalizeAbsolutePath(explicitWorkspaceRoot!, "workspaceRoot")
       : "";
-    const effectiveRoot = explicitRoot || this.defaultWorkspaceRoot(spaceUid);
+    const managedFolderName = explicitRoot
+      ? existingManagedFolderName
+      : await this.resolveManagedFolderName(spaceId, space.name, spaceUid, existingManagedFolderName);
+    const effectiveRoot = explicitRoot || this.defaultWorkspaceRoot(managedFolderName);
     const managedResourceId = this.managedResourceId(spaceId);
 
     const metadataState = await this.provisionWorkspaceLayout(spaceId, spaceUid, explicitRoot, effectiveRoot);
@@ -157,6 +187,7 @@ export class SpaceWorkspaceService {
       spaceId,
       explicitRoot,
       effectiveRoot,
+      managedFolderName,
       managedResourceId,
       layoutVersion: SPACE_WORKSPACE_LAYOUT_VERSION,
       metadataPath: metadataState.path,
@@ -227,8 +258,93 @@ export class SpaceWorkspaceService {
     return generated;
   }
 
-  private defaultWorkspaceRoot(spaceUid: string): string {
-    return resolvePath(this.spacesRoot, spaceUid);
+  private defaultWorkspaceRoot(managedFolderName: string): string {
+    return resolvePath(this.spacesRoot, managedFolderName);
+  }
+
+  private async resolveManagedFolderName(
+    spaceId: string,
+    spaceName: string,
+    spaceUid: string,
+    existingManagedFolderName: string,
+  ): Promise<string> {
+    if (existingManagedFolderName) {
+      return existingManagedFolderName;
+    }
+
+    const slug = slugifyManagedFolderName(spaceName) ?? "space";
+    const shortUidSuffix = spaceUid.slice(0, MANAGED_FOLDER_UID_SUFFIX_LENGTH).toLowerCase();
+    const shortCandidate = `${slug}--${shortUidSuffix}`;
+    if (await this.isManagedFolderNameAvailable(spaceId, spaceUid, shortCandidate)) {
+      return shortCandidate;
+    }
+
+    const fullCandidate = `${slug}--${spaceUid.toLowerCase()}`;
+    if (await this.isManagedFolderNameAvailable(spaceId, spaceUid, fullCandidate)) {
+      return fullCandidate;
+    }
+
+    throw new SpaceWorkspaceServiceError(
+      "FAILED_PRECONDITION",
+      `Unable to allocate a managed workspace folder for space: ${spaceId}`,
+    );
+  }
+
+  private async isManagedFolderNameAvailable(
+    spaceId: string,
+    spaceUid: string,
+    managedFolderName: string,
+  ): Promise<boolean> {
+    if (!managedFolderName.trim()) {
+      return false;
+    }
+
+    const candidateRoot = this.defaultWorkspaceRoot(managedFolderName);
+    if (!existsSync(candidateRoot)) {
+      return true;
+    }
+
+    const existingSpaceMeta = await readJsonFile(join(candidateRoot, SPACE_DIR_FOLDER, "space.json"));
+    const existingSpaceId = normalizeOptionalString(
+      typeof existingSpaceMeta.spaceId === "string" ? existingSpaceMeta.spaceId : undefined,
+    );
+    const existingSpaceUid = normalizeOptionalString(
+      typeof existingSpaceMeta.spaceUid === "string" ? existingSpaceMeta.spaceUid : undefined,
+    );
+    if (!existingSpaceId && !existingSpaceUid) {
+      return false;
+    }
+
+    return (!existingSpaceId || existingSpaceId === spaceId)
+      && (!existingSpaceUid || existingSpaceUid === spaceUid);
+  }
+
+  private logManagedWorkspaceReset(
+    spaceId: string,
+    previousEffectiveRootRaw: string | undefined,
+    existingManagedFolderName: string,
+    explicitRoot: string,
+    nextEffectiveRoot: string,
+  ): void {
+    if (explicitRoot || existingManagedFolderName) {
+      return;
+    }
+
+    const previousEffectiveRoot = normalizeOptionalString(previousEffectiveRootRaw);
+    if (!previousEffectiveRoot) {
+      return;
+    }
+
+    const normalizedPreviousRoot = resolvePath(previousEffectiveRoot);
+    if (normalizedPreviousRoot === nextEffectiveRoot) {
+      return;
+    }
+
+    this.options.logger?.warn("Resetting managed workspace root to friendly folder naming", {
+      spaceId,
+      previousEffectiveRoot: normalizedPreviousRoot,
+      nextEffectiveRoot,
+    });
   }
 
   private toWorkspacePayload(
@@ -254,6 +370,7 @@ export class SpaceWorkspaceService {
       layoutVersion: row.layout_version || SPACE_WORKSPACE_LAYOUT_VERSION,
       gitRepoDetected: gitRepoDetected ?? detectGitRepo(effectiveRoot),
       metadataStatus: parseMetadataStatus(row.metadata_status),
+      discoveredProjectFiles: discoverProjectFiles(effectiveRoot),
       updatedAt: row.updated_at,
     };
   }
@@ -382,6 +499,29 @@ function parseMetadataStatus(value: unknown): SpaceWorkspaceMetadataStatus {
 
 function detectGitRepo(root: string): boolean {
   return existsSync(join(root, ".git"));
+}
+
+function discoverProjectFiles(root: string): string[] {
+  const found: string[] = [];
+  for (const relativePath of WELL_KNOWN_PROJECT_FILES) {
+    if (existsSync(join(root, relativePath))) {
+      found.push(relativePath);
+    }
+  }
+  return found;
+}
+
+function slugifyManagedFolderName(value: string): string | undefined {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, MANAGED_FOLDER_SLUG_MAX_LENGTH)
+    .replace(/-+$/g, "");
+  return normalized || undefined;
 }
 
 async function readJsonFile(path: string): Promise<Record<string, unknown>> {

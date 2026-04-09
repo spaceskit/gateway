@@ -2,8 +2,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type HttpPrincipalAuthMethod =
   | "none"
-  | "legacy_header"
-  | "legacy_bearer"
   | "jwt_hs256";
 
 export interface VerifiedPrincipalContext {
@@ -15,13 +13,12 @@ export interface VerifiedPrincipalContext {
 
 export interface HttpPrincipalAuthOptions {
   /**
-   * If true, only signed HS256 bearer tokens are accepted.
-   * If false, verifier falls back to legacy header/bearer extraction.
+   * If true, missing bearer tokens are rejected instead of returning `authMethod=none`.
    */
   strictVerification?: boolean;
   /**
    * Shared secret used to verify HS256 bearer tokens.
-   * Signed token verification is skipped when unset in non-strict mode.
+   * Signed token verification fails when unset and a bearer token is supplied.
    */
   hs256Secret?: string;
   /**
@@ -146,87 +143,53 @@ export function resolveHttpPrincipalContext(
   const headerPrincipal = normalizeOptionalString(req.headers.get("x-spaceskit-principal-id"));
   const headerDeviceId = normalizeOptionalString(req.headers.get("x-spaceskit-device-id"));
 
-  if (strictVerification) {
-    if (!secret) {
-      return unauthenticated(
-        "invalid_token",
-        "Authenticated principal token is invalid",
-      );
-    }
-    if (!bearerToken) {
+  if (headerPrincipal) {
+    return unauthenticated(
+      "invalid_token",
+      "Legacy HTTP principal headers are no longer supported",
+    );
+  }
+
+  if (!bearerToken) {
+    if (strictVerification) {
       return unauthenticated(
         "missing_bearer_token",
         "Authenticated principal token is required",
       );
     }
-    const verified = verifySignedBearerToken({
-      token: bearerToken,
-      secret,
-      nowEpochSeconds,
-      maxClockSkewSeconds,
-    });
-    if (!verified.ok) {
-      return verified;
-    }
     return {
       ok: true,
       context: {
-        principalId: verified.principalId,
-        deviceId: verified.deviceId ?? headerDeviceId,
-        authMethod: "jwt_hs256",
-        verifiedAt: now().toISOString(),
-      },
-    };
-  }
-
-  if (bearerToken && secret && looksLikeJwt(bearerToken)) {
-    const verified = verifySignedBearerToken({
-      token: bearerToken,
-      secret,
-      nowEpochSeconds,
-      maxClockSkewSeconds,
-    });
-    if (!verified.ok) {
-      return verified;
-    }
-    return {
-      ok: true,
-      context: {
-        principalId: verified.principalId,
-        deviceId: verified.deviceId ?? headerDeviceId,
-        authMethod: "jwt_hs256",
-        verifiedAt: now().toISOString(),
-      },
-    };
-  }
-
-  if (bearerToken) {
-    return {
-      ok: true,
-      context: {
-        principalId: bearerToken,
         deviceId: headerDeviceId,
-        authMethod: "legacy_bearer",
+        authMethod: "none",
       },
     };
   }
 
-  if (headerPrincipal) {
-    return {
-      ok: true,
-      context: {
-        principalId: headerPrincipal,
-        deviceId: headerDeviceId,
-        authMethod: "legacy_header",
-      },
-    };
+  if (!secret) {
+    return unauthenticated(
+      "invalid_token",
+      "Authenticated principal token is invalid",
+    );
+  }
+
+  const verified = verifySignedBearerToken({
+    token: bearerToken,
+    secret,
+    nowEpochSeconds,
+    maxClockSkewSeconds,
+  });
+  if (!verified.ok) {
+    return verified;
   }
 
   return {
     ok: true,
     context: {
-      deviceId: headerDeviceId,
-      authMethod: "none",
+      principalId: verified.principalId,
+      deviceId: verified.deviceId ?? headerDeviceId,
+      authMethod: "jwt_hs256",
+      verifiedAt: now().toISOString(),
     },
   };
 }
@@ -267,12 +230,6 @@ function parseBearerToken(authorization: string | undefined): string | null {
     return null;
   }
   return token;
-}
-
-function looksLikeJwt(token: string): boolean {
-  const segments = token.split(".");
-  return segments.length === 3
-    && segments.every((segment) => segment.length > 0);
 }
 
 function verifySignedBearerToken(input: {

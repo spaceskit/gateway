@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { initDatabase, KnowledgeBaseEntryRepository } from "@spaceskit/persistence";
 import { KnowledgeBaseService, KnowledgeBaseServiceError } from "../src/services/knowledge-base-service.js";
+import { seedRuntimeDocsKnowledgeBase } from "../src/seed/runtime-docs-knowledge-base.js";
 
 const dbManagers: ReturnType<typeof initDatabase>[] = [];
 
@@ -102,5 +103,34 @@ describe("KnowledgeBaseService", () => {
       uri: "relative/path.md",
       scopeType: "global",
     })).toThrow(KnowledgeBaseServiceError);
+  });
+
+  test("seeds canonical runtime docs idempotently as global web entries", () => {
+    const service = createService();
+
+    seedRuntimeDocsKnowledgeBase(service);
+    seedRuntimeDocsKnowledgeBase(service);
+
+    const entries = service.listEntries({ kinds: ["web"] });
+    expect(entries.map((entry) => entry.entryId).sort()).toEqual([
+      "kb-runtime-doc-1password-cli",
+      "kb-runtime-doc-claude-agent-sdk-overview",
+      "kb-runtime-doc-codexbar",
+      "kb-runtime-doc-gemini-cli-docs",
+      "kb-runtime-doc-harvest-cli",
+      "kb-runtime-doc-openai-codex-sdk",
+    ]);
+    expect(entries.every((entry) => entry.scopeType === "global")).toBe(true);
+    expect(entries.find((entry) => entry.entryId === "kb-runtime-doc-claude-agent-sdk-overview")?.tags).toEqual([
+      "docs",
+      "sdk",
+      "claude",
+      "anthropic",
+      "agent-sdk",
+    ]);
+    expect(entries.find((entry) => entry.entryId === "kb-runtime-doc-harvest-cli")?.uri)
+      .toBe("https://kgajera.github.io/hrvst-cli/");
+    expect(entries.find((entry) => entry.entryId === "kb-runtime-doc-1password-cli")?.uri)
+      .toBe("https://developer.1password.com/docs/cli/");
   });
 });

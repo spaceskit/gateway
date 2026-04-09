@@ -23,8 +23,21 @@
 
 import { randomUUID } from "node:crypto";
 import type { EventBus } from "../events/event-bus.js";
-import type { AgentRuntime, TurnContext, TurnEvent, TurnResult } from "../agents/agent-runtime.js";
-import type { ModelMessage } from "../agents/model-provider.js";
+import type {
+  AgentRuntime,
+  RuntimeApprovalSelection,
+  RuntimeFeedbackCheckpoint,
+  TurnContext,
+  TurnEvent,
+  TurnResult,
+  CliLaunchSnapshot,
+} from "../agents/agent-runtime.js";
+import type {
+  ModelMessage,
+  TurnAccessMode,
+  TurnExecutionMode,
+  TurnReasoningEffort,
+} from "../agents/model-provider.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
 import type {
   SpaceConfig,
@@ -40,6 +53,7 @@ import {
   resolveMasterModePromptTemplates as resolvePromptTemplates,
   type MasterModePromptTemplates,
 } from "./master-mode-prompts.js";
+import type { ReflectionService } from "../reflection/reflection-service.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,6 +107,19 @@ export interface SpaceManagerOptions {
     value: number;
     tags?: Record<string, string>;
   }) => void;
+  /** Optional hook to persist approval selections before a paused runtime resumes. */
+  handleFeedbackResolution?: (input: {
+    spaceId: string;
+    turnId: string;
+    request?: RuntimeFeedbackCheckpoint;
+    response: "approve" | "reject" | "revise" | "defer";
+    revision?: string;
+    approvalGrant?: RuntimeApprovalSelection;
+    principalId?: string;
+    deviceId?: string;
+  }) => Promise<void> | void;
+  /** Optional reflection service for summary generation. */
+  reflectionService?: Pick<ReflectionService, "runSummaryJob">;
 }
 
 export interface SaveTurnInput {
@@ -113,6 +140,9 @@ export interface TurnExecutionIdentity {
   principalId?: string;
   deviceId?: string;
   executionOrigin?: CapabilityExecutionOrigin;
+  accessMode?: TurnAccessMode;
+  mode?: TurnExecutionMode;
+  effort?: TurnReasoningEffort;
 }
 
 interface ActiveSpace {
@@ -127,12 +157,16 @@ interface ActiveSpace {
   runtimes: Map<string, AgentRuntime>;
   /** Per-agent conversation sessions (history and continuity metadata). */
   agentSessions: Map<string, AgentSessionState>;
+  /** Active runtimes currently executing a turn (turnId → runtime). */
+  activeTurnRuntimes: Map<string, AgentRuntime>;
   /** Paused runtimes awaiting feedback (turnId → runtime). */
   pausedRuntimes: Map<string, AgentRuntime>;
   /** Feedback timeout timers (turnId → timer). */
   feedbackTimers: Map<string, ReturnType<typeof setTimeout>>;
   /** Agent IDs for paused runtimes (turnId → agentId). */
   pausedRuntimeAgentIds: Map<string, string>;
+  /** Stored feedback checkpoints for paused turns (turnId → request). */
+  pausedFeedbackRequests: Map<string, RuntimeFeedbackCheckpoint>;
 }
 
 interface AgentSessionState {
@@ -386,6 +420,12 @@ export class SpaceManager {
       );
     }
 
+    const launchSnapshots = await this.buildLaunchSnapshots(space, turnId, agents, userMessage, executionIdentity);
+
+    for (const snap of launchSnapshots) {
+      console.info(`[space:${spaceId}] [turn:${turnId}] agent=${snap.agentId} provider=${snap.providerId} model=${snap.modelId}`);
+    }
+
     // Emit space event
     this.eventBus.emit({
       type: "space.turn_started",
@@ -393,6 +433,9 @@ export class SpaceManager {
       turnId,
       input,
       agents: agents.map((a) => a.agentId),
+      launchSnapshots,
+      data: { launchSnapshots },
+      requestedByPrincipalId: executionIdentity?.principalId,
       timestamp: new Date(),
     });
 
@@ -493,6 +536,11 @@ export class SpaceManager {
     turnId: string,
     response: "approve" | "reject" | "revise" | "defer",
     revision?: string,
+    options?: {
+      approvalGrant?: RuntimeApprovalSelection;
+      principalId?: string;
+      deviceId?: string;
+    },
   ): Promise<void> {
     const space = this.activeSpaces.get(spaceId);
     if (!space) throw new Error(`Space ${spaceId} not active`);
@@ -500,9 +548,11 @@ export class SpaceManager {
     const runtime = space.pausedRuntimes.get(turnId);
     if (!runtime) throw new Error(`No paused turn ${turnId} in space ${spaceId}`);
     const pausedAgentId = space.pausedRuntimeAgentIds.get(turnId);
+    const pausedRequest = space.pausedFeedbackRequests.get(turnId);
 
     space.pausedRuntimes.delete(turnId);
     space.pausedRuntimeAgentIds.delete(turnId);
+    space.pausedFeedbackRequests.delete(turnId);
 
     // Clear feedback timeout timer
     const timer = space.feedbackTimers.get(turnId);
@@ -511,10 +561,69 @@ export class SpaceManager {
       space.feedbackTimers.delete(turnId);
     }
 
+    await this.options.handleFeedbackResolution?.({
+      spaceId,
+      turnId,
+      request: pausedRequest,
+      response,
+      revision,
+      approvalGrant: options?.approvalGrant,
+      principalId: options?.principalId,
+      deviceId: options?.deviceId,
+    });
+
     // Resume — events will flow through the original generator
     for await (const event of runtime.resumeWithFeedback(turnId, response, revision)) {
       this.forwardEvent(spaceId, turnId, event, pausedAgentId);
     }
+  }
+
+  /**
+   * Cancel an active or paused turn.
+   * Returns true if the turn was found and cancelled, false otherwise.
+   */
+  async cancelTurn(spaceId: string, turnId: string): Promise<boolean> {
+    const space = this.activeSpaces.get(spaceId);
+    if (!space) return false;
+
+    // Check active (executing) turns first
+    const activeRuntime = space.activeTurnRuntimes.get(turnId);
+    if (activeRuntime) {
+      await activeRuntime.cancel();
+      space.activeTurnRuntimes.delete(turnId);
+      this.eventBus.emit({
+        type: "space.turn_event",
+        spaceId,
+        turnId,
+        event: { type: "turn_cancelled" },
+        timestamp: new Date(),
+      });
+      return true;
+    }
+
+    // Check paused (awaiting feedback) turns
+    const pausedRuntime = space.pausedRuntimes.get(turnId);
+    if (pausedRuntime) {
+      await pausedRuntime.cancel();
+      space.pausedRuntimes.delete(turnId);
+      space.pausedRuntimeAgentIds.delete(turnId);
+      space.pausedFeedbackRequests.delete(turnId);
+      const timer = space.feedbackTimers.get(turnId);
+      if (timer) {
+        clearTimeout(timer);
+        space.feedbackTimers.delete(turnId);
+      }
+      this.eventBus.emit({
+        type: "space.turn_event",
+        spaceId,
+        turnId,
+        event: { type: "turn_cancelled" },
+        timestamp: new Date(),
+      });
+      return true;
+    }
+
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -550,17 +659,24 @@ export class SpaceManager {
         principalId: executionIdentity?.principalId,
         deviceId: executionIdentity?.deviceId,
         executionOrigin: executionIdentity?.executionOrigin,
+        accessMode: executionIdentity?.accessMode,
+        mode: executionIdentity?.mode,
+        effort: executionIdentity?.effort,
       };
 
       let result: TurnResult | null = null;
+      space.activeTurnRuntimes.set(turnId, runtime);
 
+      try {
       for await (const event of runtime.executeTurn(context)) {
         this.recordSummaryEvent(summaryTrace, assignment.agentId, event);
         this.forwardEvent(space.config.id, turnId, event, assignment.agentId);
 
         if (event.type === "feedback_requested") {
+          space.activeTurnRuntimes.delete(turnId);
           space.pausedRuntimes.set(turnId, runtime);
           space.pausedRuntimeAgentIds.set(turnId, assignment.agentId);
+          space.pausedFeedbackRequests.set(turnId, event.request);
           this.startFeedbackTimeout(space.config.id, turnId);
           await this.options.updateSpaceStatus(space.config.id, "paused");
           return; // Execution paused
@@ -569,6 +685,9 @@ export class SpaceManager {
         if (event.type === "turn_completed") {
           result = event.result;
         }
+      }
+      } finally {
+        space.activeTurnRuntimes.delete(turnId);
       }
 
       if (result) {
@@ -645,160 +764,228 @@ export class SpaceManager {
       });
     }
 
-    const guestReports: GuestReport[] = [];
+    // ---------------------------------------------------------------------------
+    // Convergence loop: guest execution + peer review, up to maxIterations.
+    // Each iteration re-runs guests with revision feedback if peer review
+    // did not converge. Converges when all reviews approve with average
+    // confidence >= threshold, or when iterations are exhausted.
+    // ---------------------------------------------------------------------------
+    const maxIterations = space.config.turnModelConfig?.masterModeMaxIterations ?? 1;
+    const convergenceThreshold = space.config.turnModelConfig?.masterModeConvergenceThreshold ?? 0.8;
+    const tokenBudget = space.config.turnModelConfig?.maxTokenBudget ?? 0;
+    let totalTokensUsed = 0;
 
-    for (const guest of assignments.guests) {
-      const runtime = await this.getRuntime(space, guest.agentId);
-      const session = await this.getOrCreateAgentSession(space, guest.agentId);
-      const delegatedInstruction = plannerInstructions.guestInstructions.get(guest.agentId)
-        ?? this.buildFallbackGuestInstruction(guest.agentId);
-      const guestPrompt = renderTemplate(
-        promptTemplates.guest,
-        {
-          user_input: userMessage.content,
-          guest_agent_id: guest.agentId,
-          guest_list: this.formatGuestList(assignments.guests),
-          guest_reports: "",
-          global_instruction: plannerInstructions.globalInstruction,
-          guest_instruction: delegatedInstruction,
-        },
+    let guestReports: GuestReport[] = [];
+    let peerReviewResults: Awaited<ReturnType<typeof this.runPeerReviewRing>> = {
+      results: [],
+      assignments: 0,
+      completed: 0,
+      failed: 0,
+      status: "skipped",
+    };
+    let revisionFeedback: string | undefined;
+
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+      guestReports = [];
+
+      for (const guest of assignments.guests) {
+        const runtime = await this.getRuntime(space, guest.agentId);
+        const session = await this.getOrCreateAgentSession(space, guest.agentId);
+        const delegatedInstruction = plannerInstructions.guestInstructions.get(guest.agentId)
+          ?? this.buildFallbackGuestInstruction(guest.agentId);
+        const guestPrompt = renderTemplate(
+          promptTemplates.guest,
+          {
+            user_input: userMessage.content,
+            guest_agent_id: guest.agentId,
+            guest_list: this.formatGuestList(assignments.guests),
+            guest_reports: "",
+            global_instruction: plannerInstructions.globalInstruction,
+            guest_instruction: delegatedInstruction,
+          },
+        );
+        await this.appendOrchestrationJournalEntry({
+          spaceId: space.config.id,
+          turnId,
+          eventType: "guest.dispatch",
+          actorId: guest.agentId,
+          payload: {
+            iteration,
+            delegatedInstruction,
+            globalInstruction: plannerInstructions.globalInstruction,
+            revisionFeedback: revisionFeedback ?? null,
+          },
+        });
+
+        // Build messages: include revision feedback from prior iteration if available (Layer 4 turn context).
+        const guestMessages: ModelMessage[] = [
+          ...session.messages,
+          userMessage,
+        ];
+        if (revisionFeedback) {
+          guestMessages.push({
+            role: "system",
+            content: `Revision feedback from peer review (iteration ${iteration}):\n${revisionFeedback}`,
+          });
+        }
+        guestMessages.push({ role: "user", content: guestPrompt });
+
+        const context: TurnContext = {
+          spaceId: space.config.id,
+          turnId,
+          messages: guestMessages,
+          lineageId: randomUUID(),
+          hopCount: 0,
+          maxHops: this.options.maxHops ?? 5,
+          principalId: executionIdentity?.principalId,
+          deviceId: executionIdentity?.deviceId,
+          executionOrigin: executionIdentity?.executionOrigin,
+          accessMode: executionIdentity?.accessMode,
+          mode: executionIdentity?.mode,
+          effort: executionIdentity?.effort,
+        };
+
+        let result: TurnResult | null = null;
+        let guestFailed = false;
+
+        try {
+          for await (const event of runtime.executeTurn(context)) {
+            this.recordSummaryEvent(summaryTrace, guest.agentId, event);
+            this.forwardEvent(space.config.id, turnId, event, guest.agentId);
+
+            if (event.type === "feedback_requested") {
+              space.pausedRuntimes.set(turnId, runtime);
+              space.pausedRuntimeAgentIds.set(turnId, guest.agentId);
+              space.pausedFeedbackRequests.set(turnId, event.request);
+              this.startFeedbackTimeout(space.config.id, turnId);
+              await this.options.updateSpaceStatus(space.config.id, "paused");
+              return; // Execution paused
+            }
+
+            if (event.type === "turn_completed") {
+              result = event.result;
+            }
+          }
+        } catch (error) {
+          guestFailed = true;
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          const errorEvent: TurnEvent = { type: "error", error: normalized };
+          this.recordSummaryEvent(summaryTrace, guest.agentId, errorEvent);
+          this.forwardEvent(space.config.id, turnId, errorEvent, guest.agentId);
+          guestReports.push({
+            agentId: guest.agentId,
+            status: "failed",
+            report: normalized.message,
+          });
+          await this.appendOrchestrationJournalEntry({
+            spaceId: space.config.id,
+            turnId,
+            eventType: "failure",
+            actorId: guest.agentId,
+            payload: {
+              phase: "guest_execution",
+              iteration,
+              error: normalized.message,
+            },
+          });
+        }
+
+        if (result) {
+          totalTokensUsed += result.usage.totalTokens;
+          this.updateAgentSession(session, turnId, userMessage, result.finalMessage);
+          this.options.saveTurn({
+            turnId: this.buildPersistedTurnId(turnId, guest.agentId),
+            userTurnId: turnId,
+            spaceId: space.config.id,
+            agentId: guest.agentId,
+            input: userMessage.content,
+            output: result.finalMessage.content,
+            status: "completed",
+            promptTokens: result.usage.promptTokens,
+            completionTokens: result.usage.completionTokens,
+            totalTokens: result.usage.totalTokens,
+          }).catch((saveErr) => {
+            this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
+          });
+          guestReports.push({
+            agentId: guest.agentId,
+            status: "completed",
+            report: result.finalMessage.content,
+          });
+          await this.appendOrchestrationJournalEntry({
+            spaceId: space.config.id,
+            turnId,
+            eventType: "guest.report",
+            actorId: guest.agentId,
+            payload: {
+              status: "completed",
+              iteration,
+              report: result.finalMessage.content,
+            },
+          });
+        } else if (!guestFailed) {
+          const noResultError = new Error(`Guest agent ${guest.agentId} did not return a completion result.`);
+          const errorEvent: TurnEvent = { type: "error", error: noResultError };
+          this.recordSummaryEvent(summaryTrace, guest.agentId, errorEvent);
+          this.forwardEvent(space.config.id, turnId, errorEvent, guest.agentId);
+          guestReports.push({
+            agentId: guest.agentId,
+            status: "failed",
+            report: noResultError.message,
+          });
+          await this.appendOrchestrationJournalEntry({
+            spaceId: space.config.id,
+            turnId,
+            eventType: "guest.report",
+            actorId: guest.agentId,
+            payload: {
+              status: "failed",
+              iteration,
+              report: noResultError.message,
+            },
+          });
+        }
+      }
+
+      // Run peer review
+      peerReviewResults = await this.runPeerReviewRing(
+        space,
+        turnId,
+        userMessage,
+        assignments,
+        guestReports,
+        plannerInstructions,
+        promptTemplates,
+        executionIdentity,
       );
+      // Check convergence
+      const converged = this.checkMasterModeConvergence(peerReviewResults.results, convergenceThreshold);
+      const budgetExhausted = tokenBudget > 0 && totalTokensUsed >= tokenBudget * 0.8;
+
       await this.appendOrchestrationJournalEntry({
         spaceId: space.config.id,
         turnId,
-        eventType: "guest.dispatch",
-        actorId: guest.agentId,
+        eventType: "convergence.check",
+        actorId: assignments.master.agentId,
         payload: {
-          delegatedInstruction,
-          globalInstruction: plannerInstructions.globalInstruction,
+          iteration,
+          converged,
+          budgetExhausted,
+          totalTokensUsed,
+          tokenBudget: tokenBudget || "unlimited",
         },
       });
 
-      const context: TurnContext = {
-        spaceId: space.config.id,
-        turnId,
-        messages: [
-          ...session.messages,
-          userMessage,
-          { role: "user", content: guestPrompt },
-        ],
-        lineageId: randomUUID(),
-        hopCount: 0,
-        maxHops: this.options.maxHops ?? 5,
-        principalId: executionIdentity?.principalId,
-        deviceId: executionIdentity?.deviceId,
-        executionOrigin: executionIdentity?.executionOrigin,
-      };
-
-      let result: TurnResult | null = null;
-      let guestFailed = false;
-
-      try {
-        for await (const event of runtime.executeTurn(context)) {
-          this.recordSummaryEvent(summaryTrace, guest.agentId, event);
-          this.forwardEvent(space.config.id, turnId, event, guest.agentId);
-
-          if (event.type === "feedback_requested") {
-            space.pausedRuntimes.set(turnId, runtime);
-            space.pausedRuntimeAgentIds.set(turnId, guest.agentId);
-            this.startFeedbackTimeout(space.config.id, turnId);
-            await this.options.updateSpaceStatus(space.config.id, "paused");
-            return; // Execution paused
-          }
-
-          if (event.type === "turn_completed") {
-            result = event.result;
-          }
-        }
-      } catch (error) {
-        guestFailed = true;
-        const normalized = error instanceof Error ? error : new Error(String(error));
-        const errorEvent: TurnEvent = { type: "error", error: normalized };
-        this.recordSummaryEvent(summaryTrace, guest.agentId, errorEvent);
-        this.forwardEvent(space.config.id, turnId, errorEvent, guest.agentId);
-        guestReports.push({
-          agentId: guest.agentId,
-          status: "failed",
-          report: normalized.message,
-        });
-        await this.appendOrchestrationJournalEntry({
-          spaceId: space.config.id,
-          turnId,
-          eventType: "failure",
-          actorId: guest.agentId,
-          payload: {
-            phase: "guest_execution",
-            error: normalized.message,
-          },
-        });
+      if (converged || budgetExhausted || iteration >= maxIterations - 1) {
+        break;
       }
 
-      if (result) {
-        this.updateAgentSession(session, turnId, userMessage, result.finalMessage);
-        this.options.saveTurn({
-          turnId: this.buildPersistedTurnId(turnId, guest.agentId),
-          userTurnId: turnId,
-          spaceId: space.config.id,
-          agentId: guest.agentId,
-          input: userMessage.content,
-          output: result.finalMessage.content,
-          status: "completed",
-          promptTokens: result.usage.promptTokens,
-          completionTokens: result.usage.completionTokens,
-          totalTokens: result.usage.totalTokens,
-        }).catch((saveErr) => {
-          this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
-        });
-        guestReports.push({
-          agentId: guest.agentId,
-          status: "completed",
-          report: result.finalMessage.content,
-        });
-        await this.appendOrchestrationJournalEntry({
-          spaceId: space.config.id,
-          turnId,
-          eventType: "guest.report",
-          actorId: guest.agentId,
-          payload: {
-            status: "completed",
-            report: result.finalMessage.content,
-          },
-        });
-      } else if (!guestFailed) {
-        const noResultError = new Error(`Guest agent ${guest.agentId} did not return a completion result.`);
-        const errorEvent: TurnEvent = { type: "error", error: noResultError };
-        this.recordSummaryEvent(summaryTrace, guest.agentId, errorEvent);
-        this.forwardEvent(space.config.id, turnId, errorEvent, guest.agentId);
-        guestReports.push({
-          agentId: guest.agentId,
-          status: "failed",
-          report: noResultError.message,
-        });
-        await this.appendOrchestrationJournalEntry({
-          spaceId: space.config.id,
-          turnId,
-          eventType: "guest.report",
-          actorId: guest.agentId,
-          payload: {
-            status: "failed",
-            report: noResultError.message,
-          },
-        });
-      }
+      // Build revision feedback for next iteration from peer review issues
+      revisionFeedback = this.buildRevisionFeedback(peerReviewResults.results);
     }
 
     const peerReviewEnabled = this.resolvePeerReviewEnabled(space);
     const peerReviewTopology = this.resolvePeerReviewTopology(space);
-    const peerReviewResults = await this.runPeerReviewRing(
-      space,
-      turnId,
-      userMessage,
-      assignments,
-      guestReports,
-      plannerInstructions,
-      promptTemplates,
-      executionIdentity,
-    );
     if (summaryTrace) {
       summaryTrace.peerReview.enabled = peerReviewEnabled;
       summaryTrace.peerReview.topology = peerReviewTopology;
@@ -856,6 +1043,9 @@ export class SpaceManager {
       principalId: executionIdentity?.principalId,
       deviceId: executionIdentity?.deviceId,
       executionOrigin: executionIdentity?.executionOrigin,
+      accessMode: executionIdentity?.accessMode,
+      mode: executionIdentity?.mode,
+      effort: executionIdentity?.effort,
     };
 
     let synthesisResult: TurnResult | null = null;
@@ -866,6 +1056,7 @@ export class SpaceManager {
       if (event.type === "feedback_requested") {
         space.pausedRuntimes.set(turnId, masterRuntime);
         space.pausedRuntimeAgentIds.set(turnId, assignments.master.agentId);
+        space.pausedFeedbackRequests.set(turnId, event.request);
         this.startFeedbackTimeout(space.config.id, turnId);
         await this.options.updateSpaceStatus(space.config.id, "paused");
         return; // Execution paused
@@ -960,6 +1151,9 @@ export class SpaceManager {
       principalId: executionIdentity?.principalId,
       deviceId: executionIdentity?.deviceId,
       executionOrigin: executionIdentity?.executionOrigin,
+      accessMode: executionIdentity?.accessMode,
+      mode: executionIdentity?.mode,
+      effort: executionIdentity?.effort,
     };
 
     let plannerResult: TurnResult | null = null;
@@ -1073,6 +1267,9 @@ export class SpaceManager {
         principalId: executionIdentity?.principalId,
         deviceId: executionIdentity?.deviceId,
         executionOrigin: executionIdentity?.executionOrigin,
+        accessMode: executionIdentity?.accessMode,
+        mode: executionIdentity?.mode,
+        effort: executionIdentity?.effort,
       };
 
       let reviewResult: TurnResult | null = null;
@@ -1261,6 +1458,44 @@ export class SpaceManager {
         : "Coordinate guest execution and prepare for final synthesis.",
       guestInstructions,
     };
+  }
+
+  /**
+   * Check if peer review results indicate convergence.
+   * Converges when all reviews approve with average confidence >= threshold.
+   */
+  private checkMasterModeConvergence(
+    results: Array<{ verdict?: string; confidence?: number }>,
+    threshold: number,
+  ): boolean {
+    if (results.length === 0) return true; // No reviews = trivially converged
+    const validResults = results.filter((r) => r.verdict);
+    if (validResults.length === 0) return true;
+    const allApproved = validResults.every((r) => r.verdict === "approve");
+    if (!allApproved) return false;
+    const avgConfidence = validResults.reduce((sum, r) => sum + (r.confidence ?? 0), 0) / validResults.length;
+    return avgConfidence >= threshold;
+  }
+
+  /**
+   * Build revision feedback string from peer review issues for the next convergence iteration.
+   */
+  private buildRevisionFeedback(
+    results: Array<{ verdict?: string; issues?: string[]; notes?: string }>,
+  ): string {
+    const feedbackParts: string[] = [];
+    for (const result of results) {
+      if (result.verdict === "approve") continue;
+      if (result.issues?.length) {
+        feedbackParts.push(`Issues: ${result.issues.join("; ")}`);
+      }
+      if (result.notes?.trim()) {
+        feedbackParts.push(`Notes: ${result.notes.trim()}`);
+      }
+    }
+    return feedbackParts.length > 0
+      ? feedbackParts.join("\n")
+      : "Peer review flagged issues but provided no specific feedback.";
   }
 
   private buildFallbackGuestInstruction(guestAgentId: string, userInput?: string): string {
@@ -1613,6 +1848,9 @@ export class SpaceManager {
         principalId: executionIdentity?.principalId,
         deviceId: executionIdentity?.deviceId,
         executionOrigin: executionIdentity?.executionOrigin,
+        accessMode: executionIdentity?.accessMode,
+        mode: executionIdentity?.mode,
+        effort: executionIdentity?.effort,
       };
 
       let result: TurnResult | null = null;
@@ -1708,6 +1946,9 @@ export class SpaceManager {
           principalId: executionIdentity?.principalId,
           deviceId: executionIdentity?.deviceId,
           executionOrigin: executionIdentity?.executionOrigin,
+          accessMode: executionIdentity?.accessMode,
+          mode: executionIdentity?.mode,
+          effort: executionIdentity?.effort,
         };
 
         let result: TurnResult | null = null;
@@ -1759,6 +2000,9 @@ export class SpaceManager {
         principalId: executionIdentity?.principalId,
         deviceId: executionIdentity?.deviceId,
         executionOrigin: executionIdentity?.executionOrigin,
+        accessMode: executionIdentity?.accessMode,
+        mode: executionIdentity?.mode,
+        effort: executionIdentity?.effort,
       };
 
       for await (const event of synthRuntime.executeTurn(synthContext)) {
@@ -1926,6 +2170,25 @@ export class SpaceManager {
       : "completed";
     const eventType = executionFailureReason ? "summary.failed" : "summary.completed";
 
+    const summaryTextPromise = this.options.reflectionService?.runSummaryJob({
+      kind: "orchestrator",
+      conversationTopology: trace.turnModel === "primary_only" ? "broadcast_team" : "shared_team_chat",
+      turnModel: trace.turnModel,
+      userInput: trace.input,
+      participants: participants.map((participant) => ({
+        agentId: participant.agentId,
+        isPrimary: participant.isPrimary,
+        status: participant.status,
+        finalMessage: participant.finalMessage,
+        error: participant.error,
+      })),
+      peerReview: trace.peerReview,
+      highlights: trace.highlights.map((highlight) => ({
+        agentId: highlight.agentId,
+        text: highlight.text,
+      })),
+    });
+
     const summary = {
       summaryId: trace.summaryId,
       version: "v1",
@@ -1949,16 +2212,10 @@ export class SpaceManager {
       })),
       peerReview: trace.peerReview,
       highlights: trace.highlights.slice(0, 8),
-      finalSummaryText: this.buildSummaryText(
-        trace.turnModel,
-        trace.input,
-        participants,
-        summaryStatus,
-        trace.peerReview,
-      ),
+      finalSummaryText: undefined as string | undefined,
     };
 
-    this.eventBus.emit({
+    const emitSummary = (finalSummaryText: string) => this.eventBus.emit({
       type: "space.orchestrator_event",
       spaceId,
       turnId,
@@ -1969,10 +2226,32 @@ export class SpaceManager {
       eventType,
       event: {
         type: eventType,
-        summary,
+        summary: {
+          ...summary,
+          finalSummaryText,
+        },
       },
       timestamp: new Date(),
     });
+    if (summaryTextPromise) {
+      void summaryTextPromise
+        .then((result) => emitSummary(result.summaryText))
+        .catch(() => emitSummary(this.buildSummaryText(
+          trace.turnModel,
+          trace.input,
+          participants,
+          summaryStatus,
+          trace.peerReview,
+        )));
+      return;
+    }
+    emitSummary(this.buildSummaryText(
+      trace.turnModel,
+      trace.input,
+      participants,
+      summaryStatus,
+      trace.peerReview,
+    ));
   }
 
   private buildSummaryText(
@@ -2061,6 +2340,90 @@ export class SpaceManager {
   }
 
   // ---------------------------------------------------------------------------
+  // Session continuity helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get serializable state for all agent sessions in a space.
+   * Used by SessionContinuityManager to create checkpoints.
+   */
+  getActiveSpaceState(spaceId: string): {
+    agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
+    turnIds: string[];
+  } | null {
+    const active = this.activeSpaces.get(spaceId);
+    if (!active) return null;
+
+    const agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }> = {};
+    for (const [agentId, session] of active.agentSessions) {
+      agentStates[agentId] = {
+        status: "active",
+        lastTurnId: session.lastTurnId,
+        messages: [...session.messages],
+      };
+    }
+
+    // Collect turn IDs from agent sessions (latest turn per agent)
+    const turnIds: string[] = [];
+    for (const session of active.agentSessions.values()) {
+      if (session.lastTurnId) {
+        turnIds.push(session.lastTurnId);
+      }
+    }
+
+    return { agentStates, turnIds };
+  }
+
+  /**
+   * Restore agent sessions from a checkpoint.
+   * Runtimes are NOT restored — they re-resolve lazily on next turn.
+   */
+  async restoreFromCheckpoint(
+    spaceId: string,
+    checkpoint: {
+      agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
+      configLoader?: () => Promise<SpaceConfig | null>;
+    },
+  ): Promise<boolean> {
+    const loader = checkpoint.configLoader ?? (() => this.options.loadSpaceConfig(spaceId));
+    const config = await loader();
+    if (!config) return false;
+
+    const active: ActiveSpace = {
+      config,
+      configStale: false,
+      orchestratorSessionId: `space:${spaceId}`,
+      roundRobinIndex: 0,
+      runtimes: new Map(),
+      agentSessions: new Map(),
+      activeTurnRuntimes: new Map(),
+      pausedRuntimes: new Map(),
+      feedbackTimers: new Map(),
+      pausedRuntimeAgentIds: new Map(),
+      pausedFeedbackRequests: new Map(),
+    };
+
+    // Populate agent sessions from checkpoint data
+    for (const [agentId, state] of Object.entries(checkpoint.agentStates)) {
+      const messages = state.messages ?? [];
+      const capped = messages.length > MAX_AGENT_SESSION_MESSAGES
+        ? messages.slice(messages.length - MAX_AGENT_SESSION_MESSAGES)
+        : [...messages];
+
+      active.agentSessions.set(agentId, {
+        sessionId: `${active.orchestratorSessionId}:agent:${agentId}`,
+        agentId,
+        messages: capped,
+        lastTurnId: state.lastTurnId,
+        lastActivityAt: new Date(),
+      });
+    }
+
+    this.activeSpaces.set(spaceId, active);
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
 
@@ -2072,6 +2435,9 @@ export class SpaceManager {
       // Reload config but preserve sessions and runtimes
       const config = await this.options.loadSpaceConfig(spaceId);
       if (!config) throw new Error(`Space ${spaceId} not found`);
+      if (config.status === "archived" || config.status === "deleted") {
+        throw new Error(`Space ${spaceId} is ${config.status}`);
+      }
       active.config = config;
       active.configStale = false;
       return active;
@@ -2079,6 +2445,9 @@ export class SpaceManager {
 
     const config = await this.options.loadSpaceConfig(spaceId);
     if (!config) throw new Error(`Space ${spaceId} not found`);
+    if (config.status === "archived" || config.status === "deleted") {
+      throw new Error(`Space ${spaceId} is ${config.status}`);
+    }
 
     active = {
       config,
@@ -2087,9 +2456,11 @@ export class SpaceManager {
       roundRobinIndex: 0,
       runtimes: new Map(),
       agentSessions: new Map(),
+      activeTurnRuntimes: new Map(),
       pausedRuntimes: new Map(),
       feedbackTimers: new Map(),
       pausedRuntimeAgentIds: new Map(),
+      pausedFeedbackRequests: new Map(),
     };
 
     this.activeSpaces.set(spaceId, active);
@@ -2124,6 +2495,44 @@ export class SpaceManager {
     };
     space.agentSessions.set(agentId, session);
     return session;
+  }
+
+  private async buildLaunchSnapshots(
+    space: ActiveSpace,
+    turnId: string,
+    agents: SpaceAgentAssignment[],
+    userMessage: ModelMessage,
+    executionIdentity?: TurnExecutionIdentity,
+  ): Promise<CliLaunchSnapshot[]> {
+    const snapshots = await Promise.all(
+      agents.map(async (assignment) => {
+        const runtime = await this.getRuntime(space, assignment.agentId);
+        const session = await this.getOrCreateAgentSession(space, assignment.agentId);
+        const launchContext: TurnContext = {
+          spaceId: space.config.id,
+          turnId,
+          messages: [...session.messages, userMessage],
+          lineageId: space.orchestratorSessionId,
+          hopCount: 0,
+          maxHops: this.options.maxHops ?? 5,
+          principalId: executionIdentity?.principalId,
+          deviceId: executionIdentity?.deviceId,
+          executionOrigin: executionIdentity?.executionOrigin,
+          accessMode: executionIdentity?.accessMode,
+          mode: executionIdentity?.mode,
+          effort: executionIdentity?.effort,
+        };
+
+        try {
+          const snapshot = await runtime.getLaunchSnapshot?.(launchContext);
+          return snapshot ?? undefined;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+
+    return snapshots.filter((snapshot): snapshot is CliLaunchSnapshot => Boolean(snapshot));
   }
 
   private updateAgentSession(
@@ -2165,6 +2574,7 @@ export class SpaceManager {
       const runtime = space.pausedRuntimes.get(turnId);
       if (!runtime) {
         space.pausedRuntimeAgentIds.delete(turnId);
+        space.pausedFeedbackRequests.delete(turnId);
         return; // Already resumed
       }
 
@@ -2220,6 +2630,7 @@ export class SpaceManager {
         clearTimeout(timer);
       }
       space.pausedRuntimeAgentIds.clear();
+      space.pausedFeedbackRequests.clear();
       for (const runtime of space.runtimes.values()) {
         void runtime.cancel().catch(() => {});
       }
@@ -2243,8 +2654,11 @@ function normalizeExecutionIdentity(
   const principalId = normalizeOptionalString(input.principalId);
   const deviceId = normalizeOptionalString(input.deviceId);
   const executionOrigin = normalizeExecutionOrigin(input.executionOrigin);
-  if (!principalId && !deviceId && !executionOrigin) return undefined;
-  return { principalId, deviceId, executionOrigin };
+  const accessMode = normalizeAccessMode(input.accessMode);
+  const mode = normalizeExecutionMode(input.mode);
+  const effort = normalizeReasoningEffort(input.effort);
+  if (!principalId && !deviceId && !executionOrigin && !accessMode && !mode && !effort) return undefined;
+  return { principalId, deviceId, executionOrigin, accessMode, mode, effort };
 }
 
 function normalizeOptionalString(value?: string): string | undefined {
@@ -2266,6 +2680,27 @@ function normalizeExecutionOrigin(value?: CapabilityExecutionOrigin): Capability
     || value === "system"
     || value === "unknown"
   ) {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeAccessMode(value?: TurnAccessMode): TurnAccessMode | undefined {
+  if (value === "default" || value === "full_access") {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeExecutionMode(value?: TurnExecutionMode): TurnExecutionMode | undefined {
+  if (value === "ask" || value === "plan" || value === "execute") {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeReasoningEffort(value?: TurnReasoningEffort): TurnReasoningEffort | undefined {
+  if (value === "low" || value === "medium" || value === "high" || value === "max") {
     return value;
   }
   return undefined;

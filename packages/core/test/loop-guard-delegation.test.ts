@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { validateDelegation } from "../src/agents/agent-as-tool.js";
-import type { DelegationRequest } from "../src/agents/agent-as-tool.js";
+import { validateDelegation } from "../src/agents/delegation-validation.js";
+import type { DelegationRequest } from "../src/agents/delegation-validation.js";
 
 function makeRequest(overrides: Partial<DelegationRequest> = {}): DelegationRequest {
   return {

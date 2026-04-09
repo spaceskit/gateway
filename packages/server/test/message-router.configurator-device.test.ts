@@ -24,7 +24,7 @@ function makeMessage<T>(type: string, payload: T): GatewayMessage<T> {
 }
 
 function makeRouter(options: {
-  spaceConfiguratorService?: Record<string, unknown>;
+  spaceTemplateService?: Record<string, unknown>;
   deviceIdentityService?: Record<string, unknown>;
   gatewaySkillCatalogService?: Record<string, unknown>;
   issueHttpPrincipalToken?: (input: {
@@ -52,7 +52,7 @@ function makeRouter(options: {
       deregister: () => {},
     } as any,
     logger,
-    spaceConfiguratorService: options.spaceConfiguratorService as any,
+    spaceTemplateService: options.spaceTemplateService as any,
     deviceIdentityService: options.deviceIdentityService as any,
     gatewaySkillCatalogService: options.gatewaySkillCatalogService as any,
     issueHttpPrincipalToken: options.issueHttpPrincipalToken as any,
@@ -60,87 +60,48 @@ function makeRouter(options: {
 }
 
 describe("MessageRouter configurator + device handlers", () => {
-  test("routes preset list/get/apply flows", async () => {
+  test("routes template list/get/preview/create/save/archive flows", async () => {
     const router = makeRouter({
-      spaceConfiguratorService: {
-        listPresets: () => [{
-          presetId: "system.space.chat_first",
-          kind: "space",
-          title: "Chat First",
-          description: "Starter",
-          source: "system",
-          version: 1,
-          tags: ["starter"],
-        }],
-        getPreset: () => ({
-          presetId: "system.space.chat_first",
-          kind: "space",
-          title: "Chat First",
-          description: "Starter",
-          source: "system",
-          version: 1,
-          tags: ["starter"],
-          spacePreset: {
-            communicationMode: "chat_first",
-            turnModel: "primary_only",
-            baseAgents: [],
-            agentPresetIds: [],
-          },
-        }),
-        applyPresetToSpace: async () => ({
-          applicationId: "preset-apply-1",
-          presetId: "system.space.chat_first",
-          spaceId: "space-main",
-          createdSpace: false,
-          appliedAgents: 1,
-          skippedAgents: 0,
-          appliedAt: new Date().toISOString(),
-          space: {
-            id: "space-main",
-            resourceId: "resource-main",
-            name: "Main",
-            turnModel: "primary_only",
-            agents: [],
-            capabilities: [],
-            capabilityOverrides: {},
-            visibility: "shared",
+      spaceTemplateService: {
+        listTemplates: () => ([
+          {
+            templateId: "template-1",
+            name: "Template",
+            description: "Two-agent planning template",
+            status: "active",
+            activeRevision: 1,
+            communicationMode: "async_notes",
+            conversationTopology: "shared_team_chat",
+            promptPackId: "shared-team-chat-v1",
+            turnModel: "sequential_all",
+            agentDefinitions: [],
+            createdBy: "principal-owner",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           },
+        ]),
+        getTemplate: () => ({
+          templateId: "template-1",
+          name: "Template",
+          description: "Two-agent planning template",
+          status: "active",
+          activeRevision: 1,
+          communicationMode: "async_notes",
+          conversationTopology: "shared_team_chat",
+          promptPackId: "shared-team-chat-v1",
+          turnModel: "sequential_all",
+          agentDefinitions: [],
+          createdBy: "principal-owner",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         }),
-      },
-    });
-
-    const list = await router.handle(makeClient(), makeMessage(MessageTypes.PRESET_LIST, {}));
-    expect(list?.type).toBe(MessageTypes.PRESET_LIST);
-    expect((list?.payload as any).presets.length).toBe(1);
-
-    const get = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PRESET_GET, { presetId: "system.space.chat_first" }),
-    );
-    expect(get?.type).toBe(MessageTypes.PRESET_GET);
-    expect((get?.payload as any).preset.presetId).toBe("system.space.chat_first");
-
-    const apply = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PRESET_APPLY_TO_SPACE, {
-        presetId: "system.space.chat_first",
-        targetSpaceId: "space-main",
-      }),
-    );
-    expect(apply?.type).toBe(MessageTypes.PRESET_APPLY_TO_SPACE);
-    expect((apply?.payload as any).appliedAgents).toBe(1);
-  });
-
-  test("routes template preview/create/save flows", async () => {
-    const router = makeRouter({
-      spaceConfiguratorService: {
         previewTemplate: () => ({
           template: {
             templateId: "template-1",
             title: "Template",
-            communicationMode: "chat_first",
+            communicationMode: "async_notes",
+            conversationTopology: "shared_team_chat",
+            promptPackId: "shared-team-chat-v1",
             agentPresetIds: [],
             createdBy: "principal-owner",
             updatedAt: new Date().toISOString(),
@@ -150,8 +111,10 @@ describe("MessageRouter configurator + device handlers", () => {
             templateRevision: 1,
             name: "Template Space",
             resourceId: "resource-main",
-            communicationMode: "chat_first",
-            turnModel: "primary_only",
+            communicationMode: "async_notes",
+            conversationTopology: "shared_team_chat",
+            promptPackId: "shared-team-chat-v1",
+            turnModel: "sequential_all",
             initialAgents: [],
           },
           warnings: [],
@@ -160,7 +123,9 @@ describe("MessageRouter configurator + device handlers", () => {
           template: {
             templateId: "template-1",
             title: "Template",
-            communicationMode: "chat_first",
+            communicationMode: "async_notes",
+            conversationTopology: "shared_team_chat",
+            promptPackId: "shared-team-chat-v1",
             agentPresetIds: [],
             createdBy: "principal-owner",
             updatedAt: new Date().toISOString(),
@@ -169,7 +134,7 @@ describe("MessageRouter configurator + device handlers", () => {
             id: "space-template",
             resourceId: "resource-main",
             name: "Template Space",
-            turnModel: "primary_only",
+            turnModel: "sequential_all",
             agents: [],
             capabilities: [],
             capabilityOverrides: {},
@@ -182,15 +147,48 @@ describe("MessageRouter configurator + device handlers", () => {
           template: {
             templateId: "template-1",
             title: "Template",
-            communicationMode: "chat_first",
+            communicationMode: "async_notes",
+            conversationTopology: "shared_team_chat",
+            promptPackId: "shared-team-chat-v1",
             agentPresetIds: [],
             createdBy: "principal-owner",
             updatedAt: new Date().toISOString(),
           },
           created: true,
         }),
+        archiveTemplate: () => ({
+          template: {
+            templateId: "template-1",
+            name: "Template",
+            description: "Two-agent planning template",
+            status: "archived",
+            activeRevision: 1,
+            communicationMode: "async_notes",
+            conversationTopology: "shared_team_chat",
+            promptPackId: "shared-team-chat-v1",
+            turnModel: "sequential_all",
+            agentDefinitions: [],
+            createdBy: "principal-owner",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          archived: true,
+        }),
       },
     });
+
+    const list = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_LIST_TEMPLATES, {}),
+    );
+    expect(list?.type).toBe(MessageTypes.SPACE_LIST_TEMPLATES);
+    expect((list?.payload as any).templates.length).toBe(1);
+
+    const get = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_GET_TEMPLATE, { templateId: "template-1" }),
+    );
+    expect(get?.type).toBe(MessageTypes.SPACE_GET_TEMPLATE);
 
     const preview = await router.handle(
       makeClient(),
@@ -213,49 +211,12 @@ describe("MessageRouter configurator + device handlers", () => {
     );
     expect(save?.type).toBe(MessageTypes.SPACE_SAVE_TEMPLATE);
     expect((save?.payload as any).created).toBe(true);
-  });
-
-  test("routes preset.save_agent and preset.archive_agent", async () => {
-    const router = makeRouter({
-      spaceConfiguratorService: {
-        saveAgentPreset: async () => ({
-          preset: {
-            presetId: "user.agent.agent-preset-1",
-            kind: "agent",
-            title: "Planner",
-            description: "Preset",
-            source: "user",
-            version: 1,
-            tags: ["planner"],
-            agentPreset: {
-              defaultAgents: [],
-            },
-          },
-          created: true,
-        }),
-        archiveAgentPreset: async () => ({
-          presetId: "agent-preset-1",
-          archived: true,
-        }),
-      },
-    });
-
-    const save = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PRESET_SAVE_AGENT, {
-        title: "Planner",
-      }),
-    );
-    expect(save?.type).toBe(MessageTypes.PRESET_SAVE_AGENT);
-    expect((save?.payload as any).created).toBe(true);
 
     const archive = await router.handle(
       makeClient(),
-      makeMessage(MessageTypes.PRESET_ARCHIVE_AGENT, {
-        presetId: "agent-preset-1",
-      }),
+      makeMessage(MessageTypes.SPACE_ARCHIVE_TEMPLATE, { templateId: "template-1" }),
     );
-    expect(archive?.type).toBe(MessageTypes.PRESET_ARCHIVE_AGENT);
+    expect(archive?.type).toBe(MessageTypes.SPACE_ARCHIVE_TEMPLATE);
     expect((archive?.payload as any).archived).toBe(true);
   });
 

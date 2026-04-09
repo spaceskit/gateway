@@ -137,6 +137,23 @@ export class TurnRepository {
       .all(spaceId, limit, offset) as TurnRow[];
   }
 
+  listByLogicalTurn(spaceId: string, logicalTurnId: string, limit = 100, offset = 0): TurnRow[] {
+    const normalizedLimit = Math.max(1, Math.floor(limit));
+    const normalizedOffset = Math.max(0, Math.floor(offset));
+    return this.db
+      .query(`
+        SELECT * FROM turns
+        WHERE space_id = ?
+          AND (
+            turn_id = ?
+            OR user_turn_id = ?
+          )
+        ORDER BY created_at ASC, turn_id ASC
+        LIMIT ? OFFSET ?
+      `)
+      .all(spaceId, logicalTurnId, logicalTurnId, normalizedLimit, normalizedOffset) as TurnRow[];
+  }
+
   listBySpaceAfterTurn(spaceId: string, afterTurnId: string, limit = 100): TurnRow[] {
     return this.db
       .query(`
@@ -212,6 +229,19 @@ export class TurnRepository {
     return row.count;
   }
 
+  countByLogicalTurn(spaceId: string, logicalTurnId: string): number {
+    const row = this.db.query(`
+      SELECT COUNT(*) as count
+      FROM turns
+      WHERE space_id = ?
+        AND (
+          turn_id = ?
+          OR user_turn_id = ?
+        )
+    `).get(spaceId, logicalTurnId, logicalTurnId) as { count: number };
+    return row.count ?? 0;
+  }
+
   countCompletedBySpaceAndAgentSince(spaceId: string, agentId: string, sinceIso: string): number {
     const row = this.db.query(`
       SELECT COUNT(*) as count
@@ -248,6 +278,28 @@ export class TurnRepository {
       GROUP BY actor_id, actor_type
       ORDER BY lastActivityAt DESC
     `).all(spaceId) as SpaceAgentTurnAggregate[];
+  }
+
+  deleteBySpace(
+    spaceId: string,
+    options: {
+      createdAtGte?: string;
+      createdAtLte?: string;
+    } = {},
+  ): number {
+    const where = ["space_id = ?"];
+    const values: Array<string | number> = [spaceId];
+    if (options.createdAtGte) {
+      where.push("created_at >= ?");
+      values.push(options.createdAtGte);
+    }
+    if (options.createdAtLte) {
+      where.push("created_at <= ?");
+      values.push(options.createdAtLte);
+    }
+    return this.db
+      .query(`DELETE FROM turns WHERE ${where.join(" AND ")}`)
+      .run(...values).changes;
   }
 }
 

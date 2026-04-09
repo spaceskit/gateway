@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "hrvst.estimates.delete",
+  "displayName": "Harvest Estimate Delete",
+  "description": "Delete a Harvest estimate.",
+  "bundleId": "hrvst-cli",
+  "bundleDisplayName": "Harvest CLI",
+  "bundleDescription": "Gateway-managed Harvest CLI bundle for account, client, project, report, time-entry, and user operations.",
+  "toolGroupId": "estimates",
+  "toolGroupDisplayName": "Estimates",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/hrvst-cli-tools/spaces-hrvst.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/hrvst-cli-tools/spaces-hrvst.mjs",
+  "argsTemplate": [
+    "--op",
+    "estimates.delete",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "array",
+            "description": "Optional extra positional arguments to append after the subcommand.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flags": {
+            "type": "object",
+            "description": "Optional Harvest flags. Use raw CLI flag keys such as `project_id`, `page`, or `external_reference[id]`.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "presentFlags": {
+            "type": "array",
+            "description": "Optional flag names that should be rendered without values, for example `editor`.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool for Harvest CLI operations only after the gateway host is authenticated to Harvest.",
+  "examples": [
+    {
+      "name": "Delete a estimate",
+      "arguments": {
+        "payload": {
+          "flags": {
+            "estimate_id": "12345"
+          }
+        }
+      }
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/hrvst-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "destructive",
+  "enabled": true,
+  "createdAt": "2026-04-08T20:49:28.804Z",
+  "updatedAt": "2026-04-08T20:49:28.804Z"
+}

@@ -63,6 +63,29 @@ describe("SpaceAdminService idempotency", () => {
     expect(loaded?.spaceUid).toBe(providedSpaceUid);
   });
 
+  test("persists thinking capture policy from createSpace config", async () => {
+    const stores = makeStores();
+    const service = makeService(stores);
+
+    const created = await service.createSpace({
+      spaceId: "space-thinking",
+      resourceId: "resource-thinking",
+      name: "Thinking Space",
+      thinkingCapturePolicy: "FULL",
+    });
+
+    expect(created.thinkingCapturePolicy).toBe("FULL");
+
+    const row = stores.getSpace("space-thinking");
+    expect(row?.spaceConfigJson).not.toBeNull();
+    expect(JSON.parse(row?.spaceConfigJson ?? "{}")).toMatchObject({
+      thinkingCapturePolicy: "FULL",
+    });
+
+    const loaded = await service.getSpace("space-thinking");
+    expect(loaded?.thinkingCapturePolicy).toBe("FULL");
+  });
+
   test("replays addAgent with same idempotency key without duplicate writes", async () => {
     const stores = makeStores();
     const service = makeService(stores);
@@ -89,6 +112,47 @@ describe("SpaceAdminService idempotency", () => {
     expect(first.agentId).toBe("agent-2");
     expect(second.agentId).toBe("agent-2");
     expect(stores.upsertAssignmentCalls).toBe(1);
+  });
+
+  test("archives a space and excludes it from the default list", async () => {
+    const stores = makeStores();
+    const service = makeService(stores);
+
+    await service.createSpace({
+      spaceId: "space-archive",
+      resourceId: "resource-archive",
+      name: "Archive Me",
+    });
+
+    const archived = await service.archiveSpace({
+      spaceId: "space-archive",
+    });
+
+    expect(archived.status).toBe("archived");
+    expect(archived.archivedAt).toBeInstanceOf(Date);
+    expect((await service.listSpaces()).map((space) => space.id)).not.toContain("space-archive");
+    expect((await service.listSpaces({ statuses: ["archived"] })).map((space) => space.id)).toContain("space-archive");
+  });
+
+  test("soft-deletes a space and excludes it from default and archived lists", async () => {
+    const stores = makeStores();
+    const service = makeService(stores);
+
+    await service.createSpace({
+      spaceId: "space-delete",
+      resourceId: "resource-delete",
+      name: "Delete Me",
+    });
+
+    const deleted = await service.deleteSpace({
+      spaceId: "space-delete",
+    });
+
+    expect(deleted.status).toBe("deleted");
+    expect(deleted.deletedAt).toBeInstanceOf(Date);
+    expect((await service.listSpaces()).map((space) => space.id)).not.toContain("space-delete");
+    expect((await service.listSpaces({ statuses: ["archived"] })).map((space) => space.id)).not.toContain("space-delete");
+    expect((await service.listSpaces({ statuses: ["deleted"] })).map((space) => space.id)).toContain("space-delete");
   });
 
   test("sets orchestrator profile and replays with idempotency key", async () => {
@@ -661,7 +725,9 @@ function makeService(
   return new SpaceAdminService({
     createSpaceRow: async (input) => stores.createSpace(input),
     getSpaceRow: async (spaceId) => stores.getSpace(spaceId),
-    listSpaceRows: async () => stores.listSpaces(),
+    listSpaceRows: async (query) => stores.listSpaces(query.statuses),
+    archiveSpaceRow: async (spaceId, archivedAt) => stores.archiveSpace(spaceId, archivedAt),
+    deleteSpaceRow: async (spaceId, deletedAt) => stores.deleteSpace(spaceId, deletedAt),
     updateSpaceConfigJson: async (spaceId, configJson) => {
       stores.updateSpaceConfig(spaceId, configJson);
     },
@@ -742,6 +808,8 @@ function makeStores() {
         spaceConfigJson: input.configJson ?? null,
         templateId: input.templateId ?? "",
         templateRevision: input.templateRevision ?? 0,
+        archivedAt: null,
+        deletedAt: null,
         createdAt: now(),
         updatedAt: now(),
       };
@@ -751,8 +819,29 @@ function makeStores() {
     getSpace(spaceId: string): SpaceStoreRecord | null {
       return spaces.get(spaceId) ?? null;
     },
-    listSpaces(): SpaceStoreRecord[] {
-      return Array.from(spaces.values());
+    listSpaces(statuses?: string[]): SpaceStoreRecord[] {
+      const rows = Array.from(spaces.values());
+      if (statuses && statuses.length > 0) {
+        return rows.filter((row) => statuses.includes(row.status));
+      }
+      return rows.filter((row) => row.status !== "archived" && row.status !== "deleted");
+    },
+    archiveSpace(spaceId: string, archivedAt: string): SpaceStoreRecord | null {
+      const row = spaces.get(spaceId);
+      if (!row) return null;
+      row.status = "archived";
+      row.archivedAt = archivedAt;
+      row.deletedAt = null;
+      row.updatedAt = archivedAt;
+      return row;
+    },
+    deleteSpace(spaceId: string, deletedAt: string): SpaceStoreRecord | null {
+      const row = spaces.get(spaceId);
+      if (!row) return null;
+      row.status = "deleted";
+      row.deletedAt = deletedAt;
+      row.updatedAt = deletedAt;
+      return row;
     },
     updateSpaceConfig(spaceId: string, configJson: string): void {
       const row = spaces.get(spaceId);

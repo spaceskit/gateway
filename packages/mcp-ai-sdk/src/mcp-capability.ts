@@ -6,6 +6,7 @@
  */
 
 import type { CapabilityProvider, CapabilityType, ProviderSource } from "@spaceskit/core";
+import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 
 interface MCPClient {
   tools(): Promise<Record<string, unknown>>;
@@ -71,12 +72,12 @@ export class MCPCapabilityProvider implements CapabilityProvider {
         },
       })
       : await createMCPClient({
-        transport: {
-          type: "stdio",
+        transport: new Experimental_StdioMCPTransport({
           command: this.config.endpoint,
           args: this.config.args,
           env: this.config.env,
-        },
+          stderr: "pipe",
+        }),
       });
 
     const tools = await this.client.tools();

@@ -22,6 +22,10 @@ export interface CodexBarUsageAdapterOptions {
   ) => SpawnSyncReturns<string>;
 }
 
+export interface CodexBarUsageReadOptions {
+  allowCommandProbe?: boolean;
+}
+
 export class CodexBarUsageAdapter {
   private readonly logger: Logger;
   private readonly executable: string;
@@ -42,12 +46,20 @@ export class CodexBarUsageAdapter {
     this.runCommand = options.runCommand ?? defaultRunCommand;
   }
 
-  readProviderUsage(providerId: string): CodexBarQuota {
+  readProviderUsage(providerId: string, options: CodexBarUsageReadOptions = {}): CodexBarQuota {
     if (this.enableWidgetSnapshot) {
       const snapshotQuota = this.readSnapshotQuota(providerId);
       if (snapshotQuota?.windows.length) {
         return snapshotQuota;
       }
+    }
+
+    if (options.allowCommandProbe !== true) {
+      return {
+        available: false,
+        windows: [],
+        message: "Passive CodexBar snapshot unavailable. Enable prefer mode for an explicit live probe.",
+      };
     }
 
     if (this.binaryMissing) {

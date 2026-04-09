@@ -8,7 +8,9 @@
 import { randomUUID } from "node:crypto";
 import { normalizeUuid } from "../identity/uuid.js";
 import type { AgentSecurityScope } from "../security/types.js";
+import type { ThinkingCapturePolicy } from "./memory-policy.js";
 import type {
+  ConversationTopology,
   CoordinatorRole,
   SpaceAgentAssignment,
   SpaceConfig,
@@ -35,6 +37,8 @@ const SPACE_STATE_VALUES: SpaceState[] = [
   "paused",
   "completed",
   "failed",
+  "archived",
+  "deleted",
 ];
 
 const ROLE_VALUES = new Set<CoordinatorRole | "participant">([
@@ -69,6 +73,8 @@ export interface SpaceStoreRecord {
   spaceConfigJson: string | null;
   templateId: string;
   templateRevision: number;
+  archivedAt?: string | null;
+  deletedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -89,6 +95,16 @@ export interface ListSpacesStoreQuery {
   statuses?: string[];
   resourceId?: string;
   limit?: number;
+}
+
+export interface ArchiveSpaceInput {
+  idempotencyKey?: string;
+  spaceId: string;
+}
+
+export interface DeleteSpaceInput {
+  idempotencyKey?: string;
+  spaceId: string;
 }
 
 export interface SpaceAssignmentStoreRecord {
@@ -152,6 +168,8 @@ export interface SpaceAdminServiceOptions {
   createSpaceRow: (input: CreateSpaceStoreInput) => Promise<SpaceStoreRecord>;
   getSpaceRow: (spaceId: string) => Promise<SpaceStoreRecord | null>;
   listSpaceRows: (query: ListSpacesStoreQuery) => Promise<SpaceStoreRecord[]>;
+  archiveSpaceRow?: (spaceId: string, archivedAt: string) => Promise<SpaceStoreRecord | null>;
+  deleteSpaceRow?: (spaceId: string, deletedAt: string) => Promise<SpaceStoreRecord | null>;
   updateSpaceConfigJson: (spaceId: string, configJson: string) => Promise<void>;
   /** Optional profile existence check used by orchestrator assignment updates. */
   profileExists?: (profileId: string) => Promise<boolean> | boolean;
@@ -278,7 +296,9 @@ export interface CreateSpaceInput {
   capabilityOverrides?: Record<string, string>;
   visibility?: "shared" | "private";
   turnModelConfig?: TurnModelConfig;
+  conversationTopology?: ConversationTopology;
   maxTurns?: number;
+  thinkingCapturePolicy?: ThinkingCapturePolicy;
   moderatorProfileId?: string;
   initialAgents?: Omit<AddAgentInput, "spaceId">[];
 }
@@ -405,6 +425,75 @@ export class SpaceAdminService {
       await this.initializeAssignmentsFromLegacy(row);
       return this.hydrateSpace(row);
     }));
+  }
+
+  async archiveSpace(input: ArchiveSpaceInput): Promise<SpaceConfig> {
+    const spaceId = input.spaceId.trim();
+    if (!spaceId) {
+      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
+    }
+    if (!this.options.archiveSpaceRow) {
+      throw new SpaceAdminError("FAILED_PRECONDITION", "Space archive persistence unavailable");
+    }
+
+    return this.withIdempotency(
+      "space.archive",
+      input.idempotencyKey,
+      { spaceId },
+      async () => {
+        const row = await this.options.getSpaceRow(spaceId);
+        if (!row) {
+          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
+        }
+        if (normalizeSpaceState(row.status) === "deleted") {
+          throw new SpaceAdminError("FAILED_PRECONDITION", `Space is deleted: ${spaceId}`);
+        }
+
+        const archived = await this.options.archiveSpaceRow!(spaceId, this.now().toISOString());
+        if (!archived) {
+          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
+        }
+
+        const hydrated = await this.getSpace(spaceId);
+        if (!hydrated) {
+          throw new SpaceAdminError("FAILED_PRECONDITION", `Failed to load archived space: ${spaceId}`);
+        }
+        return hydrated;
+      },
+    );
+  }
+
+  async deleteSpace(input: DeleteSpaceInput): Promise<SpaceConfig> {
+    const spaceId = input.spaceId.trim();
+    if (!spaceId) {
+      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
+    }
+    if (!this.options.deleteSpaceRow) {
+      throw new SpaceAdminError("FAILED_PRECONDITION", "Space delete persistence unavailable");
+    }
+
+    return this.withIdempotency(
+      "space.delete",
+      input.idempotencyKey,
+      { spaceId },
+      async () => {
+        const row = await this.options.getSpaceRow(spaceId);
+        if (!row) {
+          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
+        }
+
+        const deleted = await this.options.deleteSpaceRow!(spaceId, this.now().toISOString());
+        if (!deleted) {
+          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
+        }
+
+        const hydrated = await this.getSpace(spaceId);
+        if (!hydrated) {
+          throw new SpaceAdminError("FAILED_PRECONDITION", `Failed to load deleted space: ${spaceId}`);
+        }
+        return hydrated;
+      },
+    );
   }
 
   async listAgentAssignments(spaceId: string): Promise<SpaceAgentAssignment[]> {
@@ -845,6 +934,7 @@ export class SpaceAdminService {
     return {
       id: row.spaceId,
       spaceUid,
+      status: normalizeSpaceState(row.status),
       resourceId: row.resourceId,
       name: row.name,
       goal: row.goal || undefined,
@@ -852,6 +942,9 @@ export class SpaceAdminService {
       templateId: row.templateId || undefined,
       turnModel: normalizeTurnModel(row.turnModel),
       turnModelConfig: parseTurnModelConfig(parsedConfig),
+      thinkingCapturePolicy: parseThinkingCapturePolicy(
+        parsedConfig.thinkingCapturePolicy ?? parsedConfig.thinking_capture_policy,
+      ),
       skillIds,
       agents: assignments,
       capabilities: parseStringArray(parsedConfig.capabilities),
@@ -859,6 +952,8 @@ export class SpaceAdminService {
       maxTurns: parseOptionalInt(parsedConfig.maxTurns),
       visibility: parseVisibility(parsedConfig.visibility),
       moderatorProfileId: asString(parsedConfig.moderatorProfileId),
+      archivedAt: parseOptionalDate(row.archivedAt),
+      deletedAt: parseOptionalDate(row.deletedAt),
       createdAt: parseDate(row.createdAt, this.now()),
       updatedAt: parseDate(row.updatedAt, this.now()),
     };
@@ -1241,8 +1336,14 @@ export class SpaceAdminService {
     if (input.turnModelConfig) {
       config.turnModelConfig = input.turnModelConfig;
     }
+    if (input.conversationTopology) {
+      config.conversationTopology = input.conversationTopology;
+    }
     if (typeof input.maxTurns === "number") {
       config.maxTurns = input.maxTurns;
+    }
+    if (input.thinkingCapturePolicy) {
+      config.thinkingCapturePolicy = input.thinkingCapturePolicy;
     }
     if (input.moderatorProfileId) {
       config.moderatorProfileId = input.moderatorProfileId;
@@ -1465,6 +1566,17 @@ function parseOptionalInt(value: unknown): number | undefined {
   return parsed === undefined ? undefined : parsed;
 }
 
+function parseThinkingCapturePolicy(value: unknown): ThinkingCapturePolicy | undefined {
+  switch (normalizeOptionalString(value)) {
+    case "OFF":
+    case "SUMMARY":
+    case "FULL":
+      return normalizeOptionalString(value) as ThinkingCapturePolicy;
+    default:
+      return undefined;
+  }
+}
+
 function normalizeTurnModel(raw: string): TurnModelStrategy {
   if ((TURN_MODEL_VALUES as string[]).includes(raw)) {
     return raw as TurnModelStrategy;
@@ -1490,6 +1602,12 @@ function parseDate(raw: string | undefined, fallback: Date): Date {
   if (!raw) return fallback;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? fallback : date;
+}
+
+function parseOptionalDate(raw: string | null | undefined): Date | undefined {
+  if (!raw) return undefined;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function asString(value: unknown): string | undefined {

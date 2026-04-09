@@ -56,15 +56,24 @@ describe("MessageRouter feature handlers", () => {
     expect((response?.payload as any).snapshot.currency).toBe("USD");
   });
 
-  test("routes execute_turn with authenticated principal/device context", async () => {
+  test("routes execute_turn with implicit owner full_access context", async () => {
     const executeTurnCalls: Array<[string, string, string | undefined, any]> = [];
     const router = makeRouter({
+      spaceSharingService: {
+        evaluateAccess: () => ({ allowed: true, enforced: false, mode: "collaborator" }),
+        getActiveParticipant: () => null,
+      },
       spaceManager: {
         executeTurn: async (
           spaceId: string,
           input: string,
           targetAgentId?: string,
-          identity?: { principalId?: string; deviceId?: string },
+          identity?: {
+            principalId?: string;
+            deviceId?: string;
+            mode?: string;
+            effort?: string;
+          },
         ) => {
           executeTurnCalls.push([spaceId, input, targetAgentId, identity]);
           return { turnId: "turn-context" };
@@ -78,6 +87,9 @@ describe("MessageRouter feature handlers", () => {
       makeMessage(MessageTypes.EXECUTE_TURN, {
         spaceUid: "main-space",
         input: "hello",
+        mode: "plan",
+        effort: "high",
+        accessMode: "full_access",
       }),
     );
 
@@ -87,8 +99,103 @@ describe("MessageRouter feature handlers", () => {
         "main-space",
         "hello",
         undefined,
-        { principalId: "principal-1", deviceId: "device-1", executionOrigin: "unknown" },
+        {
+          principalId: "principal-1",
+          deviceId: "device-1",
+          executionOrigin: "owner",
+          accessMode: "full_access",
+          mode: "plan",
+          effort: "high",
+        },
       ],
+    ]);
+  });
+
+  test("preserves full_access for implicit owner in an unshared space", async () => {
+    const executeTurnCalls: Array<[string, string, string | undefined, any]> = [];
+    const router = makeRouter({
+      spaceSharingService: {
+        evaluateAccess: () => ({ allowed: true, enforced: false, mode: "collaborator" }),
+        getActiveParticipant: () => null,
+      },
+      spaceManager: {
+        executeTurn: async (
+          spaceId: string,
+          input: string,
+          targetAgentId?: string,
+          identity?: {
+            principalId?: string;
+            deviceId?: string;
+            executionOrigin?: string;
+            accessMode?: string;
+          },
+        ) => {
+          executeTurnCalls.push([spaceId, input, targetAgentId, identity]);
+          return { turnId: "turn-full-access" };
+        },
+        resumeFeedback: async () => {},
+      },
+    });
+
+    const response = await router.handle(
+      makeClient({ publicKey: "principal-1", deviceId: "device-1" }),
+      makeMessage(MessageTypes.EXECUTE_TURN, {
+        spaceUid: "main-space",
+        input: "hello",
+        accessMode: "full_access",
+      }),
+    );
+
+    expect(response?.type).toBe(MessageTypes.TURN_EVENT);
+    expect(executeTurnCalls).toEqual([
+      [
+        "main-space",
+        "hello",
+        undefined,
+        {
+          principalId: "principal-1",
+          deviceId: "device-1",
+          executionOrigin: "owner",
+          accessMode: "full_access",
+          mode: undefined,
+          effort: undefined,
+        },
+      ],
+    ]);
+  });
+
+  test("creates continuity sessions using stable principal identity during execute_turn", async () => {
+    const continuityCalls: Array<[string, string, string]> = [];
+    const router = makeRouter({
+      sessionContinuityManager: {
+        getOrCreate: async (spaceId: string, clientId: string, mode: string) => {
+          continuityCalls.push([spaceId, clientId, mode]);
+          return {
+            sessionId: "session-1",
+            spaceId,
+            clientId,
+            continuityMode: mode,
+            status: "active",
+            lastActivityAt: new Date(),
+          };
+        },
+      },
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+        resumeFeedback: async () => {},
+      },
+    });
+
+    await router.handle(
+      makeClient({ id: "ws-client-1", publicKey: "principal-1", deviceId: "device-1" }),
+      makeMessage(MessageTypes.EXECUTE_TURN, {
+        spaceUid: "main-space",
+        input: "hello",
+      }),
+    );
+
+    expect(continuityCalls).toEqual([
+      ["main-space", "principal:principal-1", "session"],
     ]);
   });
 
@@ -163,7 +270,7 @@ describe("MessageRouter feature handlers", () => {
         "main-space",
         "guest turn",
         undefined,
-        { principalId: "guest-principal", deviceId: "device-guest", executionOrigin: "guest" },
+        { principalId: "guest-principal", deviceId: "device-guest", executionOrigin: "guest", accessMode: "default" },
       ],
     ]);
   });
@@ -195,7 +302,7 @@ describe("MessageRouter feature handlers", () => {
   });
 
   test("normalizes resume_feedback identifiers before dispatch", async () => {
-    const resumeFeedbackCalls: Array<[string, string, string, string | undefined]> = [];
+    const resumeFeedbackCalls: Array<[string, string, string, string | undefined, Record<string, unknown> | undefined]> = [];
     const router = makeRouter({
       spaceManager: {
         executeTurn: async () => ({ turnId: "turn-1" }),
@@ -204,19 +311,23 @@ describe("MessageRouter feature handlers", () => {
           turnId: string,
           response: string,
           revision?: string,
+          options?: Record<string, unknown>,
         ) => {
-          resumeFeedbackCalls.push([spaceId, turnId, response, revision]);
+          resumeFeedbackCalls.push([spaceId, turnId, response, revision, options]);
         },
       },
     });
 
     const response = await router.handle(
-      makeClient(),
+      makeClient({ publicKey: "principal-1", deviceId: "device-1" }),
       makeMessage(MessageTypes.RESUME_FEEDBACK, {
         spaceUid: "  main-space  ",
         turnId: "  turn-1  ",
         response: "approve",
         revision: "  revise this  ",
+        approvalGrant: {
+          mode: "durable",
+        },
       }),
     );
 
@@ -224,8 +335,118 @@ describe("MessageRouter feature handlers", () => {
     expect((response?.payload as any).spaceId).toBe("main-space");
     expect((response?.payload as any).turnId).toBe("turn-1");
     expect(resumeFeedbackCalls).toEqual([
-      ["main-space", "turn-1", "approve", "revise this"],
+      ["main-space", "turn-1", "approve", "revise this", {
+        approvalGrant: { mode: "durable" },
+        principalId: "principal-1",
+        deviceId: "device-1",
+      }],
     ]);
+  });
+
+  test("pauses tracked continuity sessions on client disconnect", async () => {
+    const pauseCalls: Array<[string, string, any]> = [];
+    const router = makeRouter({
+      sessionContinuityManager: {
+        getOrCreate: async (spaceId: string, clientId: string, mode: string) => ({
+          sessionId: "session-1",
+          spaceId,
+          clientId,
+          continuityMode: mode,
+          status: "active",
+          lastActivityAt: new Date(),
+        }),
+        pause: async (spaceId: string, clientId: string, state?: unknown) => {
+          pauseCalls.push([spaceId, clientId, state]);
+        },
+      },
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-disconnect" }),
+        resumeFeedback: async () => {},
+        getActiveSpaceState: () => ({
+          agentStates: {
+            "agent-a": {
+              status: "active",
+              lastTurnId: "turn-disconnect",
+              messages: [{ role: "user", content: "hello" }],
+            },
+          },
+          turnIds: ["turn-disconnect"],
+        }),
+      },
+    });
+
+    const client = makeClient({ id: "ws-client-1", publicKey: "principal-1", deviceId: "device-1" });
+    await router.handle(
+      client,
+      makeMessage(MessageTypes.EXECUTE_TURN, {
+        spaceUid: "main-space",
+        input: "hello",
+      }),
+    );
+
+    router.onClientDisconnected(client as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pauseCalls.length).toBe(1);
+    expect(pauseCalls[0][0]).toBe("main-space");
+    expect(pauseCalls[0][1]).toBe("principal:principal-1");
+    expect(pauseCalls[0][2]).toEqual({
+      agentStates: {
+        "agent-a": {
+          status: "active",
+          lastTurnId: "turn-disconnect",
+          messages: [{ role: "user", content: "hello" }],
+        },
+      },
+      turnIds: ["turn-disconnect"],
+    });
+  });
+
+  test("restores checkpoints during session.resume", async () => {
+    const restored: Array<{ spaceId: string; checkpointAgentIds: string[] }> = [];
+    const router = makeRouter({
+      sessionContinuityManager: {
+        resume: async (spaceId: string, clientId: string) => ({
+          sessionId: `${spaceId}:${clientId}:resume`,
+          spaceId,
+          clientId,
+          continuityMode: "session",
+          checkpointId: "checkpoint-1",
+          status: "active",
+          lastActivityAt: new Date(),
+        }),
+        loadCheckpoint: async (checkpointId: string) => ({
+          checkpointId,
+          spaceId: "main-space",
+          stateJson: "{}",
+          configJson: "{}",
+          turnIds: ["turn-100"],
+          agentStates: {
+            "agent-a": { status: "active", lastTurnId: "turn-100", messages: [{ role: "user", content: "hello" }] },
+          },
+          createdAt: new Date(),
+        }),
+      },
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+        resumeFeedback: async () => {},
+        restoreFromCheckpoint: async (spaceId: string, checkpoint: { agentStates: Record<string, unknown> }) => {
+          restored.push({ spaceId, checkpointAgentIds: Object.keys(checkpoint.agentStates) });
+          return true;
+        },
+      },
+    });
+
+    const response = await router.handle(
+      makeClient({ id: "ws-client-2", publicKey: "principal-2" }),
+      makeMessage(MessageTypes.SESSION_RESUME, { spaceId: "main-space" }),
+    );
+
+    expect(response?.type).toBe(MessageTypes.SESSION_RESUME);
+    expect((response?.payload as any).resumed).toBe(true);
+    expect((response?.payload as any).checkpointId).toBe("checkpoint-1");
+    expect((response?.payload as any).lastTurnId).toBe("turn-100");
+    expect(restored).toEqual([{ spaceId: "main-space", checkpointAgentIds: ["agent-a"] }]);
   });
 
   test("rejects resume_feedback when spaceUid is blank after trimming", async () => {
@@ -378,128 +599,12 @@ describe("MessageRouter feature handlers", () => {
     expect((response?.payload as any).code).toBe("PERMISSION_DENIED");
   });
 
-  test("routes profile CRUD operations", async () => {
-    const profile = {
-      profileId: "profile-1",
-      name: "Main Profile",
-      description: "Test profile",
-      personalityPrompt: "You are helpful.",
-      defaultSkillIds: ["skill.one"],
-      providerHint: "openai",
-      modelHint: "openai/gpt-4.1",
-      modelConfig: { preferredModels: ["openai/gpt-4.1"], fallbackModels: [] },
-      canModerate: true,
-      isDefault: false,
-      status: "active",
-      activeRevision: 2,
-      source: "manual",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    const router = makeRouter({
-      profileAdminService: {
-        createProfile: async () => ({ profile, created: true }),
-        getProfile: async () => profile,
-        listProfiles: async () => [profile],
-        updateProfile: async () => ({ profile, newRevision: 2 }),
-        archiveProfile: async () => ({ profile: { ...profile, status: "archived" }, archived: true }),
-      },
-    });
-
-    const createResponse = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PROFILE_CREATE, {
-        name: "Main Profile",
-      }),
-    );
-    expect(createResponse?.type).toBe(MessageTypes.PROFILE_CREATE);
-
-    const getResponse = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PROFILE_GET, {
-        profileId: "profile-1",
-      }),
-    );
-    expect(getResponse?.type).toBe(MessageTypes.PROFILE_GET);
-
-    const listResponse = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PROFILE_LIST, {}),
-    );
-    expect(listResponse?.type).toBe(MessageTypes.PROFILE_LIST);
-    expect((listResponse?.payload as any).profiles.length).toBe(1);
-
-    const updateResponse = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PROFILE_UPDATE, {
-        profileId: "profile-1",
-        description: "Updated",
-      }),
-    );
-    expect(updateResponse?.type).toBe(MessageTypes.PROFILE_UPDATE);
-    expect((updateResponse?.payload as any).newRevision).toBe(2);
-
-    const archiveResponse = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PROFILE_ARCHIVE, {
-        profileId: "profile-1",
-      }),
-    );
-    expect(archiveResponse?.type).toBe(MessageTypes.PROFILE_ARCHIVE);
-    expect((archiveResponse?.payload as any).archived).toBe(true);
-  });
-
-  test("validates profile update model selection against merged existing profile state", async () => {
-    const validations: Array<Record<string, unknown>> = [];
-    const router = makeRouter({
-      gatewayAdminService: {
-        validateProfileModelSelection: (input: Record<string, unknown>) => {
-          validations.push(input);
-        },
-      },
-      profileAdminService: {
-        getProfile: async () => ({
-          profileId: "profile-1",
-          providerHint: "openai",
-          modelHint: "openai/gpt-4.1",
-          modelConfig: { preferredModels: ["openai/gpt-4.1"], fallbackModels: [] },
-        }),
-        updateProfile: async () => ({
-          profile: {
-            profileId: "profile-1",
-            name: "Main Profile",
-            status: "active",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          newRevision: 2,
-        }),
-      },
-    });
-
-    const response = await router.handle(
-      makeClient(),
-      makeMessage(MessageTypes.PROFILE_UPDATE, {
-        profileId: "profile-1",
-        providerHint: "anthropic",
-      }),
-    );
-
-    expect(response?.type).toBe(MessageTypes.PROFILE_UPDATE);
-    expect(validations).toEqual([{
-      providerHint: "anthropic",
-      modelHint: "openai/gpt-4.1",
-      modelConfig: { preferredModels: ["openai/gpt-4.1"], fallbackModels: [] },
-    }]);
-  });
-
   test("routes orchestrator.command and orchestrator.get_command", async () => {
     const command = {
       commandId: "orch-1",
       correlationId: "corr-1",
       apiVersion: "v1",
-      commandType: "create_room",
+      commandType: "create_space",
       targetSpaceId: "main-space",
       status: "completed",
       result: { created: true },
@@ -526,7 +631,7 @@ describe("MessageRouter feature handlers", () => {
     const submitResponse = await router.handle(
       makeClient(),
       makeMessage(MessageTypes.ORCHESTRATOR_COMMAND, {
-        commandType: "create_room",
+        commandType: "create_space",
         targetSpaceId: "main-space",
       }),
     );
@@ -556,7 +661,7 @@ describe("MessageRouter feature handlers", () => {
     const response = await router.handle(
       makeClient(),
       makeMessage(MessageTypes.ORCHESTRATOR_COMMAND, {
-        commandType: "create_room",
+        commandType: "create_space",
       }),
     );
 
@@ -575,7 +680,7 @@ describe("MessageRouter feature handlers", () => {
             commandId: "orch-denied",
             correlationId: "corr-denied",
             apiVersion: "v1",
-            commandType: "create_room",
+            commandType: "create_space",
             targetSpaceId: "space-protected",
             status: "completed",
             createdAt: new Date().toISOString(),
@@ -598,7 +703,7 @@ describe("MessageRouter feature handlers", () => {
     const response = await router.handle(
       makeClient({ publicKey: "principal-read-only" }),
       makeMessage(MessageTypes.ORCHESTRATOR_COMMAND, {
-        commandType: "create_room",
+        commandType: "create_space",
         targetSpaceId: "space-protected",
       }),
     );
@@ -899,6 +1004,77 @@ describe("MessageRouter feature handlers", () => {
     expect((testConnector?.payload as any).ok).toBe(true);
   });
 
+  test("handles Apple Mail inbound connector events", async () => {
+    const connector = {
+      connectorId: "apple-mail-mailkit:managed:gateway-1",
+      familyId: "apple-mail-mailkit",
+      displayName: "Apple Mail",
+      accountFingerprintHash: "managed",
+      labelSlug: "built-in",
+      status: "active",
+      metadata: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const router = makeRouter({
+      connectorAdminService: {
+        resolveInboundRoute: () => ({
+          route: "main_fallback",
+          targetType: "main_orchestrator",
+          targetSpaceId: "main-space",
+        }),
+      },
+      gatewayPolicyService: {
+        getPolicy: () => ({
+          globalFlags: {
+            integrations: {
+              appleMail: {
+                enabled: true,
+                contentBlockerRules: [],
+                securityMode: "pass_through",
+              },
+            },
+          },
+        }),
+      },
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-mail-1" }),
+        resumeFeedback: async () => {},
+      },
+    });
+
+    const response = await router.handle(
+      makeClient({ clientType: "mail_extension" }),
+      makeMessage(MessageTypes.CONNECTOR_SUBMIT_INBOUND_EVENT, {
+        connectorId: connector.connectorId,
+        eventType: "compose_send",
+        selector: {
+          accountId: "apple-mail",
+          messageId: "message-1",
+        },
+        snapshot: {
+          subject: "Draft update",
+        },
+      }),
+    );
+
+    expect(response?.type).toBe(MessageTypes.CONNECTOR_INBOUND_EVENT_RESULT);
+    expect(response?.payload).toMatchObject({
+      ok: true,
+      turnId: "turn-mail-1",
+      route: {
+        route: "main_fallback",
+        targetType: "main_orchestrator",
+        targetSpaceId: "main-space",
+      },
+      directives: {
+        integrationEnabled: true,
+        securityMode: "pass_through",
+        allowSend: true,
+      },
+    });
+  });
+
   test("rejects unknown capability types during adapter registration", async () => {
     const router = makeRouter();
 
@@ -968,7 +1144,6 @@ function makeRouter(options: {
   gatewayPolicyService?: Record<string, unknown>;
   gatewayCapabilityAccessService?: Record<string, unknown>;
   gatewayAdminService?: Record<string, unknown>;
-  profileAdminService?: Record<string, unknown>;
   usageSnapshotService?: Record<string, unknown>;
   connectorAdminService?: Record<string, unknown>;
   orchestratorCommandService?: Record<string, unknown>;
@@ -976,6 +1151,7 @@ function makeRouter(options: {
   spaceContextService?: Record<string, unknown>;
   gatewaySyncService?: Record<string, unknown>;
   speechSessionService?: Record<string, unknown>;
+  sessionContinuityManager?: Record<string, unknown>;
   broadcastToSpace?: (spaceId: string, message: GatewayMessage) => void;
 } = {}): MessageRouter {
   const logger: any = {
@@ -1001,7 +1177,6 @@ function makeRouter(options: {
     gatewayAdminService: options.gatewayAdminService as any,
     gatewayPolicyService: options.gatewayPolicyService as any,
     gatewayCapabilityAccessService: options.gatewayCapabilityAccessService as any,
-    profileAdminService: options.profileAdminService as any,
     usageSnapshotService: options.usageSnapshotService as any,
     connectorAdminService: options.connectorAdminService as any,
     orchestratorCommandService: options.orchestratorCommandService as any,
@@ -1009,6 +1184,7 @@ function makeRouter(options: {
     spaceContextService: options.spaceContextService as any,
     gatewaySyncService: options.gatewaySyncService as any,
     speechSessionService: options.speechSessionService as any,
+    sessionContinuityManager: options.sessionContinuityManager as any,
     broadcastToSpace: options.broadcastToSpace,
   });
 }

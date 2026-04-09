@@ -1,0 +1,36 @@
+{
+  "id": "shell.fruitmail.unread",
+  "toolName": "shell.fruitmail.unread",
+  "displayName": "Unread Emails",
+  "description": "List all unread emails from Apple Mail.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "messages",
+  "toolGroupDisplayName": "Messages",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of results. Defaults to 20.",
+        "minimum": 1
+      }
+    }
+  },
+  "outputHint": "Returns JSON output.",
+  "schemaVersion": 1,
+  "wrapperVersion": "0.1.0",
+  "enabled": true,
+  "runtime": {
+    "type": "shell",
+    "command": "node",
+    "args": [
+      "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+      "unread",
+      "{{payload}}"
+    ],
+    "cwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+    "timeoutMs": 30000
+  }
+}

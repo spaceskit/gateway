@@ -12,11 +12,18 @@ export type VoiceUsageSource =
   | "apple_speech"
   | "unknown";
 
+export type VoiceUsageChannel =
+  | "stt"
+  | "tts"
+  | "session"
+  | "unknown";
+
 export interface CreateVoiceUsageEventInput {
   eventId?: string;
   sessionId: string;
   spaceId: string;
   source: VoiceUsageSource;
+  channel?: VoiceUsageChannel;
   providerId?: string;
   sttSeconds?: number;
   ttsChars?: number;
@@ -37,20 +44,38 @@ export interface VoiceUsageSourceAggregate extends VoiceUsageAggregate {
   source: VoiceUsageSource;
 }
 
+export interface VoiceUsageProviderChannelAggregate extends VoiceUsageAggregate {
+  source: VoiceUsageSource;
+  channel: VoiceUsageChannel;
+  providerId: string;
+}
+
 export class VoiceUsageRepository {
   constructor(private readonly db: Database) {}
 
   createEvent(input: CreateVoiceUsageEventInput): void {
     const eventId = input.eventId?.trim() || randomUUID();
-    const sessionId = input.sessionId.trim();
-    const spaceId = input.spaceId.trim();
-    const source = input.source?.trim() || "unknown";
+    const sessionId = input.sessionId?.trim() || "";
+    if (!sessionId) {
+      throw new Error("sessionId must be a non-empty string");
+    }
+    const spaceId = input.spaceId?.trim() || "";
+    if (!spaceId) {
+      throw new Error("spaceId must be a non-empty string");
+    }
+    const source = normalizeSource(input.source);
+    const channel = normalizeChannel(input.channel);
     const providerId = input.providerId?.trim() || "";
     const sttSeconds = sanitizeNumber(input.sttSeconds);
     const ttsChars = Math.max(0, Math.floor(input.ttsChars ?? 0));
     const ttsSeconds = sanitizeNumber(input.ttsSeconds);
     const estimatedCostUsd = sanitizeNumber(input.estimatedCostUsd);
-    const metadataJson = input.metadataJson?.trim() || "{}";
+    let metadataJson = input.metadataJson?.trim() || "{}";
+    try {
+      JSON.parse(metadataJson);
+    } catch {
+      metadataJson = "{}";
+    }
     const createdAt = input.createdAt?.trim() || new Date().toISOString();
 
     this.db.query(`
@@ -59,6 +84,7 @@ export class VoiceUsageRepository {
         session_id,
         space_id,
         source,
+        channel,
         provider_id,
         stt_seconds,
         tts_chars,
@@ -66,12 +92,13 @@ export class VoiceUsageRepository {
         estimated_cost_usd,
         metadata_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       eventId,
       sessionId,
       spaceId,
       source,
+      channel,
       providerId,
       sttSeconds,
       ttsChars,
@@ -166,6 +193,63 @@ export class VoiceUsageRepository {
       estimatedCostUsd: sanitizeNumber(row.estimated_cost_usd),
     }));
   }
+
+  aggregateByProviderChannel(sinceIso?: string): VoiceUsageProviderChannelAggregate[] {
+    const rows = sinceIso
+      ? this.db.query(`
+        SELECT
+          source,
+          channel,
+          provider_id,
+          COALESCE(SUM(stt_seconds), 0) AS stt_seconds,
+          COALESCE(SUM(tts_chars), 0) AS tts_chars,
+          COALESCE(SUM(tts_seconds), 0) AS tts_seconds,
+          COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost_usd
+        FROM voice_usage_events
+        WHERE created_at >= ?
+        GROUP BY source, channel, provider_id
+        ORDER BY source ASC, channel ASC, provider_id ASC
+      `).all(sinceIso) as Array<{
+        source: string;
+        channel: string;
+        provider_id: string;
+        stt_seconds: number;
+        tts_chars: number;
+        tts_seconds: number;
+        estimated_cost_usd: number;
+      }>
+      : this.db.query(`
+        SELECT
+          source,
+          channel,
+          provider_id,
+          COALESCE(SUM(stt_seconds), 0) AS stt_seconds,
+          COALESCE(SUM(tts_chars), 0) AS tts_chars,
+          COALESCE(SUM(tts_seconds), 0) AS tts_seconds,
+          COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost_usd
+        FROM voice_usage_events
+        GROUP BY source, channel, provider_id
+        ORDER BY source ASC, channel ASC, provider_id ASC
+      `).all() as Array<{
+        source: string;
+        channel: string;
+        provider_id: string;
+        stt_seconds: number;
+        tts_chars: number;
+        tts_seconds: number;
+        estimated_cost_usd: number;
+      }>;
+
+    return rows.map((row) => ({
+      source: normalizeSource(row.source),
+      channel: normalizeChannel(row.channel),
+      providerId: row.provider_id?.trim() || "",
+      sttSeconds: sanitizeNumber(row.stt_seconds),
+      ttsChars: Math.max(0, Math.floor(row.tts_chars ?? 0)),
+      ttsSeconds: sanitizeNumber(row.tts_seconds),
+      estimatedCostUsd: sanitizeNumber(row.estimated_cost_usd),
+    }));
+  }
 }
 
 function sanitizeNumber(value: number | undefined): number {
@@ -180,6 +264,17 @@ function normalizeSource(source: string): VoiceUsageSource {
     case "local_model":
     case "apple_speech":
       return source;
+    default:
+      return "unknown";
+  }
+}
+
+function normalizeChannel(channel: string | undefined): VoiceUsageChannel {
+  switch (channel?.trim()) {
+    case "stt":
+    case "tts":
+    case "session":
+      return channel.trim() as VoiceUsageChannel;
     default:
       return "unknown";
   }

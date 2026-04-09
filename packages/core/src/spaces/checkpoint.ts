@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { ModelMessage } from "../agents/model-provider.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,7 +26,7 @@ export interface Checkpoint {
   /** Turn IDs completed before this checkpoint. */
   turnIds: string[];
   /** Agent execution states at checkpoint time. */
-  agentStates: Record<string, { status: string; lastTurnId?: string }>;
+  agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
   createdAt: Date;
 }
 
@@ -42,13 +43,15 @@ export interface CheckpointManager {
   delete(checkpointId: string): Promise<void>;
   /** Delete all checkpoints for a space. */
   deleteAll(spaceId: string): Promise<void>;
+  /** Optional lookup by checkpoint label across spaces (newest first). */
+  listByLabel?(label: string, limit?: number): Promise<Checkpoint[]>;
 }
 
 export interface CheckpointData {
   stateJson: string;
   configJson: string;
   turnIds: string[];
-  agentStates: Record<string, { status: string; lastTurnId?: string }>;
+  agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
   label?: string;
 }
 
@@ -136,9 +139,17 @@ export class SQLiteCheckpointManager implements CheckpointManager {
     this.db.prepare("DELETE FROM checkpoints WHERE space_id = ?").run(spaceId);
   }
 
+  async listByLabel(label: string, limit = 50): Promise<Checkpoint[]> {
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 50;
+    const rows = this.db.prepare(
+      "SELECT * FROM checkpoints WHERE label = ? ORDER BY created_at DESC LIMIT ?",
+    ).all(label, safeLimit) as any[];
+    return rows.map((r) => this.rowToCheckpoint(r));
+  }
+
   private rowToCheckpoint(row: any): Checkpoint {
     let turnIds: string[] = [];
-    let agentStates: Record<string, { status: string; lastTurnId?: string }> = {};
+    let agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }> = {};
     try { turnIds = JSON.parse(row.turn_ids_json ?? "[]"); } catch { /* corrupted data */ }
     try { agentStates = JSON.parse(row.agent_states_json ?? "{}"); } catch { /* corrupted data */ }
     return {

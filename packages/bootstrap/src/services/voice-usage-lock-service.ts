@@ -3,7 +3,7 @@ import type {
   VoiceUsageRepository,
   VoiceUsageSource,
 } from "@spaceskit/persistence";
-import type { VoiceProviderSource } from "./voice-routing-service.js";
+import type { VoiceChannel, VoiceProviderSource } from "./voice-routing-service.js";
 
 export interface VoiceUsageDelta {
   sttSeconds?: number;
@@ -146,6 +146,99 @@ export class VoiceUsageLockService {
         limit: ttsSecondsLimit,
         projectedManagedCurrentMonth,
       };
+    }
+
+    return {
+      ...snapshot,
+      source,
+      allowed: true,
+      reason: "allowed",
+      projectedManagedCurrentMonth,
+    };
+  }
+
+  evaluateChannel(
+    channel: VoiceChannel,
+    source: VoiceProviderSource,
+    delta: VoiceUsageDelta = {},
+  ): VoiceUsageLockDecision {
+    const snapshot = this.getSnapshot();
+    const projectedManagedCurrentMonth: VoiceUsageAggregate = {
+      sttSeconds: snapshot.managedCurrentMonth.sttSeconds + sanitizeFloat(delta.sttSeconds),
+      ttsChars: snapshot.managedCurrentMonth.ttsChars + sanitizeInt(delta.ttsChars),
+      ttsSeconds: snapshot.managedCurrentMonth.ttsSeconds + sanitizeFloat(delta.ttsSeconds),
+      estimatedCostUsd: snapshot.managedCurrentMonth.estimatedCostUsd,
+    };
+
+    if (source !== "managed") {
+      return {
+        ...snapshot,
+        source,
+        allowed: true,
+        reason: "not_managed_source",
+        projectedManagedCurrentMonth,
+      };
+    }
+
+    if (!snapshot.policy.enabled) {
+      return {
+        ...snapshot,
+        source,
+        allowed: true,
+        reason: "lock_disabled",
+        projectedManagedCurrentMonth,
+      };
+    }
+
+    if (!this.options.usageRepo) {
+      return {
+        ...snapshot,
+        source,
+        allowed: true,
+        reason: "usage_repo_unavailable",
+        projectedManagedCurrentMonth,
+      };
+    }
+
+    if (channel === "stt") {
+      const sttLimit = normalizeLimit(snapshot.policy.managedSttSecondsMonthlyLimit);
+      if (sttLimit !== undefined && projectedManagedCurrentMonth.sttSeconds > sttLimit) {
+        return {
+          ...snapshot,
+          source,
+          allowed: false,
+          reason: "managed_stt_limit_reached",
+          blockedMetric: "sttSeconds",
+          limit: sttLimit,
+          projectedManagedCurrentMonth,
+        };
+      }
+    } else {
+      const ttsCharsLimit = normalizeLimit(snapshot.policy.managedTtsCharsMonthlyLimit);
+      if (ttsCharsLimit !== undefined && projectedManagedCurrentMonth.ttsChars > ttsCharsLimit) {
+        return {
+          ...snapshot,
+          source,
+          allowed: false,
+          reason: "managed_tts_chars_limit_reached",
+          blockedMetric: "ttsChars",
+          limit: ttsCharsLimit,
+          projectedManagedCurrentMonth,
+        };
+      }
+
+      const ttsSecondsLimit = normalizeLimit(snapshot.policy.managedTtsSecondsMonthlyLimit);
+      if (ttsSecondsLimit !== undefined && projectedManagedCurrentMonth.ttsSeconds > ttsSecondsLimit) {
+        return {
+          ...snapshot,
+          source,
+          allowed: false,
+          reason: "managed_tts_seconds_limit_reached",
+          blockedMetric: "ttsSeconds",
+          limit: ttsSecondsLimit,
+          projectedManagedCurrentMonth,
+        };
+      }
     }
 
     return {

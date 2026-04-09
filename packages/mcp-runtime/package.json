@@ -1,0 +1,22 @@
+{
+  "name": "@spaceskit/mcp-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Native MCP bridge for Spaceskit capability routing",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@spaceskit/client": "file:../../../client-ts",
+    "@spaceskit/core": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}

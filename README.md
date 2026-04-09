@@ -114,11 +114,11 @@ bun run check:all
 | `SPACESKIT_API_KEY` | — | API key for cloud runtimes that require one |
 | `MCP_ENDPOINT` | — | MCP server endpoint (optional — enables MCP capabilities) |
 | `SPACESKIT_CONFIG_FILE` | — | Path to JSON config file (enables hot-reload via SIGHUP) |
-| `SPACESKIT_MAIN_SPACE_ID` | `main-space` | Startup default space ID (aliases: `SPACESKIT_MASTER_SPACE_ID`) |
-| `SPACESKIT_MAIN_SPACE_NAME` | `Main Space` | Startup default space display name (alias: `SPACESKIT_MASTER_SPACE_NAME`) |
-| `SPACESKIT_MAIN_RESOURCE_ID` | `resource:main` | Resource ID for the startup default space (alias: `SPACESKIT_MASTER_RESOURCE_ID`) |
-| `SPACESKIT_MAIN_PROFILE_ID` | `main-profile` | Startup default profile ID (alias: `SPACESKIT_MASTER_PROFILE_ID`) |
-| `SPACESKIT_MAIN_AGENT_ID` | `main-agent` | Startup default agent ID (alias: `SPACESKIT_MASTER_AGENT_ID`) |
+| `SPACESKIT_MAIN_SPACE_ID` | `main-space` | Startup default space ID |
+| `SPACESKIT_MAIN_SPACE_NAME` | `Main Space` | Startup default space display name |
+| `SPACESKIT_MAIN_RESOURCE_ID` | `resource:main` | Resource ID for the startup default space |
+| `SPACESKIT_MAIN_PROFILE_ID` | `main-profile` | Startup default profile ID |
+| `SPACESKIT_MAIN_AGENT_ID` | `main-agent` | Startup default agent ID |
 | `SPACESKIT_REQUIRE_PREREGISTERED_DEVICE` | `false` | Require device to be pre-registered before auth succeeds |
 | `SPACESKIT_REQUIRE_EXPLICIT_DEVICE_AUTH` | `false` | Strict device mode: require explicit `deviceId`, `devicePublicKey`, and `deviceProofSignature` on every auth (disables compatibility fallback) |
 
@@ -178,20 +178,31 @@ The reference gateway uses [Bun](https://bun.sh) as its runtime: native TypeScri
 
 The gateway now uses native runtime adapters instead of routing execution through a general AI SDK package. Bootstrap classifies integrations into three families:
 
-- Cloud APIs: `openai`, `openrouter`, `groq`, `together`, `mistral`
-- CLI executors: `claude`, `codex`, `gemini`
-- Local runtimes: `lmstudio`, `ollama`
+- Cloud APIs: `anthropic`, `openai`, `openrouter`, `groq`, `together`, `mistral`
+- Executor runtimes: `claude`, `claude-agent-sdk`, `codex`, `gemini`
+- Local runtimes: `apple`, `lmstudio`, `ollama`
 
 Important runtime notes:
 
 - OpenAI-compatible runtimes use direct HTTP calls to `/v1/chat/completions` and `/v1/models`.
 - CLI executors are launched as native processes, not as provider-model shims.
+- `claude-agent-sdk` runs through the bundled Anthropic Agent SDK and consumes gateway tools over the MCP bridge instead of via the native structured-tool loop.
 - Gateway admin model discovery now includes `gateway.list_available_models` and local-agent discovery can return detected model IDs (`availableModels`) for model pickers.
 - In `embedded` profile, custom runtime endpoints and local profile provisioning are rejected with `FAILED_PRECONDITION` (App Store-safe policy boundary).
 
 ### MCP Support
 
 The gateway bridges [MCP servers](https://modelcontextprotocol.io/) into its capability registry via `@ai-sdk/mcp`. Any MCP server's tools become available to agents in any space.
+
+### Connectors
+
+Connectors integrate external services (messaging platforms, native OS frameworks, APIs) into the Spaces runtime. Each connector belongs to a **connector family** and can have instances with bindings that route events to spaces and agents.
+
+- **Capability connectors**: Provide tools to agents (Apple Calendar, Reminders, Contacts)
+- **Channel connectors**: Messaging channels for inbound/outbound communication (Discord, WhatsApp)
+- **CLI tool bundles**: Gateway-managed CLI tools (Jira, Harvest, 1Password) — see `cli-tools/`
+
+Connector families are defined in `@spaceskit/bootstrap` and enforced via space-level security policies (`connector_family:` selectors). See [`connectors/`](connectors/) for the full guide on creating new connectors.
 
 ## Key Concepts
 
@@ -225,7 +236,7 @@ The TypeScript SDK also includes an adapter-focused wrapper. In practice, the na
 ### TypeScript Client
 
 ```typescript
-import { GatewayClient, generateAuthKeyPair } from "@spaceskit/core";
+import { GatewayClient, generateAuthKeyPair } from "@spaceskit/client";
 
 const keyPair = await generateAuthKeyPair();
 const client = new GatewayClient({ url: "ws://localhost:9320" });
@@ -239,7 +250,7 @@ client.onTurnStream((stream) => process.stdout.write(stream.delta));
 ### TypeScript Adapter Client
 
 ```typescript
-import { GatewayAdapterClient, generateAuthKeyPair } from "@spaceskit/core";
+import { GatewayAdapterClient, generateAuthKeyPair } from "@spaceskit/client";
 
 const keyPair = await generateAuthKeyPair();
 const adapter = new GatewayAdapterClient({
@@ -312,36 +323,28 @@ Add via Swift Package Manager:
 
 ### Protocol Sync (Codegen)
 
-`proto/` is the canonical contract source of truth. `packages/server/src/protocol.ts` remains only as the legacy WebSocket compatibility shim, and Swift compatibility fixtures are still generated from that shim so the current client transport does not drift during the transition.
+`proto/` is the canonical contract source of truth. `packages/server/src/protocol.ts` remains a handwritten WebSocket transport layer only; the repo no longer generates Swift shim types or fixture suites from it.
 
 ```bash
-# Regenerate Swift compatibility types + JSON fixtures from the legacy WebSocket shim
-bun run scripts/codegen-swift-protocol.ts
-
-# Verify fixtures match the WebSocket compatibility shim (CI-friendly)
-bun run scripts/verify-protocol-fixtures.ts
-
-# Verify core client interfaces stay aligned with the shim for sync/speech paths
-bun run scripts/verify-core-client-contract.ts
-
 # Regenerate proto-derived TypeScript contracts
 cd ../proto && buf generate
 
-# On macOS: run Swift conformance tests
-cd ../client-swift && swift test --filter ProtocolConformanceTests
+# Verify the generated TS contract output is clean
+cd ../gateway && bun run contract-gate
+
+# On macOS: run the Swift package tests
+cd ../client-swift && swift test
 ```
 
-**How it works:** `buf` generates the canonical protobuf contracts into `@spaceskit/contracts`. Separately, the compatibility codegen script (`scripts/codegen-swift-protocol.ts`) parses the legacy WebSocket shim in `protocol.ts`, then emits `GeneratedProtocol.swift` plus JSON fixtures for each message type. Swift conformance tests decode those fixtures and keep the compatibility transport honest until the clients move fully onto proto-derived contracts.
+**How it works:** `buf` generates the canonical protobuf contracts into `@spaceskit/contracts`. The handwritten TS and Swift WebSocket transports are expected to stay aligned with the gateway/runtime behavior directly; there is no parallel shim-generation pipeline anymore.
 
 **Workflow when changing the protocol:**
 
 1. Edit the canonical protobuf contract in `../proto/proto/spaceskit/v2/*.proto`
 2. Run `cd ../proto && buf generate`
-3. Update `packages/server/src/protocol.ts` only if the WebSocket compatibility shim must expose or map the new contract shape
-4. Run `bun run scripts/codegen-swift-protocol.ts`
-5. Run `bun run scripts/verify-protocol-fixtures.ts`
-6. Run `bun run scripts/verify-core-client-contract.ts`
-7. Run `swift test --filter ProtocolConformanceTests` in `../client-swift` on macOS
+3. Update `packages/server/src/protocol.ts`, `client-ts`, or `client-swift` only when the handwritten WebSocket transport must expose or map the new contract shape
+4. Run `cd ../gateway && bun run contract-gate`
+5. Run `swift test` in `../client-swift` on macOS
 
 ## Contracts (Proto)
 

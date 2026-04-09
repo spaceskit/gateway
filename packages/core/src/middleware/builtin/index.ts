@@ -7,14 +7,6 @@ export type { BudgetMiddlewareOptions } from "./budget-middleware.js";
 export { createAuditMiddleware } from "./audit-middleware.js";
 export type { AuditMiddlewareOptions, AuditRecord } from "./audit-middleware.js";
 
-export { createGuardrailMiddleware } from "./guardrail-middleware.js";
-export type {
-  GuardrailMiddlewareOptions,
-  Guardrail,
-  CodeGuardrail,
-  LLMGuardrail,
-} from "./guardrail-middleware.js";
-
 export { createContextWindowMiddleware } from "./context-window-middleware.js";
 export type { ContextWindowMiddlewareOptions } from "./context-window-middleware.js";
 

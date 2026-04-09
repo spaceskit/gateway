@@ -30,6 +30,7 @@ function makeRouter(
   spaceManagerOverrides?: Record<string, unknown>,
   spaceQuotaService?: Record<string, unknown>,
   broadcastToSpace?: (spaceUid: string, msg: GatewayMessage) => void,
+  conciergeEscalationService?: Record<string, unknown>,
 ): MessageRouter {
   const logger: any = {
     debug: () => {},
@@ -58,6 +59,7 @@ function makeRouter(
       deregister: () => {},
     } as any,
     logger,
+    conciergeEscalationService: conciergeEscalationService as any,
     broadcastToSpace,
   });
 }
@@ -117,6 +119,50 @@ describe("MessageRouter gateway admin handlers", () => {
     expect((response?.payload as any).configs[0].providerId).toBe("openai");
   });
 
+  test("acknowledges concierge.action_result", async () => {
+    const resolved: any[] = [];
+    const router = makeRouter(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        resolveRequest: async (input: any) => {
+          resolved.push(input);
+          return {
+            requestId: input.requestId,
+            status: "actioned",
+            deliveryChannel: "notification",
+          };
+        },
+      },
+    );
+    const msg = makeMessage(MessageTypes.CONCIERGE_ACTION_RESULT, {
+      requestId: "request-1",
+      status: "ok",
+      payload: {
+        opened: true,
+      },
+    });
+
+    const response = await router.handle(makeClient(), msg);
+
+    expect(response?.type).toBe(MessageTypes.CONCIERGE_ACTION_RESULT);
+    expect((response?.payload as any).acknowledged).toBe(true);
+    expect((response?.payload as any).requestId).toBe("request-1");
+    expect(resolved).toEqual([{
+      requestId: "request-1",
+      status: "ok",
+      payload: {
+        opened: true,
+      },
+      error: undefined,
+    }]);
+  });
+
   test("routes gateway.get_main_agent", async () => {
     const nowIso = new Date().toISOString();
     const calls: any[] = [];
@@ -158,6 +204,50 @@ describe("MessageRouter gateway admin handlers", () => {
     });
     const strictResponse = await router.handle(makeClient({ publicKey: "owner-1" }), strictMsg);
     expect(strictResponse?.type).toBe(MessageTypes.GATEWAY_GET_MAIN_AGENT);
+    expect(calls[1]?.repairIfMissing).toBe(false);
+    expect(invalidatedSpaceId).toBeNull();
+  });
+
+  test("routes gateway.get_concierge_agent", async () => {
+    const nowIso = new Date().toISOString();
+    const calls: any[] = [];
+    let invalidatedSpaceId: string | null = null;
+    const router = makeRouter({
+      getConciergeAgent: async (input: any) => {
+        calls.push(input);
+        return {
+          spaceId: input.spaceId ?? "concierge-space",
+          spaceUid: "aaaa1111-2222-3333-4444-555555555555",
+          conciergeAgentId: "concierge-agent",
+          conciergeProfileId: "concierge-profile",
+          providerHint: "openai",
+          modelHint: "openai/gpt-4.1",
+          status: "healthy",
+          repaired: false,
+          fallbackApplied: false,
+          updatedAt: nowIso,
+        };
+      },
+    }, undefined, undefined, undefined, {
+      invalidateCache: (spaceId: string) => {
+        invalidatedSpaceId = spaceId;
+      },
+    });
+
+    const defaultMsg = makeMessage(MessageTypes.GATEWAY_GET_CONCIERGE_AGENT, {});
+    const defaultResponse = await router.handle(makeClient({ publicKey: "owner-1" }), defaultMsg);
+
+    expect(defaultResponse?.type).toBe(MessageTypes.GATEWAY_GET_CONCIERGE_AGENT);
+    expect((defaultResponse?.payload as any).state.conciergeAgentId).toBe("concierge-agent");
+    expect((defaultResponse?.payload as any).state.status).toBe("healthy");
+    expect(calls[0]?.repairIfMissing).toBeUndefined();
+    expect(invalidatedSpaceId).toBeNull();
+
+    const strictMsg = makeMessage(MessageTypes.GATEWAY_GET_CONCIERGE_AGENT, {
+      repairIfMissing: false,
+    });
+    const strictResponse = await router.handle(makeClient({ publicKey: "owner-1" }), strictMsg);
+    expect(strictResponse?.type).toBe(MessageTypes.GATEWAY_GET_CONCIERGE_AGENT);
     expect(calls[1]?.repairIfMissing).toBe(false);
     expect(invalidatedSpaceId).toBeNull();
   });
@@ -219,7 +309,7 @@ describe("MessageRouter gateway admin handlers", () => {
     expect((missingProviderFieldsResponse?.payload as any).code).toBe("INVALID_ARGUMENT");
 
     const missingTemplate = makeMessage(MessageTypes.GATEWAY_SET_MAIN_AGENT, {
-      selectionMode: "profile_template",
+      selectionMode: "agent_definition",
     });
     const missingTemplateResponse = await router.handle(
       makeClient({ publicKey: "owner-1" }),
@@ -260,7 +350,7 @@ describe("MessageRouter gateway admin handlers", () => {
       selectionMode: "provider_model",
       providerId: "codex",
       modelId: "gpt-5.2-codex",
-      copyPersonality: false,
+      applyPersonaInstructions: false,
     });
     const response = await router.handle(makeClient({ publicKey: "owner-1" }), msg);
 
@@ -268,8 +358,61 @@ describe("MessageRouter gateway admin handlers", () => {
     expect(received.selectionMode).toBe("provider_model");
     expect(received.providerId).toBe("codex");
     expect(received.modelId).toBe("gpt-5.2-codex");
-    expect(received.copyPersonality).toBe(false);
+    expect(received.applyPersonaInstructions).toBe(false);
     expect(invalidatedSpaceId).toBe("main-space");
+    expect((response?.payload as any).state.status).toBe("repaired");
+  });
+
+  test("routes gateway.set_concierge_agent", async () => {
+    let received: any = null;
+    let invalidatedSpaceId: string | null = null;
+    const nowIso = new Date().toISOString();
+    const router = makeRouter({
+      getConciergeAgent: async () => ({
+        spaceId: "concierge-space",
+        spaceUid: "aaaa1111-2222-3333-4444-555555555555",
+        conciergeAgentId: "concierge-agent",
+        conciergeProfileId: "concierge-profile",
+        status: "healthy",
+        repaired: false,
+        fallbackApplied: false,
+        updatedAt: nowIso,
+      }),
+      setConciergeAgent: async (input: any) => {
+        received = input;
+        return {
+          spaceId: "concierge-space",
+          spaceUid: "aaaa1111-2222-3333-4444-555555555555",
+          conciergeAgentId: "concierge-agent",
+          conciergeProfileId: "concierge-profile",
+          providerHint: "codex",
+          modelHint: "codex/gpt-5.2-codex",
+          status: "repaired",
+          repaired: true,
+          fallbackApplied: false,
+          updatedAt: nowIso,
+        };
+      },
+    }, undefined, undefined, undefined, {
+      invalidateCache: (spaceId: string) => {
+        invalidatedSpaceId = spaceId;
+      },
+    });
+
+    const msg = makeMessage(MessageTypes.GATEWAY_SET_CONCIERGE_AGENT, {
+      selectionMode: "provider_model",
+      providerId: "codex",
+      modelId: "gpt-5.2-codex",
+      applyPersonaInstructions: false,
+    });
+    const response = await router.handle(makeClient({ publicKey: "owner-1" }), msg);
+
+    expect(response?.type).toBe(MessageTypes.GATEWAY_SET_CONCIERGE_AGENT);
+    expect(received.selectionMode).toBe("provider_model");
+    expect(received.providerId).toBe("codex");
+    expect(received.modelId).toBe("gpt-5.2-codex");
+    expect(received.applyPersonaInstructions).toBe(false);
+    expect(invalidatedSpaceId).toBe("concierge-space");
     expect((response?.payload as any).state.status).toBe("repaired");
   });
 

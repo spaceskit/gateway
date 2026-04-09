@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createHmac } from "node:crypto";
 import { ShareRelayApiService } from "../src/services/share-relay-api-service.js";
+import { createHttpPrincipalTestContext } from "./http-principal-test-helpers.js";
 
 describe("ShareRelayApiService", () => {
   test("returns null for unrelated paths", async () => {
@@ -14,7 +14,9 @@ describe("ShareRelayApiService", () => {
 
   test("resolves relay invite via POST /v1/share/relay/resolve", async () => {
     let capturedInput: Record<string, unknown> | null = null;
+    const auth = createHttpPrincipalTestContext();
     const service = new ShareRelayApiService({
+      principalAuth: auth.principalAuth,
       spaceSharingService: {
         resolveRelayInvite: (input) => {
           capturedInput = input as Record<string, unknown>;
@@ -37,7 +39,7 @@ describe("ShareRelayApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-spaceskit-principal-id": "principal-a",
+        ...auth.headers("principal-a"),
       },
       body: JSON.stringify({
         relayInviteId: "relay-invite-1",
@@ -65,7 +67,9 @@ describe("ShareRelayApiService", () => {
 
   test("proxy joins relay invite via POST /v1/share/relay/join", async () => {
     let capturedInput: Record<string, unknown> | null = null;
+    const auth = createHttpPrincipalTestContext();
     const service = new ShareRelayApiService({
+      principalAuth: auth.principalAuth,
       spaceSharingService: {
         resolveRelayInvite: () => ({
           gatewayRoute: "relay_proxy",
@@ -85,7 +89,7 @@ describe("ShareRelayApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer principal-b",
+        ...auth.headers("principal-b"),
       },
       body: JSON.stringify({
         relaySessionToken: "relay-session-1",
@@ -112,7 +116,9 @@ describe("ShareRelayApiService", () => {
 
   test("rejects unsupported identityModeHint values on relay join", async () => {
     let joinCalled = false;
+    const auth = createHttpPrincipalTestContext();
     const service = new ShareRelayApiService({
+      principalAuth: auth.principalAuth,
       spaceSharingService: {
         resolveRelayInvite: () => ({
           gatewayRoute: "relay_proxy",
@@ -129,7 +135,7 @@ describe("ShareRelayApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: "Bearer principal-b",
+        ...auth.headers("principal-b"),
       },
       body: JSON.stringify({
         relaySessionToken: "relay-session-1",
@@ -170,13 +176,9 @@ describe("ShareRelayApiService", () => {
 
   test("enforces signed bearer tokens in strict principal-auth mode", async () => {
     let seenPrincipalId: string | undefined;
-    const now = new Date("2026-03-02T20:00:00.000Z");
+    const auth = createHttpPrincipalTestContext();
     const service = new ShareRelayApiService({
-      principalAuth: {
-        strictVerification: true,
-        hs256Secret: "test-secret",
-        now: () => now,
-      },
+      principalAuth: auth.strictPrincipalAuth,
       spaceSharingService: {
         resolveRelayInvite: () => ({
           gatewayRoute: "relay_proxy",
@@ -205,15 +207,11 @@ describe("ShareRelayApiService", () => {
     const headerOnlyBody = await headerOnlyResponse!.json() as { code?: string };
     expect(headerOnlyBody.code).toBe("UNAUTHENTICATED");
 
-    const signedToken = signHs256Token({
-      sub: "principal-strict",
-      exp: Math.floor(now.getTime() / 1000) + 60,
-    }, "test-secret");
     const signedRequest = new Request("http://localhost/v1/share/relay/join", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${signedToken}`,
+        ...auth.headers("principal-strict"),
       },
       body: JSON.stringify({ relaySessionToken: "relay-session-1" }),
     });
@@ -223,7 +221,9 @@ describe("ShareRelayApiService", () => {
   });
 
   test("maps sharing service permission errors to 403", async () => {
+    const auth = createHttpPrincipalTestContext();
     const service = new ShareRelayApiService({
+      principalAuth: auth.principalAuth,
       spaceSharingService: {
         resolveRelayInvite: () => ({
           gatewayRoute: "relay_proxy",
@@ -239,7 +239,7 @@ describe("ShareRelayApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-spaceskit-principal-id": "principal-a",
+        ...auth.headers("principal-a"),
       },
       body: JSON.stringify({ relaySessionToken: "relay-session-1" }),
     });
@@ -252,7 +252,9 @@ describe("ShareRelayApiService", () => {
 
   test("emits relay lifecycle events for observability", async () => {
     const emitted: Array<{ type?: string; code?: string }> = [];
+    const auth = createHttpPrincipalTestContext();
     const service = new ShareRelayApiService({
+      principalAuth: auth.principalAuth,
       eventBus: {
         emit: (event) => {
           emitted.push({
@@ -277,7 +279,7 @@ describe("ShareRelayApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-spaceskit-principal-id": "principal-z",
+        ...auth.headers("principal-z"),
       },
       body: JSON.stringify({
         relayInviteId: "relay-invite-z",
@@ -290,7 +292,7 @@ describe("ShareRelayApiService", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-spaceskit-principal-id": "principal-z",
+        ...auth.headers("principal-z"),
       },
       body: JSON.stringify({
         relaySessionToken: "relay-session-z",
@@ -305,15 +307,3 @@ describe("ShareRelayApiService", () => {
     expect(emitted.some((entry) => entry.type === "share.relay.join.failed" && entry.code === "PERMISSION_DENIED")).toBe(true);
   });
 });
-
-function signHs256Token(payload: Record<string, unknown>, secret: string): string {
-  const encodedHeader = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac("sha256", secret).update(signingInput).digest("base64url");
-  return `${encodedHeader}.${encodedPayload}.${signature}`;
-}
-
-function base64UrlEncode(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64url");
-}

@@ -39,6 +39,7 @@ describe("ProviderConfigRepository", () => {
     expect(row.allow_custom_model).toBe(0);
     expect(row.native_cli_tools_enabled).toBe(0);
     expect(row.api_key_secret_ref).toBeNull();
+    expect(row.auth_mode).toBe("api_key");
     expect(row.source).toBe("runtime");
     expect(row.created_at).toBeTruthy();
     expect(row.updated_at).toBeTruthy();
@@ -63,6 +64,7 @@ describe("ProviderConfigRepository", () => {
       allowedModelsJson: '["openai/gpt-4.1","openai/gpt-4.1-mini"]',
       allowCustomModel: true,
       nativeCliToolsEnabled: false,
+      authMode: "host_login",
       source: "runtime",
     });
 
@@ -70,6 +72,7 @@ describe("ProviderConfigRepository", () => {
     expect(updated.model).toBe("openai/gpt-4.1-mini");
     expect(updated.base_url).toBe("https://custom.api.example.com/v1");
     expect(updated.allow_custom_model).toBe(1);
+    expect(updated.auth_mode).toBe("host_login");
     expect(updated.source).toBe("runtime");
     expect(updated.created_at).toBe(created.created_at);
     expect(Date.parse(updated.updated_at)).toBeGreaterThanOrEqual(Date.parse(created.updated_at));

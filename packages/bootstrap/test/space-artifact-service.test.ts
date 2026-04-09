@@ -5,6 +5,7 @@ import {
   initDatabase,
 } from "@spaceskit/persistence";
 import { SpaceArtifactService } from "../src/services/space-artifact-service.js";
+import { CLI_EXECUTION_TRANSCRIPT_ARTIFACT_TYPE } from "../src/services/cli-execution-audit-service.js";
 
 describe("SpaceArtifactService", () => {
   test("lists and reads artifacts by space", () => {
@@ -102,6 +103,104 @@ describe("SpaceArtifactService", () => {
 
       expect(listed.artifacts.length).toBe(200);
       expect(listed.total).toBe(5105);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("allows debug-artifact retrieval for CLI execution transcripts beyond the normal preview cap", () => {
+    const db = initDatabase({
+      path: ":memory:",
+      runtimeGeneration: `test-debug-artifacts-${crypto.randomUUID()}`,
+    });
+    try {
+      const spaces = new SpaceRepository(db.db);
+      spaces.create({
+        spaceId: "space-main",
+        resourceId: "resource-main",
+        spaceType: "space",
+        name: "Main",
+        goal: "",
+        turnModel: "sequential_all",
+      });
+
+      const artifacts = new ArtifactRepository(db.db);
+      artifacts.create({
+        artifactId: "artifact-debug-1",
+        spaceId: "space-main",
+        resourceId: "resource-main",
+        turnId: "turn-1",
+        agentId: "agent-1",
+        type: CLI_EXECUTION_TRANSCRIPT_ARTIFACT_TYPE,
+        title: "CLI transcript",
+        mimeType: "application/x-ndjson",
+        contentJson: JSON.stringify("x".repeat(300_000)),
+        tagsJson: JSON.stringify(["debug", "cli_execution", "transcript"]),
+        visibility: "private",
+      });
+
+      const service = new SpaceArtifactService({
+        artifacts,
+        spaces,
+        maxArtifactBytes: 1024,
+      });
+
+      expect(() => service.getArtifact({
+        spaceId: "space-main",
+        artifactId: "artifact-debug-1",
+      })).toThrow(/display size limit/);
+
+      const detail = service.getDebugArtifact({
+        spaceId: "space-main",
+        artifactId: "artifact-debug-1",
+      });
+      expect(detail.artifactId).toBe("artifact-debug-1");
+      expect((detail.content as string).length).toBe(300_000);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("rejects debug-artifact retrieval for non CLI transcript artifacts", () => {
+    const db = initDatabase({
+      path: ":memory:",
+      runtimeGeneration: `test-non-debug-artifacts-${crypto.randomUUID()}`,
+    });
+    try {
+      const spaces = new SpaceRepository(db.db);
+      spaces.create({
+        spaceId: "space-main",
+        resourceId: "resource-main",
+        spaceType: "space",
+        name: "Main",
+        goal: "",
+        turnModel: "sequential_all",
+      });
+
+      const artifacts = new ArtifactRepository(db.db);
+      artifacts.create({
+        artifactId: "artifact-shared-1",
+        spaceId: "space-main",
+        resourceId: "resource-main",
+        turnId: "turn-1",
+        agentId: "agent-1",
+        type: "summary",
+        title: "Summary",
+        mimeType: "text/plain",
+        contentJson: JSON.stringify("hello"),
+        tagsJson: JSON.stringify(["summary"]),
+        visibility: "shared",
+      });
+
+      const service = new SpaceArtifactService({
+        artifacts,
+        spaces,
+      });
+
+      expect(() => service.getDebugArtifact({
+        spaceId: "space-main",
+        artifactId: "artifact-shared-1",
+      })).toThrow(/not available via the debug artifact path/i);
     } finally {
       db.close();
     }

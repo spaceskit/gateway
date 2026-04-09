@@ -41,6 +41,7 @@ describe("SpaceWorkspaceRepository", () => {
       spaceId: "space-main",
       explicitRoot: "",
       effectiveRoot: "/tmp/spaces/main",
+      managedFolderName: "main-space--11111111",
       managedResourceId: "space-workspace-root-space-main",
       layoutVersion: 1,
     });
@@ -48,12 +49,14 @@ describe("SpaceWorkspaceRepository", () => {
     expect(first.space_id).toBe("space-main");
     expect(first.explicit_root).toBe("");
     expect(first.effective_root).toBe("/tmp/spaces/main");
+    expect(first.managed_folder_name).toBe("main-space--11111111");
     expect(first.layout_version).toBe(1);
 
     const second = repos.workspaces.upsert({
       spaceId: "space-main",
       explicitRoot: "/tmp/explicit-root",
       effectiveRoot: "/tmp/explicit-root",
+      managedFolderName: "main-space--11111111",
       managedResourceId: "space-workspace-root-space-main",
       layoutVersion: 2,
     });
@@ -61,6 +64,7 @@ describe("SpaceWorkspaceRepository", () => {
     expect(second.space_id).toBe("space-main");
     expect(second.explicit_root).toBe("/tmp/explicit-root");
     expect(second.effective_root).toBe("/tmp/explicit-root");
+    expect(second.managed_folder_name).toBe("main-space--11111111");
     expect(second.layout_version).toBe(2);
     expect(second.created_at).toBe(first.created_at);
   });
@@ -71,6 +75,7 @@ describe("SpaceWorkspaceRepository", () => {
       spaceId: "space-main",
       explicitRoot: "",
       effectiveRoot: "/tmp/spaces/main",
+      managedFolderName: "main-space--11111111",
       managedResourceId: "space-workspace-root-space-main",
       layoutVersion: 1,
     });
@@ -79,4 +84,3 @@ describe("SpaceWorkspaceRepository", () => {
     expect(repos.workspaces.getBySpace("space-main")).toBeUndefined();
   });
 });
-

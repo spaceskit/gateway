@@ -1,3 +1,5 @@
+import { USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
+
 export interface MainSpaceSystemSkillSeed {
   skillId: string;
   name: string;
@@ -9,11 +11,11 @@ export interface MainSpaceSystemSkillSeed {
 }
 
 const COMMAND_REGISTRY_V1 = [
-  "list_rooms",
-  "create_room",
+  "list_spaces",
+  "create_space",
   "list_skills",
   "create_skill",
-  "handoff_room",
+  "handoff_space",
 ] as const;
 
 const SHARED_SUFFIX = [
@@ -29,14 +31,14 @@ export const MAIN_SPACE_SYSTEM_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
   {
     skillId: "system/spaces-skill",
     name: "Spaces Skill",
-    description: "Core Spaces app behavior, capabilities, constraints, and room operations guidance.",
+    description: "Core Spaces app behavior, capabilities, constraints, and space operations guidance.",
     contentMarkdown: [
       "# Spaces Skill",
       "Use this as the canonical context for how Spaces works today.",
       "",
       "## Responsibilities",
       "- Describe current app capabilities and known limitations without guessing.",
-      "- Explain room/space lifecycle behavior with clear operational steps.",
+      "- Explain space lifecycle behavior with clear operational steps.",
       "- Route control-surface actions through gateway orchestration contracts.",
       "",
       "## Current Capability Scope",
@@ -74,7 +76,7 @@ export const MAIN_SPACE_SYSTEM_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
       "- Track handoff boundaries and ensure one final synthesized answer.",
       "",
       "## Handoff Guidance",
-      "- Choose target room and agent intentionally.",
+      "- Choose target space and agent intentionally.",
       "- Provide concise task framing, constraints, and expected output.",
       "",
       SHARED_SUFFIX,
@@ -114,4 +116,77 @@ export const MAIN_SPACE_SYSTEM_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
   },
 ];
 
+export const CONCIERGE_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
+  {
+    skillId: USER_ESCALATION_SKILL_ID,
+    name: "User Escalation",
+    description: "Trusted-agent policy for requesting user input, sending structured notifications, and escalating urgent requests to concierge calls.",
+    contentMarkdown: [
+      "# User Escalation",
+      "",
+      "## Responsibilities",
+      "- Use concierge escalation only when a human decision is required to continue safely.",
+      "- Rewrite agent needs into concise user-facing copy before delivery.",
+      "- Prefer structured notification requests and waiting over immediate interruption.",
+      "",
+      "## Decision Rules",
+      "- Use `concierge.request_user_input` for blocked decisions, approvals, and revisions.",
+      "- Keep `responseMode` set to `structured` and limit `allowedResponses` to the smallest useful set.",
+      "- Use `fallbackPolicy=urgent_call_after_timeout` only when the request is urgent and waiting would risk the task or user experience.",
+      "- Never assume an urgent concierge call is allowed unless the request explicitly opts into it.",
+      "",
+      "## Constraints",
+      "- Default path: notification plus app deep-link.",
+      "- Do not ask for arbitrary free-form text through the tool in v1.",
+      "- If the local Apple concierge lane needs escalation, hand off to the gateway-backed concierge path first.",
+      "",
+      SHARED_SUFFIX,
+    ].join("\n"),
+    sourceRef: "spaceskit:system/user-escalation/v1",
+    tags: ["system", "concierge", "escalation", "trusted-agent"],
+    status: "active",
+  },
+  {
+    skillId: "role/concierge-operations",
+    name: "Concierge Operations",
+    description: "Operational procedures for the concierge agent: space navigation, management, cross-space awareness, and escalation.",
+    contentMarkdown: [
+      "# Concierge Operations",
+      "",
+      "## Space Navigation",
+      "- List all active spaces with last-activity timestamps.",
+      "- Switch the user's view to a named space.",
+      "- Summarize recent activity in a space (last N turns, pending feedback, stale agents).",
+      "",
+      "## Space Management",
+      "- Create spaces from templates — ask which template if ambiguous.",
+      "- Archive inactive spaces after confirming with the user.",
+      "- Assign or reassign agents to spaces.",
+      "- Update space goals and agent spawn context.",
+      "",
+      "## Cross-Space Awareness",
+      "- Report pending feedback requests across all spaces.",
+      "- Identify stale spaces (no activity in 24+ hours).",
+      "- Surface spaces with failed or errored turns.",
+      "",
+      "## Escalation Paths",
+      "- Route complex analytical or creative tasks to the main agent or a team space.",
+      "- When user input is required, prefer `concierge.request_user_input` with a short structured question.",
+      "- Only opt into automatic concierge calls for urgent requests with explicit fallback permission.",
+      "- Suggest creating a team space when a task clearly benefits from multi-agent decomposition.",
+      "- Never attempt multi-step tool chains — hand off to the appropriate specialist.",
+      "",
+      "## Behavioral Constraints",
+      "- Keep responses under 3 sentences for operational actions.",
+      "- After completing an action, suggest the next logical step.",
+      "- Ask ONE clarifying question when uncertain — never present a list of options.",
+      "- Keep escalation copy short, operational, and easy to answer from a notification.",
+    ].join("\n"),
+    sourceRef: "spaceskit:role/concierge-operations/v1",
+    tags: ["role", "concierge", "operations", "navigation"],
+    status: "active",
+  },
+];
+
 export const MAIN_SPACE_SYSTEM_SKILL_IDS = MAIN_SPACE_SYSTEM_SKILLS.map((skill) => skill.skillId);
+export const TRUSTED_AGENT_SYSTEM_SKILL_IDS = [USER_ESCALATION_SKILL_ID] as const;

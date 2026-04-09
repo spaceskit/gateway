@@ -2,7 +2,7 @@
  * ExperienceGenerator — converts completed spaces into structured experiences.
  *
  * Pipeline:
- * 1. Listen for "space.completed" events via EventBus
+ * 1. Listen for "space.self_check" events via EventBus
  * 2. Load space config + turn history from database
  * 3. Summarize execution (LLM or heuristic)
  * 4. Extract agent observations
@@ -16,6 +16,7 @@ import type { ModelProvider, ModelMessage } from "../agents/model-provider.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { MemoryProvider } from "../memory/types.js";
 import { randomUUID } from "node:crypto";
+import { ReflectionService, type InsightProposalRecord } from "../reflection/reflection-service.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +38,8 @@ export interface ExperienceGeneratorOptions {
   saveExperience: (experience: Experience) => Promise<void>;
   /** Save personality insight to database (optional). */
   saveInsight?: (insight: InsightRecord) => Promise<void>;
+  /** Shared reflection pipeline for summary + insight generation. */
+  reflectionService?: ReflectionService;
 }
 
 export interface TurnRecord {
@@ -60,6 +63,7 @@ export interface SpaceConfigRecord {
 
 export interface InsightRecord {
   insightId: string;
+  experienceId: string;
   spaceId: string;
   profileId: string;
   baseRevision: number;
@@ -76,11 +80,35 @@ export interface InsightRecord {
 export class ExperienceGenerator {
   private options: ExperienceGeneratorOptions;
   private unsubscribe: (() => void) | null = null;
+  private selfCheckUnsubscribe: (() => void) | null = null;
+  private turnStartedUnsubscribe: (() => void) | null = null;
+  private readonly principalScopeBySpace = new Map<string, string>();
 
   constructor(options: ExperienceGeneratorOptions) {
     this.options = options;
 
-    // Listen for space completions
+    this.turnStartedUnsubscribe = this.options.eventBus.on("space.turn_started", (event) => {
+      const typed = event as { spaceId?: unknown; requestedByPrincipalId?: unknown };
+      const spaceId = typeof typed.spaceId === "string" ? typed.spaceId.trim() : "";
+      const principalId = typeof typed.requestedByPrincipalId === "string"
+        ? typed.requestedByPrincipalId.trim()
+        : "";
+      if (spaceId && principalId) {
+        this.principalScopeBySpace.set(spaceId, principalId);
+      }
+    });
+
+    // Canonical trigger: replay session self-check cadence.
+    this.selfCheckUnsubscribe = this.options.eventBus.on("space.self_check", (event) => {
+      const spaceId = (event as any).spaceId as string;
+      if (spaceId) {
+        this.generate(spaceId).catch((err) => {
+          console.error(`Experience generation failed for space ${spaceId}:`, err);
+        });
+      }
+    });
+
+    // Backward-compatible trigger for older emitters.
     this.unsubscribe = this.options.eventBus.on("space.completed", (event) => {
       const spaceId = (event as any).spaceId as string;
       if (spaceId) {
@@ -95,6 +123,11 @@ export class ExperienceGenerator {
   destroy(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.selfCheckUnsubscribe?.();
+    this.selfCheckUnsubscribe = null;
+    this.turnStartedUnsubscribe?.();
+    this.turnStartedUnsubscribe = null;
+    this.principalScopeBySpace.clear();
   }
 
   // -----------------------------------------------------------------------
@@ -110,34 +143,22 @@ export class ExperienceGenerator {
 
     if (!config || turns.length === 0) return null;
 
-    // 2. Summarize
-    const summary = await this.summarize(config, turns);
-
-    // 3. Extract lessons
-    const { strengths, weaknesses } = await this.extractLessons(config, turns);
-
-    // 4. Generate agent observations
-    const observations = this.generateObservations(config, turns);
-
-    // 5. Auto-generate tags
-    const tags = this.generateTags(config, turns);
-
-    // 6. Build experience
-    const experience: Experience = {
-      experienceId: randomUUID(),
-      spaceId: config.spaceId,
-      resourceId: config.resourceId,
-      status: "draft",
-      goal: config.goal ?? config.name,
-      summary,
-      strengths,
-      weaknesses,
-      agentObservations: observations,
-      tags,
-      sourcePath: `./experiences/${config.spaceId}_${Date.now()}.md`,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    const requestingPrincipalId = this.principalScopeBySpace.get(config.spaceId);
+    this.principalScopeBySpace.delete(config.spaceId);
+    const reflectionService = this.options.reflectionService ?? new ReflectionService({
+      modelPolicy: {
+        experience: {
+          modelProvider: this.options.modelProvider,
+          modelId: this.options.modelId,
+        },
+      },
+    });
+    const reflectionResult = await reflectionService.runExperienceJob({
+      ...config,
+      turns,
+      requestingPrincipalId,
+    });
+    const experience = reflectionResult.experience;
 
     // 7. Save
     await this.options.saveExperience(experience);
@@ -147,9 +168,15 @@ export class ExperienceGenerator {
       await this.options.memoryProvider.save({
         content: `${experience.goal}: ${experience.summary}`,
         type: "semantic",
-        scope: { spaceId: config.spaceId },
+        scope: requestingPrincipalId
+          ? { spaceId: config.spaceId, userId: requestingPrincipalId }
+          : { spaceId: config.spaceId },
         metadata: {
           experienceId: experience.experienceId,
+          sourceType: "experience",
+          sourceId: experience.experienceId,
+          sourceStatus: experience.status,
+          principalId: requestingPrincipalId,
           strengths: experience.strengths,
           weaknesses: experience.weaknesses,
           agentCount: config.agents.length,
@@ -170,7 +197,7 @@ export class ExperienceGenerator {
 
     // 10. Generate personality insights (optional)
     if (this.options.saveInsight) {
-      await this.generateInsights(experience, config, observations);
+      await this.generateInsights(reflectionResult.insightProposals);
     }
 
     return experience;
@@ -350,29 +377,12 @@ export class ExperienceGenerator {
   // Personality insights
   // -----------------------------------------------------------------------
 
-  private async generateInsights(
-    experience: Experience,
-    config: SpaceConfigRecord,
-    observations: AgentObservation[],
-  ): Promise<void> {
-    for (const obs of observations) {
-      if (!obs.profileDeltaSuggestion) continue;
-
-      const insight: InsightRecord = {
-        insightId: randomUUID(),
-        spaceId: config.spaceId,
-        profileId: obs.profileId,
-        baseRevision: 0, // Would be resolved from ProfileRepository
-        proposedPromptDelta: obs.profileDeltaSuggestion,
-        rationale: `From experience ${experience.experienceId}: ${obs.observation}`,
-        confidence: obs.relevance,
-        status: "proposed",
-      };
-
+  private async generateInsights(insights: InsightProposalRecord[]): Promise<void> {
+    for (const insight of insights) {
       try {
         await this.options.saveInsight!(insight);
       } catch (err) {
-        console.error(`Failed to save insight for profile ${obs.profileId}:`, err);
+        console.error(`Failed to save insight for profile ${insight.profileId}:`, err);
       }
     }
   }

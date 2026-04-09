@@ -29,7 +29,9 @@ function makeRouter(options: {
   gatewayResetService?: Record<string, unknown>;
   spaceTurnTraceService?: Record<string, unknown>;
   spaceArtifactService?: Record<string, unknown>;
+  memoryLifecycleService?: Record<string, unknown>;
   spaceToolPolicyService?: Record<string, unknown>;
+  toolAccessPolicyService?: Record<string, unknown>;
   spaceSharingService?: Record<string, unknown>;
 } = {}): MessageRouter {
   const logger: any = {
@@ -58,7 +60,9 @@ function makeRouter(options: {
     gatewayResetService: options.gatewayResetService as any,
     spaceTurnTraceService: options.spaceTurnTraceService as any,
     spaceArtifactService: options.spaceArtifactService as any,
+    memoryLifecycleService: options.memoryLifecycleService as any,
     spaceToolPolicyService: options.spaceToolPolicyService as any,
+    toolAccessPolicyService: options.toolAccessPolicyService as any,
     spaceSharingService: options.spaceSharingService as any,
   });
 }
@@ -68,6 +72,7 @@ describe("MessageRouter changeset/quota/tool handlers", () => {
     let createInput: any = null;
     let uploadCompleteInput: any = null;
     let updateQuotaInput: any = null;
+    let getDebugArtifactInput: any = null;
 
     const router = makeRouter({
       spaceSharingService: {
@@ -243,23 +248,55 @@ describe("MessageRouter changeset/quota/tool handlers", () => {
           },
         }),
       },
-      spaceToolPolicyService: {
-        getEffectiveTools: () => ({
+      toolAccessPolicyService: {
+        getEffectiveToolAccess: () => ({
           spaceId: "space-main",
           policyVersion: "v1",
+          dangerousCapabilities: [],
           operations: [],
           generatedAt: new Date().toISOString(),
         }),
       },
       spaceTurnTraceService: {
+        listActivityLog: () => ({
+          entries: [],
+          total: 0,
+        }),
         getTurnTrace: () => ({
           spaceId: "space-main",
           turnId: "turn-1",
           total: 0,
           events: [],
           toolCalls: [],
+          activities: [],
           artifactIds: [],
         }),
+      },
+      memoryLifecycleService: {
+        listExperiences: () => ({ experiences: [], total: 0 }),
+        getExperience: () => ({ observations: [] }),
+        listInsights: () => ({ insights: [], total: 0 }),
+        getInsight: () => undefined,
+        acceptInsight: () => undefined,
+        rejectInsight: () => undefined,
+        dismissInsight: () => undefined,
+        getSpaceAgentNotes: () => ({ notes: [] }),
+        updateSpaceAgentNotes: () => undefined,
+        getUserProfile: () => ({
+          principalId: "principal-owner",
+          profile: {},
+          updatedAt: new Date().toISOString(),
+          source: "empty",
+        }),
+        updateUserProfile: () => ({
+          principalId: "principal-owner",
+          profile: {},
+          updatedAt: new Date().toISOString(),
+          source: "user_profiles",
+        }),
+        listMemories: async () => ({ memories: [], total: 0 }),
+        deleteMemory: async () => ({ deleted: true }),
+        updateMemoryImportance: async () => undefined,
       },
       spaceArtifactService: {
         listArtifacts: () => ({
@@ -278,6 +315,21 @@ describe("MessageRouter changeset/quota/tool handlers", () => {
           updatedAt: new Date().toISOString(),
           content: "x",
         }),
+        getDebugArtifact: (input: unknown) => {
+          getDebugArtifactInput = input;
+          return {
+            artifactId: "artifact-debug-1",
+            spaceId: "space-main",
+            type: "cli_execution_transcript",
+            title: "CLI transcript",
+            sizeBytes: 64,
+            tags: ["debug", "cli_execution", "transcript"],
+            visibility: "private",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            content: "{\"event\":\"started\"}\n",
+          };
+        },
       },
     });
 
@@ -331,6 +383,14 @@ describe("MessageRouter changeset/quota/tool handlers", () => {
     );
     expect(tools?.type).toBe(MessageTypes.SPACE_GET_EFFECTIVE_TOOLS);
 
+    const toolAccess = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_GET_EFFECTIVE_TOOL_ACCESS, {
+        spaceId: "space-main",
+      }),
+    );
+    expect(toolAccess?.type).toBe(MessageTypes.SPACE_GET_EFFECTIVE_TOOL_ACCESS);
+
     const trace = await router.handle(
       makeClient(),
       makeMessage(MessageTypes.SPACE_GET_TURN_TRACE, {
@@ -340,6 +400,29 @@ describe("MessageRouter changeset/quota/tool handlers", () => {
     );
     expect(trace?.type).toBe(MessageTypes.SPACE_GET_TURN_TRACE);
 
+    const activity = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_LIST_ACTIVITY_LOG, {
+        spaceId: "space-main",
+      }),
+    );
+    expect(activity?.type).toBe(MessageTypes.SPACE_LIST_ACTIVITY_LOG);
+    expect((activity?.payload as any).spaceId).toBe("space-main");
+
+    const listExperiences = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_LIST_EXPERIENCES, {
+        spaceId: "space-main",
+      }),
+    );
+    expect(listExperiences?.type).toBe(MessageTypes.SPACE_LIST_EXPERIENCES);
+
+    const profile = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_GET_USER_PROFILE, {}),
+    );
+    expect(profile?.type).toBe(MessageTypes.SPACE_GET_USER_PROFILE);
+
     const listArtifacts = await router.handle(
       makeClient(),
       makeMessage(MessageTypes.SPACE_LIST_ARTIFACTS, {
@@ -347,6 +430,19 @@ describe("MessageRouter changeset/quota/tool handlers", () => {
       }),
     );
     expect(listArtifacts?.type).toBe(MessageTypes.SPACE_LIST_ARTIFACTS);
+
+    const debugArtifact = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_GET_DEBUG_ARTIFACT, {
+        spaceId: "space-main",
+        artifactId: "artifact-debug-1",
+      }),
+    );
+    expect(debugArtifact?.type).toBe(MessageTypes.SPACE_GET_DEBUG_ARTIFACT);
+    expect(getDebugArtifactInput).toEqual({
+      spaceId: "space-main",
+      artifactId: "artifact-debug-1",
+    });
 
     const resetUsage = await router.handle(
       makeClient(),

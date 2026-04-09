@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createHmac } from "node:crypto";
 import { SpacesAdminMcpFacadeService } from "../src/services/spaces-admin-mcp-facade-service.js";
+import { createHttpPrincipalTestContext } from "./http-principal-test-helpers.js";
 
 describe("SpacesAdminMcpFacadeService", () => {
   test("returns null for unrelated paths", async () => {
@@ -18,7 +18,9 @@ describe("SpacesAdminMcpFacadeService", () => {
 
   test("serves tools/list and tools/call", async () => {
     const calls: Array<Record<string, unknown>> = [];
+    const auth = createHttpPrincipalTestContext();
     const service = new SpacesAdminMcpFacadeService({
+      principalAuth: auth.principalAuth,
       orchestratorCommandService: {
         submitCommand: async (input) => {
           calls.push(input as Record<string, unknown>);
@@ -46,13 +48,13 @@ describe("SpacesAdminMcpFacadeService", () => {
     expect(listResponse?.status).toBe(200);
     const listBody = await listResponse!.json() as { result?: { tools?: Array<{ name?: string }> } };
     expect(Array.isArray(listBody.result?.tools)).toBe(true);
-    expect(listBody.result?.tools?.some((tool) => tool.name === "spaces.admin.handoff_room")).toBe(true);
+    expect(listBody.result?.tools?.some((tool) => tool.name === "spaces.admin.handoff_space")).toBe(true);
 
     const callRequest = new Request("http://localhost/mcp/spaces-admin", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-spaceskit-principal-id": "principal-a",
+        ...auth.headers("principal-a"),
         "x-spaceskit-device-id": "device-a",
       },
       body: JSON.stringify({
@@ -60,11 +62,11 @@ describe("SpacesAdminMcpFacadeService", () => {
         id: 2,
         method: "tools/call",
         params: {
-          name: "spaces.admin.create_room",
+          name: "spaces.admin.create_space",
           arguments: {
             targetSpaceId: "space-main",
             resourceId: "resource:main",
-            name: "Design Room",
+            name: "Design Space",
             goal: "Design handoff",
           },
         },
@@ -75,13 +77,13 @@ describe("SpacesAdminMcpFacadeService", () => {
     const callBody = await callResponse!.json() as { result?: { isError?: boolean } };
     expect(callBody.result?.isError).toBe(false);
     expect(calls.length).toBe(1);
-    expect(calls[0].commandType).toBe("create_room");
+    expect(calls[0].commandType).toBe("create_space");
     expect(calls[0].targetSpaceId).toBe("space-main");
     expect(calls[0].principalId).toBe("principal-a");
     expect(calls[0].deviceId).toBe("device-a");
     const payload = calls[0].payload as Record<string, unknown>;
     expect(payload.targetSpaceId).toBeUndefined();
-    expect(payload.name).toBe("Design Room");
+    expect(payload.name).toBe("Design Space");
   });
 
   test("requires authenticated principal when configured", async () => {
@@ -138,7 +140,7 @@ describe("SpacesAdminMcpFacadeService", () => {
 
   test("enforces signed bearer tokens in strict principal-auth mode", async () => {
     let capturedPrincipalId: string | undefined;
-    const now = new Date("2026-03-02T20:00:00.000Z");
+    const auth = createHttpPrincipalTestContext();
     const service = new SpacesAdminMcpFacadeService({
       orchestratorCommandService: {
         submitCommand: async (input) => {
@@ -152,11 +154,7 @@ describe("SpacesAdminMcpFacadeService", () => {
       },
       defaultTargetSpaceId: "main-space",
       requireAuthenticatedPrincipal: true,
-      principalAuth: {
-        strictVerification: true,
-        hs256Secret: "test-secret",
-        now: () => now,
-      },
+      principalAuth: auth.strictPrincipalAuth,
     });
 
     const forgedRequest = new Request("http://localhost/mcp/spaces-admin", {
@@ -170,7 +168,7 @@ describe("SpacesAdminMcpFacadeService", () => {
         id: 1,
         method: "tools/call",
         params: {
-          name: "spaces.admin.list_rooms",
+          name: "spaces.admin.list_spaces",
           arguments: {},
         },
       }),
@@ -180,22 +178,18 @@ describe("SpacesAdminMcpFacadeService", () => {
     const forgedBody = await forgedResponse!.json() as { error?: { data?: { code?: string } } };
     expect(forgedBody.error?.data?.code).toBe("UNAUTHENTICATED");
 
-    const signedToken = signHs256Token({
-      sub: "principal-strict",
-      exp: Math.floor(now.getTime() / 1000) + 60,
-    }, "test-secret");
     const signedRequest = new Request("http://localhost/mcp/spaces-admin", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${signedToken}`,
+        ...auth.headers("principal-strict"),
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
         params: {
-          name: "spaces.admin.list_rooms",
+          name: "spaces.admin.list_spaces",
           arguments: {},
         },
       }),
@@ -205,15 +199,3 @@ describe("SpacesAdminMcpFacadeService", () => {
     expect(capturedPrincipalId).toBe("principal-strict");
   });
 });
-
-function signHs256Token(payload: Record<string, unknown>, secret: string): string {
-  const encodedHeader = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac("sha256", secret).update(signingInput).digest("base64url");
-  return `${encodedHeader}.${encodedPayload}.${signature}`;
-}
-
-function base64UrlEncode(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64url");
-}

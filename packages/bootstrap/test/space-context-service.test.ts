@@ -36,7 +36,7 @@ function ensureSpace(
   context.spaces.create({
     spaceId: input.spaceId,
     resourceId: input.resourceId,
-    spaceType: "room",
+    spaceType: "space",
     name: input.name,
     goal: `${input.name} goal`,
   });

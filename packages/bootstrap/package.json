@@ -15,10 +15,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@spaceskit/client": "file:../../../client-ts",
     "@spaceskit/contracts": "*",
     "@spaceskit/core": "*",
     "@spaceskit/gateway-core": "*",
     "@spaceskit/mcp-ai-sdk": "*",
+    "@spaceskit/mcp-runtime": "*",
     "@spaceskit/observability": "*",
     "@spaceskit/persistence": "*",
     "@spaceskit/policy": "*",

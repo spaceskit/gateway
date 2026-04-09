@@ -3,6 +3,7 @@ import {
   SpaceRepository,
   type ArtifactRow,
 } from "@spaceskit/persistence";
+import { isCliExecutionTranscriptArtifact } from "./cli-execution-audit-service.js";
 
 export type SpaceArtifactServiceErrorCode =
   | "INVALID_ARGUMENT"
@@ -74,14 +75,7 @@ export class SpaceArtifactService {
   }
 
   getArtifact(input: { spaceId: string; artifactId: string }): SpaceArtifactDetail {
-    const spaceId = normalizeRequired(input.spaceId, "spaceId");
-    const artifactId = normalizeRequired(input.artifactId, "artifactId");
-    this.assertSpaceExists(spaceId);
-
-    const row = this.options.artifacts.getById(artifactId);
-    if (!row || row.space_id !== spaceId) {
-      throw new SpaceArtifactServiceError("NOT_FOUND", `Artifact not found in space: ${artifactId}`);
-    }
+    const row = this.getArtifactRow(input.spaceId, input.artifactId);
 
     if (row.size_bytes > this.maxArtifactBytes) {
       throw new SpaceArtifactServiceError(
@@ -97,10 +91,38 @@ export class SpaceArtifactService {
     };
   }
 
+  getDebugArtifact(input: { spaceId: string; artifactId: string }): SpaceArtifactDetail {
+    const row = this.getArtifactRow(input.spaceId, input.artifactId);
+    const tags = parseTags(row.tags_json);
+    if (!isCliExecutionTranscriptArtifact(row.artifact_type, tags)) {
+      throw new SpaceArtifactServiceError(
+        "FAILED_PRECONDITION",
+        `Artifact is not available via the debug artifact path: ${input.artifactId}`,
+      );
+    }
+
+    return {
+      ...mapSummary(row),
+      content: parseContent(row.content_json),
+    };
+  }
+
   private assertSpaceExists(spaceId: string): void {
     if (!this.options.spaces.getById(spaceId)) {
       throw new SpaceArtifactServiceError("NOT_FOUND", `Space not found: ${spaceId}`);
     }
+  }
+
+  private getArtifactRow(spaceIdRaw: string, artifactIdRaw: string): ArtifactRow {
+    const spaceId = normalizeRequired(spaceIdRaw, "spaceId");
+    const artifactId = normalizeRequired(artifactIdRaw, "artifactId");
+    this.assertSpaceExists(spaceId);
+
+    const row = this.options.artifacts.getById(artifactId);
+    if (!row || row.space_id !== spaceId) {
+      throw new SpaceArtifactServiceError("NOT_FOUND", `Artifact not found in space: ${artifactId}`);
+    }
+    return row;
   }
 }
 

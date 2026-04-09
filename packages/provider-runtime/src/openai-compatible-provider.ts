@@ -6,6 +6,7 @@ import type {
   ModelProvider,
   StreamChunk,
   TokenUsage,
+  TurnReasoningEffort,
   ToolCall,
   ToolDefinition,
 } from "@spaceskit/core";
@@ -126,6 +127,11 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       body.tool_choice = "auto";
     }
 
+    // Wire reasoning_effort for OpenAI o-series models
+    if (reference.providerId === "openai" && options.effort && isOSeriesModel(reference.providerModelId)) {
+      body.reasoning_effort = toOpenAIReasoningEffort(options.effort);
+    }
+
     const response = await this.fetchImpl(this.buildUrl(reference.providerId, "chat/completions"), {
       method: "POST",
       headers: this.buildHeaders(reference.providerId),
@@ -168,6 +174,11 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
     if (options.tools?.length) {
       throw new ToolsUnsupportedError(reference.providerId, "Streaming with gateway tools is not supported.");
+    }
+
+    // Wire reasoning_effort for OpenAI o-series models
+    if (reference.providerId === "openai" && options.effort && isOSeriesModel(reference.providerModelId)) {
+      body.reasoning_effort = toOpenAIReasoningEffort(options.effort);
     }
 
     const response = await this.fetchImpl(this.buildUrl(reference.providerId, "chat/completions"), {
@@ -556,6 +567,24 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     return undefined;
   }
   return value as Record<string, unknown>;
+}
+
+/**
+ * Detect OpenAI o-series reasoning models that support reasoning_effort.
+ * Matches: o1, o1-mini, o1-preview, o3, o3-mini, o4-mini, etc.
+ */
+function isOSeriesModel(modelId: string): boolean {
+  const lower = modelId.trim().toLowerCase();
+  return /^o\d/.test(lower);
+}
+
+/**
+ * Map gateway effort level to OpenAI reasoning_effort parameter.
+ * OpenAI supports "low" | "medium" | "high" — gateway "max" maps to "high".
+ */
+function toOpenAIReasoningEffort(effort: TurnReasoningEffort): "low" | "medium" | "high" {
+  if (effort === "max") return "high";
+  return effort;
 }
 
 function toInt(value: unknown): number | undefined {

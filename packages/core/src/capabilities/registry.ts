@@ -19,9 +19,14 @@ import type {
   CapabilityRoutingPreferences,
 } from "./types.js";
 import type { EventBus } from "../events/event-bus.js";
+import type { TurnAccessMode } from "../agents/model-provider.js";
 
 export interface CapabilityHandler {
-  invoke(operation: string, args: Record<string, unknown>): Promise<unknown>;
+  invoke(
+    operation: string,
+    args: Record<string, unknown>,
+    context?: CapabilityPolicyContext,
+  ): Promise<unknown>;
 }
 
 export interface GatewayPolicyEvaluationResult {
@@ -42,6 +47,7 @@ export interface CapabilityPolicyContext {
   deviceId?: string;
   agentId?: string;
   executionOrigin?: CapabilityExecutionOrigin;
+  accessMode?: TurnAccessMode;
 }
 
 export type GatewayPolicyEvaluator = (
@@ -429,7 +435,11 @@ export class CapabilityRegistry {
     route: CapabilityExecutionRoute;
     handler: CapabilityHandler;
   }): Promise<unknown> {
-    const hostInvoke = () => input.handler.invoke(input.invocation.operation, input.invocation.args);
+    const hostInvoke = () => input.handler.invoke(
+      input.invocation.operation,
+      input.invocation.args,
+      input.context,
+    );
     if (input.route.backend !== "sandbox") {
       return hostInvoke();
     }

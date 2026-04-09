@@ -235,8 +235,8 @@ export class SpacesAdminMcpFacadeService {
 function buildToolList(): Array<Record<string, unknown>> {
   return [
     {
-      name: "spaces.admin.list_rooms",
-      description: "List available rooms/spaces from the main orchestrator control plane.",
+      name: "spaces.admin.list_spaces",
+      description: "List available spaces from the main orchestrator control plane.",
       inputSchema: {
         type: "object",
         properties: {
@@ -248,8 +248,8 @@ function buildToolList(): Array<Record<string, unknown>> {
       },
     },
     {
-      name: "spaces.admin.create_room",
-      description: "Create a room/space.",
+      name: "spaces.admin.create_space",
+      description: "Create a space.",
       inputSchema: {
         type: "object",
         properties: {
@@ -296,8 +296,8 @@ function buildToolList(): Array<Record<string, unknown>> {
       },
     },
     {
-      name: "spaces.admin.handoff_room",
-      description: "Hand off user flow to a target room and optionally dispatch a prompt.",
+      name: "spaces.admin.handoff_space",
+      description: "Hand off user flow to a target space and optionally dispatch a prompt.",
       inputSchema: {
         type: "object",
         properties: {
@@ -314,18 +314,18 @@ function buildToolList(): Array<Record<string, unknown>> {
 
 function mapToolToCommand(
   toolName: string,
-): "list_rooms" | "create_room" | "list_skills" | "create_skill" | "handoff_room" | null {
+): "list_spaces" | "create_space" | "list_skills" | "create_skill" | "handoff_space" | null {
   switch (toolName) {
-    case "spaces.admin.list_rooms":
-      return "list_rooms";
-    case "spaces.admin.create_room":
-      return "create_room";
+    case "spaces.admin.list_spaces":
+      return "list_spaces";
+    case "spaces.admin.create_space":
+      return "create_space";
     case "spaces.admin.list_skills":
       return "list_skills";
     case "spaces.admin.create_skill":
       return "create_skill";
-    case "spaces.admin.handoff_room":
-      return "handoff_room";
+    case "spaces.admin.handoff_space":
+      return "handoff_space";
     default:
       return null;
   }

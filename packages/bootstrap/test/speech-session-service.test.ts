@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { initDatabase, VoiceUsageRepository } from "@spaceskit/persistence";
 import { SpeechSessionService } from "../src/services/speech-session-service.js";
 import { VoiceRoutingService } from "../src/services/voice-routing-service.js";
+import { VoiceUsageLockService } from "../src/services/voice-usage-lock-service.js";
 
 describe("SpeechSessionService", () => {
   test("derives deterministic UUID spaceUid when omitted", () => {
@@ -300,5 +302,300 @@ describe("SpeechSessionService", () => {
         allowAppleSpeechFallback: false,
       });
     }).toThrow("No fallback voice route is available");
+  });
+
+  test("executeTurn timeout emits transcript_final with error reason", async () => {
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => new Promise<never>(() => {
+          // never resolves
+        }),
+      } as any,
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-timeout",
+      autoSubmitTurns: true,
+    });
+
+    const events = await service.appendAudioChunk({
+      sessionId: "speech-timeout",
+      sequence: 1,
+      audioBase64: "AAAA",
+      transcriptText: "hello timeout",
+      isFinal: true,
+    });
+
+    const final = events.find((e) => e.eventType === "transcript_final");
+    expect(final).toBeDefined();
+    expect(final!.turnId).toBeUndefined();
+    expect(final!.reason).toContain("timed out");
+    expect(final!.transcript).toBe("hello timeout");
+  }, 35_000);
+
+  test("executeTurn error emits transcript_final with error reason", async () => {
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => {
+          throw new Error("provider unavailable");
+        },
+      } as any,
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-error",
+      autoSubmitTurns: true,
+    });
+
+    const events = await service.appendAudioChunk({
+      sessionId: "speech-error",
+      sequence: 1,
+      audioBase64: "AAAA",
+      transcriptText: "hello error",
+      isFinal: true,
+    });
+
+    const final = events.find((e) => e.eventType === "transcript_final");
+    expect(final).toBeDefined();
+    expect(final!.turnId).toBeUndefined();
+    expect(final!.reason).toBe("provider unavailable");
+    expect(final!.transcript).toBe("hello error");
+  });
+
+  test("session continues accepting audio after executeTurn failure", async () => {
+    let callCount = 0;
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            throw new Error("transient failure");
+          }
+          return { turnId: "turn-recovered" };
+        },
+      } as any,
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-recover",
+      autoSubmitTurns: true,
+    });
+
+    // First turn fails
+    const firstEvents = await service.appendAudioChunk({
+      sessionId: "speech-recover",
+      sequence: 1,
+      audioBase64: "AAAA",
+      transcriptText: "first attempt",
+      isFinal: true,
+    });
+    const firstFinal = firstEvents.find((e) => e.eventType === "transcript_final");
+    expect(firstFinal!.turnId).toBeUndefined();
+    expect(firstFinal!.reason).toBe("transient failure");
+
+    // Session is still usable — send more audio (non-final)
+    const secondEvents = await service.appendAudioChunk({
+      sessionId: "speech-recover",
+      sequence: 2,
+      audioBase64: "BBBB",
+      transcriptText: "second attempt",
+      isFinal: false,
+    });
+    expect(secondEvents.length).toBeGreaterThan(0);
+    expect(secondEvents[0].eventType).toBe("transcript_segment");
+  });
+
+  test("floating-point precision: many small chunks stay precise", async () => {
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+      } as any,
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-fp",
+      autoSubmitTurns: false,
+    });
+
+    const chunkCount = 1000;
+    const chunkDuration = 0.000001; // 1 microsecond each
+    let lastEvents: Awaited<ReturnType<typeof service.appendAudioChunk>> = [];
+
+    for (let i = 0; i < chunkCount; i++) {
+      lastEvents = await service.appendAudioChunk({
+        sessionId: "speech-fp",
+        sequence: i + 1,
+        audioBase64: "AAAA",
+        audioDurationSeconds: chunkDuration,
+        ttsSeconds: chunkDuration,
+        transcriptText: `seg-${i}`,
+        isFinal: false,
+      });
+    }
+
+    const usage = lastEvents.at(-1)!.usage!;
+    // 1000 * 0.000001 = 0.001 exactly
+    expect(usage.sttSeconds).toBe(0.001);
+    expect(usage.ttsSeconds).toBe(0.001);
+    // Verify no floating-point drift beyond 6 decimal places
+    const sttStr = usage.sttSeconds.toString();
+    const decimalPart = sttStr.split(".")[1] || "";
+    expect(decimalPart.length).toBeLessThanOrEqual(6);
+  });
+
+  test("resets transcript buffer after each final turn", async () => {
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+      } as any,
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-reset",
+      autoSubmitTurns: false,
+    });
+
+    const firstEvents = await service.appendAudioChunk({
+      sessionId: "speech-reset",
+      sequence: 1,
+      audioBase64: "AAAA",
+      transcriptText: "first turn",
+      isFinal: true,
+    });
+    expect(firstEvents.at(-1)?.transcript).toBe("first turn");
+
+    const secondEvents = await service.appendAudioChunk({
+      sessionId: "speech-reset",
+      sequence: 2,
+      audioBase64: "BBBB",
+      transcriptText: "second turn",
+      isFinal: true,
+    });
+    expect(secondEvents.at(-1)?.transcript).toBe("second turn");
+  });
+
+  test("attributes the quota-crossing STT chunk to managed before rerouting future chunks", async () => {
+    const db = initDatabase({
+      path: ":memory:",
+      runtimeGeneration: `speech-attribution-${crypto.randomUUID()}`,
+    });
+    const voiceUsageRepo = new VoiceUsageRepository(db.db);
+    const voiceUsageLockService = new VoiceUsageLockService({
+      usageRepo: voiceUsageRepo,
+      loadPolicy: () => ({
+        enabled: true,
+        managedSttSecondsMonthlyLimit: 1,
+      }),
+    });
+
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+      } as any,
+      voiceUsageRepo,
+      voiceUsageLockService,
+      voiceRoutingService: new VoiceRoutingService(),
+    });
+
+    try {
+      const started = service.startSession({
+        spaceId: "main-space",
+        sessionId: "speech-attribution",
+        allowLocalFallback: true,
+      });
+      expect(started.providerSource).toBe("managed");
+
+      const firstEvents = await service.appendAudioChunk({
+        sessionId: "speech-attribution",
+        sequence: 1,
+        audioBase64: "AAAA",
+        audioDurationSeconds: 1.25,
+        transcriptText: "hello one",
+        isFinal: false,
+      });
+      expect(firstEvents[0]?.eventType).toBe("session_rerouted");
+      expect(firstEvents[0]?.channel).toBe("stt");
+      expect(firstEvents[0]?.providerSource).toBe("local_model");
+
+      const secondEvents = await service.appendAudioChunk({
+        sessionId: "speech-attribution",
+        sequence: 2,
+        audioBase64: "BBBB",
+        audioDurationSeconds: 0.5,
+        transcriptText: "hello two",
+        isFinal: false,
+      });
+      expect(secondEvents[0]?.eventType).toBe("transcript_segment");
+      expect(secondEvents[0]?.sttRoute?.source).toBe("local_model");
+
+      const aggregates = voiceUsageRepo.aggregateByProviderChannel();
+      const managedStt = aggregates.find((row) => row.channel === "stt" && row.source === "managed");
+      const localStt = aggregates.find((row) => row.channel === "stt" && row.source === "local_model");
+      expect(managedStt?.sttSeconds).toBe(1.25);
+      expect(localStt?.sttSeconds).toBe(0.5);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("reroutes TTS independently from STT when only managed TTS usage is locked", async () => {
+    const db = initDatabase({
+      path: ":memory:",
+      runtimeGeneration: `speech-tts-reroute-${crypto.randomUUID()}`,
+    });
+    const voiceUsageRepo = new VoiceUsageRepository(db.db);
+    const voiceUsageLockService = new VoiceUsageLockService({
+      usageRepo: voiceUsageRepo,
+      loadPolicy: () => ({
+        enabled: true,
+        managedTtsCharsMonthlyLimit: 10,
+      }),
+    });
+
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+      } as any,
+      voiceUsageRepo,
+      voiceUsageLockService,
+      voiceRoutingService: new VoiceRoutingService(),
+    });
+
+    try {
+      service.startSession({
+        spaceId: "main-space",
+        sessionId: "speech-tts-reroute",
+        allowLocalFallback: true,
+        ttsAllowByokFallback: true,
+        ttsByokProviderId: "byok/elevenlabs-voice",
+      });
+
+      const events = await service.appendAudioChunk({
+        sessionId: "speech-tts-reroute",
+        sequence: 1,
+        audioBase64: "AAAA",
+        audioDurationSeconds: 0.2,
+        ttsChars: 20,
+        ttsSeconds: 1.5,
+        transcriptText: "hello",
+        isFinal: false,
+      });
+
+      expect(events[0]?.eventType).toBe("session_rerouted");
+      expect(events[0]?.channel).toBe("tts");
+      expect(events[0]?.providerSource).toBe("byok");
+      expect(events[0]?.sttRoute?.source).toBe("managed");
+      expect(events[0]?.ttsRoute?.source).toBe("byok");
+      expect(events[1]?.eventType).toBe("transcript_segment");
+      expect(events[1]?.sttRoute?.source).toBe("managed");
+      expect(events[1]?.ttsRoute?.source).toBe("byok");
+    } finally {
+      db.close();
+    }
   });
 });

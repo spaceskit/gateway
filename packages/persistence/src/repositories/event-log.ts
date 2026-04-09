@@ -124,6 +124,28 @@ export class EventLogRepository {
     `).get(spaceId, turnId) as { next_seq: number };
     return row.next_seq;
   }
+
+  deleteBySpace(
+    spaceId: string,
+    options: {
+      createdAtGte?: string;
+      createdAtLte?: string;
+    } = {},
+  ): number {
+    const where = ["space_id = ?"];
+    const values: Array<string | number> = [spaceId];
+    if (options.createdAtGte) {
+      where.push("created_at >= ?");
+      values.push(options.createdAtGte);
+    }
+    if (options.createdAtLte) {
+      where.push("created_at <= ?");
+      values.push(options.createdAtLte);
+    }
+    return this.db
+      .query(`DELETE FROM event_log WHERE ${where.join(" AND ")}`)
+      .run(...values).changes;
+  }
 }
 
 function normalizeLimit(value: number | undefined): number {

@@ -14,6 +14,8 @@ export interface SchedulerJobRow {
   action_type: SchedulerActionType;
   prompt_text: string;
   target_agent_id: string;
+  execution_target_json: string;
+  calendar_binding_json: string | null;
   primary_space_id: string | null;
   invalid_reason: string;
   next_run_at: string | null;
@@ -37,6 +39,8 @@ export interface CreateSchedulerJobInput {
   actionType?: SchedulerActionType;
   promptText: string;
   targetAgentId?: string;
+  executionTargetJson?: string;
+  calendarBindingJson?: string | null;
   primarySpaceId?: string | null;
   invalidReason?: string;
   nextRunAt?: string | null;
@@ -57,6 +61,8 @@ export interface UpdateSchedulerJobInput {
   timezone?: string;
   promptText?: string;
   targetAgentId?: string | null;
+  executionTargetJson?: string;
+  calendarBindingJson?: string | null;
   primarySpaceId?: string | null;
   invalidReason?: string | null;
   nextRunAt?: string | null;
@@ -67,7 +73,9 @@ export interface UpdateSchedulerJobInput {
 }
 
 export class SchedulerJobRepository {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Database) {
+    this.ensureCanonicalColumns();
+  }
 
   create(input: CreateSchedulerJobInput): SchedulerJobRow {
     const now = new Date().toISOString();
@@ -83,13 +91,15 @@ export class SchedulerJobRepository {
         action_type,
         prompt_text,
         target_agent_id,
+        execution_target_json,
+        calendar_binding_json,
         primary_space_id,
         invalid_reason,
         next_run_at,
         created_by_principal_id,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.jobId,
       input.name,
@@ -101,6 +111,8 @@ export class SchedulerJobRepository {
       input.actionType ?? "space_prompt",
       input.promptText,
       input.targetAgentId ?? "",
+      input.executionTargetJson ?? JSON.stringify({ mode: "existing_space" }),
+      input.calendarBindingJson ?? null,
       input.primarySpaceId ?? null,
       input.invalidReason ?? "",
       input.nextRunAt ?? null,
@@ -187,6 +199,14 @@ export class SchedulerJobRepository {
       assignments.push("target_agent_id = ?");
       values.push(patch.targetAgentId ?? "");
     }
+    if (patch.executionTargetJson !== undefined) {
+      assignments.push("execution_target_json = ?");
+      values.push(patch.executionTargetJson);
+    }
+    if (patch.calendarBindingJson !== undefined) {
+      assignments.push("calendar_binding_json = ?");
+      values.push(patch.calendarBindingJson ?? null);
+    }
     if (patch.primarySpaceId !== undefined) {
       assignments.push("primary_space_id = ?");
       values.push(patch.primarySpaceId ?? null);
@@ -238,6 +258,24 @@ export class SchedulerJobRepository {
       DELETE FROM scheduler_jobs
       WHERE job_id = ?
     `).run(jobId).changes > 0;
+  }
+
+  private ensureCanonicalColumns(): void {
+    const columns = this.db
+      .query("PRAGMA table_info(scheduler_jobs)")
+      .all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map((column) => column.name));
+
+    if (!columnNames.has("execution_target_json")) {
+      this.db.exec(
+        "ALTER TABLE scheduler_jobs ADD COLUMN execution_target_json TEXT NOT NULL DEFAULT '{\"mode\":\"existing_space\"}'",
+      );
+    }
+    if (!columnNames.has("calendar_binding_json")) {
+      this.db.exec(
+        "ALTER TABLE scheduler_jobs ADD COLUMN calendar_binding_json TEXT",
+      );
+    }
   }
 }
 

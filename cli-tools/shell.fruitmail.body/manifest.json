@@ -1,0 +1,38 @@
+{
+  "id": "shell.fruitmail.body",
+  "toolName": "shell.fruitmail.body",
+  "displayName": "Read Email Body",
+  "description": "Read the full body content of an email by its message ID. Returns plain text content.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "messages",
+  "toolGroupDisplayName": "Messages",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "messageId": {
+        "type": "string",
+        "description": "The message ID (ROWID) from a previous search result."
+      }
+    },
+    "required": [
+      "messageId"
+    ]
+  },
+  "outputHint": "Returns email body as plain text.",
+  "schemaVersion": 1,
+  "wrapperVersion": "0.1.0",
+  "enabled": true,
+  "runtime": {
+    "type": "shell",
+    "command": "node",
+    "args": [
+      "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+      "body",
+      "{{payload}}"
+    ],
+    "cwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+    "timeoutMs": 30000
+  }
+}

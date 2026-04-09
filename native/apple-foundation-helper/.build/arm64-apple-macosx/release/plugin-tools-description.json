@@ -1,0 +1,233 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.SpacesAppleFoundationHelper-arm64-apple-macosx-release.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/sources",
+      "importPath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/Sources/SpacesAppleFoundationHelper/main.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "SpacesAppleFoundationHelper",
+      "moduleOutputPath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/Modules/SpacesAppleFoundationHelper.swiftmodule",
+      "objects" : [
+        "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx26.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "12",
+        "-serialize-diagnostics",
+        "-O",
+        "-j12",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "SpacesAppleFoundationHelper_main",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "apple_foundation_helper"
+      ],
+      "outputFileMapPath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/Modules/SpacesAppleFoundationHelper.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/Sources/SpacesAppleFoundationHelper/main.swift"
+      ],
+      "tempsPath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build",
+      "wholeModuleOptimization" : true
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "SpacesAppleFoundationHelper" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "SpacesAppleFoundationHelper",
+      "-package-name",
+      "apple_foundation_helper",
+      "-c",
+      "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/Sources/SpacesAppleFoundationHelper/main.swift",
+      "-I",
+      "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx26.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "12",
+      "-serialize-diagnostics",
+      "-O",
+      "-j12",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "SpacesAppleFoundationHelper_main",
+      "-parse-as-library",
+      "-swift-version",
+      "6",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "apple_foundation_helper",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "SpacesAppleFoundationHelper" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/Sources/SpacesAppleFoundationHelper/main.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/sources"
+    },
+    "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.product/Objects.LinkFileList"
+    },
+    "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}

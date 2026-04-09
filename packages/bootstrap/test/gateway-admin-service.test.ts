@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Logger } from "@spaceskit/observability";
 import { initDatabase, ProviderSecretRefRepository } from "@spaceskit/persistence";
 import {
   DefaultGatewayAdminService,
   type AppleFoundationAvailabilitySnapshot,
 } from "../src/gateway-admin-service.js";
+import { LocalExecutableResolver } from "../src/execution/local-executable-resolver.js";
 import { ProviderSecretRefService } from "../src/services/provider-secret-ref-service.js";
 
 const ENV_KEYS = [
@@ -14,12 +16,23 @@ const ENV_KEYS = [
   "OPENAI_BASE_URL",
 ] as const;
 
+// No-op resolver that never finds executables — isolates tests from host CLIs.
+const NO_OP_EXECUTABLE_RESOLVER = {
+  resolve: () => ({ path: undefined, resolutionSource: "not_found" as const, manualPathConfigured: false }),
+} as unknown as LocalExecutableResolver;
+
 function createContext(options?: {
   gatewayProfile?: "embedded" | "external";
   enableAppleFoundationProvider?: boolean;
   appleFoundationAvailability?: AppleFoundationAvailabilitySnapshot;
   hostPlatform?: string;
   hostArch?: string;
+  executableResolver?: LocalExecutableResolver;
+  interconnectorCatalogService?: {
+    listBundles: () => unknown[];
+    rescan: () => Promise<{ interconnectors: unknown[] }>;
+  };
+  claudeAgentSdkMetadataProbe?: () => Promise<any>;
 }) {
   const previousEnv = new Map<string, string | undefined>();
   for (const key of ENV_KEYS) {
@@ -51,6 +64,9 @@ function createContext(options?: {
     appleFoundationAvailability: options?.appleFoundationAvailability,
     hostPlatform: options?.hostPlatform,
     hostArch: options?.hostArch,
+    executableResolver: options?.executableResolver ?? NO_OP_EXECUTABLE_RESOLVER,
+    interconnectorCatalogService: options?.interconnectorCatalogService as any,
+    claudeAgentSdkMetadataProbe: options?.claudeAgentSdkMetadataProbe,
   });
 
   return {
@@ -71,7 +87,7 @@ function createContext(options?: {
 }
 
 describe("DefaultGatewayAdminService secret-ref integration", () => {
-  test("resolves runtime API key via secret reference at runtime", () => {
+  test("resolves runtime API key via secret reference at runtime", async () => {
     const ctx = createContext();
     try {
       ctx.providerSecretRefService.putSecretRef({
@@ -89,7 +105,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       expect(configured.hasApiKey).toBe(true);
       expect(configured.apiKeySecretRef).toBe("secretref-openrouter-primary");
 
-      const resolved = ctx.admin.resolveProviderForProfile(
+      const resolved = await ctx.admin.resolveProviderForProfile(
         "openrouter",
         "openrouter/openai/gpt-4.1-mini",
       );
@@ -226,7 +242,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
-  test("preserves local runtime IDs for codex runtime configuration", () => {
+  test("preserves local runtime IDs for codex runtime configuration", async () => {
     const ctx = createContext();
     try {
       const configured = ctx.admin.setProviderConfig({
@@ -237,7 +253,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       expect(configured.providerId).toBe("codex");
       expect(configured.model).toBe("codex/gpt-4.1");
 
-      const resolved = ctx.admin.resolveProviderForProfile("codex", "gpt-4.1");
+      const resolved = await ctx.admin.resolveProviderForProfile("codex", "gpt-4.1");
       expect(resolved.providerId).toBe("codex");
       expect(resolved.model).toBe("codex/gpt-4.1");
       expect(resolved.isLocal).toBe(true);
@@ -247,7 +263,259 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
-  test("prefers model-hint provider when providerHint and modelHint conflict", () => {
+  test("surfaces Claude Agent SDK in api_key mode with provider auth metadata", async () => {
+    const ctx = createContext({
+      claudeAgentSdkMetadataProbe: async () => ({
+        authStatus: "authenticated",
+      }),
+    });
+    try {
+      const configured = ctx.admin.setProviderConfig({
+        providerId: "claude-agent-sdk",
+        model: "claude-sonnet-4-5",
+        apiKey: "sk-ant-runtime",
+        authMode: "api_key",
+      });
+
+      expect(configured.providerId).toBe("claude-agent-sdk");
+      expect(configured.model).toBe("claude-agent-sdk/claude-sonnet-4-5");
+      expect(configured.hasApiKey).toBe(true);
+      expect(configured.authMode).toBe("api_key");
+
+      const settings = ctx.admin.getProviderSettings("claude-agent-sdk");
+      expect(settings.providerId).toBe("claude-agent-sdk");
+      expect(settings.model).toBe("claude-agent-sdk/claude-sonnet-4-5");
+      expect(settings.hasApiKey).toBe(true);
+      expect(settings.authMode).toBe("api_key");
+
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "claude-agent-sdk" });
+      expect(catalogs).toHaveLength(1);
+      expect(catalogs[0]).toMatchObject({
+        providerId: "claude-agent-sdk",
+        displayName: "Claude Agent SDK",
+        group: "executor",
+        integrationClass: "executor",
+        requiresApiKey: true,
+        hasApiKey: true,
+        supportedAuthModes: ["api_key", "host_login"],
+        authMode: "api_key",
+        authStatus: "authenticated",
+      });
+      expect(catalogs[0]?.installHint).toContain("ANTHROPIC_API_KEY");
+
+      const resolved = await ctx.admin.resolveProviderForProfile(
+        "claude-agent-sdk",
+        "claude-agent-sdk/claude-sonnet-4-5",
+      );
+      expect(resolved.providerId).toBe("claude-agent-sdk");
+      expect(resolved.model).toBe("claude-agent-sdk/claude-sonnet-4-5");
+      expect(resolved.apiKey).toBe("sk-ant-runtime");
+      expect(resolved.authMode).toBe("api_key");
+      expect(resolved.isLocal).toBe(false);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("surfaces Claude Agent SDK host login metadata and discovered models", async () => {
+    const ctx = createContext({
+      claudeAgentSdkMetadataProbe: async () => ({
+        authStatus: "authenticated",
+        authAccount: {
+          email: "agent@example.com",
+          organization: "Acme",
+          subscriptionType: "max",
+          tokenSource: "oauth",
+          apiProvider: "firstParty",
+        },
+        models: [
+          {
+            id: "claude-agent-sdk/claude-sonnet-4-6",
+            displayName: "Claude Sonnet 4.6",
+            source: "detected",
+            available: true,
+            contextWindow: 200_000,
+          },
+          {
+            id: "claude-agent-sdk/claude-opus-4-6",
+            displayName: "Claude Opus 4.6",
+            source: "detected",
+            available: true,
+            contextWindow: 200_000,
+          },
+        ],
+      }),
+    });
+
+    try {
+      const configured = ctx.admin.setProviderConfig({
+        providerId: "claude-agent-sdk",
+        model: "claude-sonnet-4-5",
+        authMode: "host_login",
+      });
+
+      expect(configured.authMode).toBe("host_login");
+      expect(configured.hasApiKey).toBe(false);
+
+      const settings = ctx.admin.getProviderSettings("claude-agent-sdk");
+      expect(settings.authMode).toBe("host_login");
+
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "claude-agent-sdk" });
+      expect(catalogs).toHaveLength(1);
+      expect(catalogs[0]).toMatchObject({
+        providerId: "claude-agent-sdk",
+        supportedAuthModes: ["api_key", "host_login"],
+        authMode: "host_login",
+        authStatus: "authenticated",
+        requiresApiKey: false,
+        hasApiKey: false,
+        authAccount: {
+          email: "agent@example.com",
+          organization: "Acme",
+          subscriptionType: "max",
+          tokenSource: "oauth",
+          apiProvider: "firstParty",
+        },
+      });
+      const detectedModelIds = catalogs[0]?.models
+        .filter((entry) => entry.source === "detected")
+        .map((entry) => entry.id)
+        .sort();
+      expect(detectedModelIds).toEqual([
+        "claude-agent-sdk/claude-opus-4-6",
+        "claude-agent-sdk/claude-sonnet-4-6",
+      ]);
+      expect(catalogs[0]?.models.map((entry) => entry.id)).toContain(
+        "claude-agent-sdk/claude-sonnet-4-5",
+      );
+
+      const resolved = await ctx.admin.resolveProviderForProfile(
+        "claude-agent-sdk",
+        "claude-agent-sdk/claude-sonnet-4-5",
+      );
+      expect(resolved.authMode).toBe("host_login");
+      expect(resolved.apiKey).toBeUndefined();
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("keeps fallback Claude Agent SDK models visible when host login needs authentication", async () => {
+    const ctx = createContext({
+      claudeAgentSdkMetadataProbe: async () => ({
+        authStatus: "needs_auth",
+      }),
+    });
+
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "claude-agent-sdk",
+        model: "claude-agent-sdk/claude-sonnet-4-5",
+        authMode: "host_login",
+      });
+
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "claude-agent-sdk" });
+      expect(catalogs[0]?.status).toBe("needs_auth");
+      expect(catalogs[0]?.authStatus).toBe("needs_auth");
+      expect(catalogs[0]?.models.map((entry) => entry.id)).toContain("claude-agent-sdk/claude-sonnet-4-5");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("rejects host login auth mode for direct Anthropic API provider", () => {
+    const ctx = createContext();
+    try {
+      expect(() => ctx.admin.setProviderConfig({
+        providerId: "anthropic",
+        model: "claude-sonnet-4-5",
+        authMode: "host_login",
+      })).toThrow();
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("surfaces Anthropic as a hosted provider with seeded Claude model options", async () => {
+    const ctx = createContext();
+    try {
+      const configured = ctx.admin.setProviderConfig({
+        providerId: "anthropic",
+        model: "claude-sonnet-4-5",
+        apiKey: "sk-ant-runtime",
+      });
+
+      expect(configured.providerId).toBe("anthropic");
+      expect(configured.model).toBe("anthropic/claude-sonnet-4-5");
+      expect(configured.hasApiKey).toBe(true);
+
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "anthropic" });
+      expect(catalogs).toHaveLength(1);
+      expect(catalogs[0]).toMatchObject({
+        providerId: "anthropic",
+        displayName: "Anthropic",
+        group: "cloud",
+        integrationClass: "cloud",
+        requiresApiKey: true,
+        hasApiKey: true,
+      });
+      expect(catalogs[0]?.installHint).toContain("ANTHROPIC_API_KEY");
+      expect(catalogs[0]?.models.map((entry) => entry.id)).toEqual([
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-haiku-4-5",
+      ]);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("lists and rescans supported interconnectors through the catalog service", async () => {
+    const bundles = [
+      {
+        bundleId: "jira-cli",
+        bundleDisplayName: "Jira CLI",
+        bundleDescription: "Gateway-managed Jira CLI bundle.",
+        availabilityStatus: "inactive",
+        detected: false,
+        executablePath: null,
+        installHint: "Install `jira` and rescan CLI Tools.",
+        toolIds: ["jira.issue.view", "jira.issue.create"],
+        toolCount: 2,
+        managedEnabled: true,
+        healthStatus: "unknown",
+        healthMessage: "Jira CLI is not detected on this gateway.",
+        updatedAt: "2026-03-09T10:00:00Z",
+      },
+    ];
+
+    let rescanCalls = 0;
+    const ctx = createContext({
+      interconnectorCatalogService: {
+        listBundles: () => bundles,
+        rescan: async () => {
+          rescanCalls += 1;
+          return { interconnectors: bundles };
+        },
+      },
+    });
+
+    try {
+      expect(ctx.admin.listInterconnectors()).toEqual(bundles);
+      await expect(ctx.admin.rescanInterconnectors()).resolves.toEqual(bundles);
+      expect(rescanCalls).toBe(1);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("prefers model-hint provider when providerHint and modelHint conflict", async () => {
     const ctx = createContext();
     try {
       ctx.admin.setProviderConfig({
@@ -259,10 +527,58 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
         model: "anthropic/claude-sonnet-4-5",
       });
 
-      const resolved = ctx.admin.resolveProviderForProfile("anthropic", "openai/gpt-4.1");
+      const resolved = await ctx.admin.resolveProviderForProfile("anthropic", "openai/gpt-4.1");
       expect(resolved.providerId).toBe("openai");
       expect(resolved.model).toBe("openai/gpt-4.1");
     } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("falls back to a configured runtime when the requested provider is unavailable", async () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "openai",
+        model: "openai/gpt-4.1",
+        apiKey: "sk-openai-test",
+      });
+
+      const resolved = await ctx.admin.resolveProviderForProfile(
+        "missing-provider",
+        "missing-provider/missing-model",
+      );
+      expect(resolved.providerId).toBe("openai");
+      expect(resolved.model).toBe("openai/gpt-4.1");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("rejects LM Studio fallback when the runtime remains unreachable", async () => {
+    const ctx = createContext();
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:1234");
+      }) as typeof fetch;
+
+      ctx.admin.setProviderConfig({
+        providerId: "lmstudio",
+        model: "lmstudio/qwen2.5-coder",
+        baseURL: "http://127.0.0.1:1234/v1",
+      });
+
+      await expect(
+        ctx.admin.resolveProviderForProfile("lmstudio", "lmstudio/not-loaded-model"),
+      ).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: expect.stringContaining("ECONNREFUSED"),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
       ctx.db.close();
       ctx.restoreEnv();
     }
@@ -415,6 +731,29 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
+  test("discoverLocalAgents uses executable resolver for embedded CLI detection", async () => {
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "claude" ? "/opt/homebrew/bin/claude" : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({
+      gatewayProfile: "embedded",
+      hostPlatform: "darwin",
+      hostArch: "arm64",
+      executableResolver,
+    });
+    try {
+      const agents = await ctx.admin.discoverLocalAgents();
+      const claude = agents.find((agent) => agent.id === "claude");
+      expect(claude?.detected).toBe(true);
+      expect(claude?.executablePath).toBe("/opt/homebrew/bin/claude");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
   test("applies context-window hints for claude catalog models when runtime metadata is missing", async () => {
     const ctx = createContext();
     try {
@@ -485,6 +824,119 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       ctx.db.close();
       ctx.restoreEnv();
     }
+  });
+
+  test("builds local usage fallback without calling provider telemetry recursively", async () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "openai",
+        model: "openai/gpt-4.1",
+        apiKey: "sk-openai-test",
+      });
+      ctx.admin.setUsageSnapshotService({
+        getSnapshot: () => ({
+          computedAt: new Date().toISOString(),
+          currency: "USD",
+          windows: {
+            last5h: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+            last7d: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+            last30d: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+            lifetime: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+          },
+          budget: {
+            softCapUsd: 20,
+            hardCapUsd: 50,
+            warningThreshold: 0.8,
+            spentUsd: 0,
+            leftUsd: 50,
+          },
+          providerUsage: [
+            {
+              providerId: "openai",
+              status: "available",
+              inputTokens: 11,
+              outputTokens: 7,
+              totalTokens: 18,
+              spentUsd: 0.12,
+            },
+          ],
+        }),
+      } as any);
+
+      (ctx.admin as any).getProviderTelemetry = async () => {
+        throw new Error("getProviderTelemetry should not be called");
+      };
+
+      const telemetry = await ctx.admin.getLocalUsageTelemetry({ providerId: "openai" });
+      expect(telemetry.length).toBe(1);
+      expect(telemetry[0].providerId).toBe("openai");
+      expect(telemetry[0].status).toBe("available");
+      expect(telemetry[0].summary.totalTokens).toBe(0);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("derives claude telemetry without probing interactive auth status", async () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "claude",
+        model: "claude/sonnet",
+      });
+      ctx.admin.setUsageSnapshotService({
+        getSnapshot: () => ({
+          computedAt: new Date().toISOString(),
+          currency: "USD",
+          windows: {
+            last5h: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+            last7d: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+            last30d: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+            lifetime: { inputTokens: 0, outputTokens: 0, totalTokens: 0, spentUsd: 0 },
+          },
+          budget: {
+            softCapUsd: 20,
+            hardCapUsd: 50,
+            warningThreshold: 0.8,
+            spentUsd: 0,
+            leftUsd: 50,
+          },
+          providerUsage: [
+            {
+              providerId: "claude",
+              status: "available",
+              inputTokens: 17,
+              outputTokens: 9,
+              totalTokens: 26,
+              spentUsd: 0,
+            },
+          ],
+        }),
+      } as any);
+
+      (ctx.admin as any).findExecutable = () => "/usr/local/bin/claude";
+
+      const telemetry = await ctx.admin.getProviderTelemetry({ providerId: "claude" });
+      expect(telemetry.length).toBe(1);
+      expect(telemetry[0].providerId).toBe("claude");
+      expect(telemetry[0].source).toBe("claude_cli");
+      expect(telemetry[0].status).toBe("available");
+      expect(telemetry[0].windows).toEqual([]);
+      expect(telemetry[0].message).toContain("not probed");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("no longer shells out to claude auth status during telemetry refresh", () => {
+    const source = readFileSync(
+      new URL("../src/gateway-admin-service.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source.includes("auth\", \"status\", \"--json")).toBe(false);
   });
 
   test("returns codex telemetry windows from app-server probe", async () => {
@@ -606,7 +1058,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
-  test("allows apple provider config but blocks resolve when availability is false", () => {
+  test("allows apple provider config but blocks resolve when availability is false", async () => {
     const ctx = createContext({
       enableAppleFoundationProvider: true,
       appleFoundationAvailability: { available: false, reason: "Apple Intelligence unavailable." },
@@ -619,13 +1071,9 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
         model: "apple/apple-on-device",
       })).not.toThrow();
 
-      let resolveErr: unknown;
-      try {
-        ctx.admin.resolveProviderForProfile("apple", "apple/apple-on-device");
-      } catch (err) {
-        resolveErr = err;
-      }
-      expect(resolveErr).toMatchObject({ code: "FAILED_PRECONDITION" });
+      await expect(
+        ctx.admin.resolveProviderForProfile("apple", "apple/apple-on-device"),
+      ).rejects.toMatchObject({ code: "FAILED_PRECONDITION" });
     } finally {
       ctx.db.close();
       ctx.restoreEnv();
@@ -664,7 +1112,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
-  test("blocks apple resolve on unsupported hosts even when opt-in is enabled", () => {
+  test("blocks apple resolve on unsupported hosts even when opt-in is enabled", async () => {
     const ctx = createContext({
       enableAppleFoundationProvider: true,
       appleFoundationAvailability: { available: true, reason: "Apple Intelligence available." },
@@ -672,13 +1120,9 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       hostArch: "x64",
     });
     try {
-      let resolveErr: unknown;
-      try {
-        ctx.admin.resolveProviderForProfile("apple", "apple/apple-on-device");
-      } catch (err) {
-        resolveErr = err;
-      }
-      expect(resolveErr).toMatchObject({ code: "FAILED_PRECONDITION" });
+      await expect(
+        ctx.admin.resolveProviderForProfile("apple", "apple/apple-on-device"),
+      ).rejects.toMatchObject({ code: "FAILED_PRECONDITION" });
     } finally {
       ctx.db.close();
       ctx.restoreEnv();
@@ -833,7 +1277,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
-  test("persists native CLI tools setting in provider settings", () => {
+  test("persists native CLI tools setting in provider settings", async () => {
     const ctx = createContext();
     try {
       const configured = ctx.admin.setProviderConfig({
@@ -844,7 +1288,7 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
 
       expect(configured.nativeCliToolsEnabled).toBe(true);
       expect(ctx.admin.getProviderSettings("claude").nativeCliToolsEnabled).toBe(true);
-      expect(ctx.admin.resolveProviderForProfile("claude", "claude/sonnet").nativeCliToolsEnabled).toBe(true);
+      expect((await ctx.admin.resolveProviderForProfile("claude", "claude/sonnet")).nativeCliToolsEnabled).toBe(true);
     } finally {
       ctx.db.close();
       ctx.restoreEnv();

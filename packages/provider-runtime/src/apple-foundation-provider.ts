@@ -1,13 +1,24 @@
+import {
+  buildToolUsageGuidance,
+  buildMediatedToolPrompt,
+  hasInjectedToolGuidance,
+  parseFencedToolCalls,
+  stripFencedToolCallBlocks,
+} from "@spaceskit/core";
 import type {
   GenerateOptions,
   GenerateResult,
+  FinishReason,
   ModelInfo,
   ModelMessage,
   ModelProvider,
   StreamChunk,
+  ToolCall,
+  ToolDefinition,
   TokenUsage,
 } from "@spaceskit/core";
 import { ToolsUnsupportedError, UnsupportedProviderError } from "./provider-errors.js";
+import { randomUUID } from "node:crypto";
 
 interface AppleFoundationRuntimeModule {
   appleAISDK: {
@@ -45,6 +56,16 @@ export interface AppleFoundationProviderConfig {
   name: string;
   model: string;
   isLocal?: boolean;
+  helperExecutablePath?: string;
+  runCommand?: (input: {
+    executable: string;
+    args: string[];
+    stdin?: string;
+  }) => Promise<{
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  }>;
 }
 
 export class AppleFoundationModelProvider implements ModelProvider {
@@ -53,19 +74,23 @@ export class AppleFoundationModelProvider implements ModelProvider {
   readonly isLocal: boolean;
 
   private readonly config: AppleFoundationProviderConfig;
+  private readonly runCommand?: AppleFoundationProviderConfig["runCommand"];
 
   constructor(config: AppleFoundationProviderConfig) {
     this.id = config.id;
     this.name = config.name;
     this.isLocal = config.isLocal ?? true;
     this.config = config;
+    this.runCommand = config.runCommand;
   }
 
   async checkHealth(): Promise<{ available: boolean; latencyMs?: number }> {
     const startedAt = Date.now();
     try {
-      const runtime = await loadAppleFoundationRuntime();
-      const availability = await runtime.appleAISDK.checkAvailability();
+      const availability = await checkAppleFoundationAvailability({
+        helperExecutablePath: this.config.helperExecutablePath,
+        runCommand: this.runCommand,
+      });
       return {
         available: availability.available,
         latencyMs: Date.now() - startedAt,
@@ -84,39 +109,84 @@ export class AppleFoundationModelProvider implements ModelProvider {
       id: reference.fullModelId,
       name: reference.providerModelId,
       provider: reference.providerId,
-      supportsTools: false,
+      contextWindow: 4096,
+      supportsTools: true,
       isLocal: true,
     }];
   }
 
   async generate(model: string, options: GenerateOptions): Promise<GenerateResult> {
     const reference = this.parseModelReference(model || this.config.model, this.id);
-    if (options.tools?.length) {
-      throw new ToolsUnsupportedError(reference.providerId, "Apple Foundation gateway tool execution is not wired yet.");
+    if (this.config.helperExecutablePath && this.runCommand) {
+      return await this.generateViaHelper(reference, {
+        ...options,
+        messages: options.tools?.length
+          ? injectHelperToolGuidance(options.messages, options.tools)
+          : options.messages,
+      });
     }
+
+    const messages = options.tools?.length
+      ? injectTextToolGuidance(options.messages, options.tools)
+      : options.messages;
 
     const runtime = await loadAppleFoundationRuntime();
     const response = await runtime.chat({
-      messages: toAppleMessages(options.messages),
+      messages: toAppleMessages(messages),
       temperature: options.temperature,
       maxTokens: options.maxTokens,
       stream: false,
     });
     const content = typeof response.text === "string" ? response.text.trim() : "";
+
+    // Parse fenced-JSON tool calls from response when tools are available
+    if (options.tools?.length) {
+      const toolCalls = parseFencedToolCalls(content, {
+        allowedToolNames: options.tools.map((tool) => tool.name),
+      });
+      if (toolCalls.length > 0) {
+        return {
+          message: {
+            role: "assistant",
+            content: stripFencedToolCallBlocks(content),
+            toolCalls,
+          },
+          usage: estimateUsage(messages, content),
+          finishReason: "tool_calls",
+        };
+      }
+    }
+
     return {
       message: {
         role: "assistant",
         content,
       },
-      usage: estimateUsage(options.messages, content),
+      usage: estimateUsage(messages, content),
       finishReason: "stop",
     };
   }
 
   async *stream(model: string, options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const reference = this.parseModelReference(model || this.config.model, this.id);
+    // When tools are present, fall back to non-streaming generate() so we can
+    // parse fenced-JSON tool calls from the complete response. The on-device
+    // model is fast enough that this doesn't impact UX significantly.
     if (options.tools?.length) {
-      throw new ToolsUnsupportedError(reference.providerId, "Apple Foundation gateway tool execution is not wired yet.");
+      const result = await this.generate(model, options);
+      if (result.message.content) {
+        yield { type: "text_delta", text: result.message.content };
+      }
+      if (result.message.toolCalls) {
+        for (const tc of result.message.toolCalls) {
+          yield { type: "tool_call_start", toolCall: tc };
+        }
+      }
+      yield {
+        type: "finish",
+        usage: result.usage,
+        finishReason: result.finishReason,
+      };
+      return;
     }
 
     const runtime = await loadAppleFoundationRuntime();
@@ -141,6 +211,68 @@ export class AppleFoundationModelProvider implements ModelProvider {
       type: "finish",
       usage: estimateUsage(options.messages, fullText),
       finishReason: "stop",
+    };
+  }
+
+  private async generateViaHelper(
+    reference: ModelReference,
+    options: GenerateOptions,
+  ): Promise<GenerateResult> {
+    const result = await this.runCommand!({
+      executable: this.config.helperExecutablePath!,
+      args: [],
+      stdin: JSON.stringify({
+        operation: "generate",
+        model: reference.fullModelId,
+        messages: options.messages,
+        tools: options.tools ?? [],
+        temperature: options.temperature,
+        maxTokens: options.maxTokens,
+      }),
+    });
+    if (result.exitCode !== 0) {
+      const payload = safeParseHelperPayload(result.stdout);
+      const helperReason = typeof payload.reason === "string"
+        ? payload.reason.trim()
+        : typeof payload.text === "string"
+          ? payload.text.trim()
+          : "";
+      throw new Error(helperReason || result.stderr.trim() || "Apple Foundation helper failed.");
+    }
+
+    const payload = safeParseHelperPayload(result.stdout);
+    if (payload.toolCall) {
+      const toolCall = normalizeToolCall(payload.toolCall);
+      const allowedToolNames = new Set((options.tools ?? []).map((tool) => tool.name));
+      if (allowedToolNames.size > 0 && !allowedToolNames.has(toolCall.name)) {
+        return {
+          message: {
+            role: "assistant",
+            content: typeof payload.text === "string" ? payload.text : "",
+          },
+          usage: normalizeUsage(payload.usage) ?? estimateUsage(options.messages, typeof payload.text === "string" ? payload.text : ""),
+          finishReason: normalizeFinishReason(payload.finishReason),
+        };
+      }
+      return {
+        message: {
+          role: "assistant",
+          content: "",
+          toolCalls: [toolCall],
+        },
+        usage: normalizeUsage(payload.usage) ?? estimateUsage(options.messages, ""),
+        finishReason: "tool_calls",
+      };
+    }
+
+    const content = typeof payload.text === "string" ? payload.text : "";
+    return {
+      message: {
+        role: "assistant",
+        content,
+      },
+      usage: normalizeUsage(payload.usage) ?? estimateUsage(options.messages, content),
+      finishReason: normalizeFinishReason(payload.finishReason),
     };
   }
 
@@ -186,8 +318,43 @@ export class AppleFoundationModelProvider implements ModelProvider {
   }
 }
 
-export async function checkAppleFoundationAvailability(): Promise<{ available: boolean; reason: string }> {
+export async function checkAppleFoundationAvailability(options?: {
+  helperExecutablePath?: string;
+  runCommand?: (input: {
+    executable: string;
+    args: string[];
+    stdin?: string;
+  }) => Promise<{
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+  }>;
+}): Promise<{ available: boolean; reason: string }> {
   try {
+    if (options?.helperExecutablePath && options.runCommand) {
+      const result = await options.runCommand({
+        executable: options.helperExecutablePath,
+        args: [],
+        stdin: JSON.stringify({
+          operation: "checkAvailability",
+        }),
+      });
+      if (result.exitCode !== 0) {
+        return {
+          available: false,
+          reason: result.stderr.trim() || "Apple Foundation helper failed.",
+        };
+      }
+      const payload = safeParseHelperPayload(result.stdout);
+      return {
+        available: payload.available === true,
+        reason: typeof payload.reason === "string"
+          ? payload.reason
+          : payload.available === true
+            ? "Apple Foundation available."
+            : "Apple Foundation unavailable.",
+      };
+    }
     const runtime = await loadAppleFoundationRuntime();
     return await runtime.appleAISDK.checkAvailability();
   } catch (err) {
@@ -228,4 +395,113 @@ function estimateUsage(messages: ModelMessage[], output: string): TokenUsage {
     tokenAccuracy: "estimated",
     usageSource: "ledger",
   };
+}
+
+function safeParseHelperPayload(stdout: string): Record<string, unknown> {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return {};
+  }
+  return JSON.parse(trimmed) as Record<string, unknown>;
+}
+
+function normalizeToolCall(value: unknown): ToolCall {
+  const record = asRecord(value);
+  const name = typeof record?.name === "string" ? record.name : "unknown";
+  return {
+    id: randomUUID(),
+    name,
+    arguments: asRecord(record?.arguments) ?? {},
+  };
+}
+
+function normalizeFinishReason(value: unknown): FinishReason {
+  switch (value) {
+    case "tool_calls":
+    case "length":
+    case "error":
+    case "content_filter":
+    case "other":
+      return value;
+    default:
+      return "stop";
+  }
+}
+
+function normalizeUsage(value: unknown): TokenUsage | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const promptTokens = asNumber(record.promptTokens);
+  const completionTokens = asNumber(record.completionTokens);
+  const totalTokens = asNumber(record.totalTokens);
+  if (promptTokens == null || completionTokens == null || totalTokens == null) {
+    return undefined;
+  }
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    tokenAccuracy: record.tokenAccuracy === "reported" || record.tokenAccuracy === "mixed"
+      ? record.tokenAccuracy
+      : "estimated",
+    usageSource: record.usageSource === "local_scanner" || record.usageSource === "legacy_turns"
+      ? record.usageSource
+      : "ledger",
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Inject tool descriptions and fenced-JSON calling instructions into the
+ * message list. The on-device model sees tools as text and responds with
+ * fenced JSON blocks that the gateway parses.
+ */
+function injectTextToolGuidance(messages: ModelMessage[], tools: ToolDefinition[]): ModelMessage[] {
+  const guidance: ModelMessage = {
+    role: "system",
+    content: buildMediatedToolPrompt(tools),
+  };
+
+  return [messages[0], guidance, ...messages.slice(1)];
+}
+
+function injectHelperToolGuidance(messages: ModelMessage[], tools: ToolDefinition[]): ModelMessage[] {
+  const guidance: ModelMessage = {
+    role: "system",
+    content: hasInjectedToolGuidance(messages)
+      ? buildHelperResponseFormatGuidance()
+      : buildHelperToolPrompt(tools),
+  };
+
+  return [messages[0], guidance, ...messages.slice(1)];
+}
+
+function buildHelperToolPrompt(tools: ToolDefinition[]): string {
+  return [
+    buildToolUsageGuidance(tools),
+    buildHelperResponseFormatGuidance(),
+  ].join("\n");
+}
+
+function buildHelperResponseFormatGuidance(): string {
+  return [
+    "When using the structured Apple helper response format:",
+    "- Choose type = \"tool_call\" whenever the user explicitly instructs you to use a tool or when live gateway data/action is required.",
+    "- When the user names an exact tool, call that exact tool and do not substitute a different tool.",
+    "- After a successful tool result satisfies the request, return type = \"final\" instead of calling more tools.",
+    "- Never call shell.* tools unless the user explicitly asks for shell or CLI work.",
+    "- Set name to the exact tool name.",
+    "- Set argumentsJSON to a valid JSON object string for that tool. Do not leave required arguments empty.",
+    "- Choose type = \"final\" only when no tool execution is needed.",
+    "- If the user asks which tools are available, answer only from the provided tool list and do not invent capabilities.",
+  ].join("\n");
 }

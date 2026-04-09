@@ -174,6 +174,13 @@ export class AgentUsageSessionRepository {
       LIMIT ?
     `).all(spaceId, limit) as AgentUsageSessionRow[];
   }
+
+  deleteBySpace(spaceIdRaw: string): number {
+    return this.db.query(`
+      DELETE FROM agent_usage_sessions
+      WHERE space_id = ?
+    `).run(spaceIdRaw.trim()).changes;
+  }
 }
 
 function normalizeRole(value: string | undefined): string {

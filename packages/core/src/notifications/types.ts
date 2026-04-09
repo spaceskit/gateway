@@ -14,6 +14,8 @@ export type NotificationCategory =
   | "space.completed"
   | "space.failed"
   | "space.paused"
+  | "task.progress"
+  | "task.input-required"
   | "turn.completed"
   | "turn.failed"
   | "feedback.requested"

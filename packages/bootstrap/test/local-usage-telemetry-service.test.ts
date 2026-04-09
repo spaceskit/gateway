@@ -50,7 +50,7 @@ describe("CodexBarUsageAdapter", () => {
         }) as any,
     });
 
-    const quota = adapter.readProviderUsage("codex");
+    const quota = adapter.readProviderUsage("codex", { allowCommandProbe: true });
     expect(quota.available).toBe(true);
     expect(quota.sourceLabel).toBe("codex-cli");
     expect(quota.creditsRemaining).toBe(12.34);
@@ -71,7 +71,7 @@ describe("CodexBarUsageAdapter", () => {
         }) as any,
     });
 
-    const quota = adapter.readProviderUsage("codex");
+    const quota = adapter.readProviderUsage("codex", { allowCommandProbe: true });
     expect(quota.available).toBe(false);
     expect(quota.installHint?.command).toBe("brew install steipete/tap/codexbar");
     expect(quota.installHint?.docsUrl).toBe("https://github.com/steipete/CodexBar");
@@ -122,7 +122,7 @@ describe("CodexBarUsageAdapter", () => {
       },
     });
 
-    const quota = adapter.readProviderUsage("claude");
+    const quota = adapter.readProviderUsage("claude", { allowCommandProbe: true });
     expect(calls).toEqual(["auto", "cli"]);
     expect(quota.available).toBe(true);
     expect(quota.sourceLabel).toBe("claude-cli");
@@ -150,7 +150,7 @@ describe("CodexBarUsageAdapter", () => {
         }) as any,
     });
 
-    const quota = adapter.readProviderUsage("claude");
+    const quota = adapter.readProviderUsage("claude", { allowCommandProbe: true });
     expect(quota.available).toBe(false);
     expect(quota.message).toContain("Missing Current session");
   });
@@ -224,12 +224,14 @@ describe("CodexBarUsageAdapter", () => {
 });
 
 describe("LocalUsageTelemetryService", () => {
-  test("prefers CodexBar quota windows over fallback probe windows", async () => {
+  test("auto mode stays passive and falls back when no snapshot windows exist", async () => {
+    let commandCalls = 0;
     const adapter = new CodexBarUsageAdapter({
       logger: TEST_LOGGER,
       enableWidgetSnapshot: false,
-      runCommand: () =>
-        ({
+      runCommand: () => {
+        commandCalls += 1;
+        return {
           status: 0,
           stdout: JSON.stringify([
             {
@@ -241,16 +243,12 @@ describe("LocalUsageTelemetryService", () => {
                   windowMinutes: 300,
                   resetsAt: "2026-02-28T21:00:00.000Z",
                 },
-                secondary: {
-                  usedPercent: 22,
-                  windowMinutes: 10080,
-                  resetsAt: "2026-03-04T00:00:00.000Z",
-                },
               },
             },
           ]),
           stderr: "",
-        }) as any,
+        } as any;
+      },
     });
 
     const service = new LocalUsageTelemetryService({
@@ -289,6 +287,55 @@ describe("LocalUsageTelemetryService", () => {
     });
 
     expect(telemetry.length).toBe(1);
+    expect(commandCalls).toBe(0);
+    expect(telemetry[0]?.quota.windows[0]?.usedPercent).toBe(9);
+    expect(telemetry[0]?.quota.sourceLabel).toBe("codex-cli");
+  });
+
+  test("prefer mode may execute an explicit CodexBar probe", async () => {
+    let commandCalls = 0;
+    const adapter = new CodexBarUsageAdapter({
+      logger: TEST_LOGGER,
+      enableWidgetSnapshot: false,
+      runCommand: () => {
+        commandCalls += 1;
+        return {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              provider: "codex",
+              source: "codex-cli",
+              usage: {
+                primary: {
+                  usedPercent: 61,
+                  windowMinutes: 300,
+                  resetsAt: "2026-02-28T21:00:00.000Z",
+                },
+              },
+            },
+          ]),
+          stderr: "",
+        } as any;
+      },
+    });
+
+    const service = new LocalUsageTelemetryService({
+      logger: TEST_LOGGER,
+      codexBarAdapter: adapter,
+      codexBarMode: "prefer",
+      scanners: {
+        codex: {
+          providerId: "codex",
+          scan: async () => [],
+        },
+      },
+    });
+
+    const telemetry = await service.getTelemetry({
+      providerIds: ["codex"],
+    });
+
+    expect(commandCalls).toBe(1);
     expect(telemetry[0]?.quota.windows[0]?.usedPercent).toBe(61);
     expect(telemetry[0]?.quota.sourceLabel).toBe("codex-cli");
   });

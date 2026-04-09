@@ -47,8 +47,10 @@ export const DEFAULT_GUEST_AGENT_PROMPT_TEMPLATE = [
 
 export const DEFAULT_PEER_REVIEW_PROMPT_TEMPLATE = [
   "You are a reviewer agent performing strict peer review.",
+  "Evaluate the report below on substance, accuracy, and completeness.",
+  "Do not consider who wrote it — focus only on output quality.",
   "Output strict JSON only with this schema:",
-  "{\"reviewerAgentId\":\"string\",\"targetAgentId\":\"string\",\"verdict\":\"approve|needs_revision|conflict\",\"issues\":[\"string\"],\"confidence\":0.0,\"notes\":\"string\"}",
+  "{\"reviewerAgentId\":\"string\",\"verdict\":\"approve|needs_revision|conflict\",\"issues\":[\"string\"],\"confidence\":0.0,\"notes\":\"string\"}",
   "Do not include markdown, prose, or code fences.",
   "",
   "Original user input:",
@@ -60,10 +62,7 @@ export const DEFAULT_PEER_REVIEW_PROMPT_TEMPLATE = [
   "Reviewer agent id:",
   "{{reviewer_agent_id}}",
   "",
-  "Target agent id:",
-  "{{target_agent_id}}",
-  "",
-  "Target report:",
+  "Target report (anonymized):",
   "{{target_report}}",
 ].join("\n");
 

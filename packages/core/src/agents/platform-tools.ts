@@ -5,12 +5,14 @@
  * state: spaces, agents, turns, and system health. All tools are read-only;
  * mutations stay in OrchestratorCommandService.
  *
- * Follows the agent-as-tool.ts pattern: export tool definitions + executor.
+ * Follows the repo's delegation/introspection tool pattern: export tool
+ * definitions plus the executor separately.
  */
 
 import type { ToolDefinition, ToolResult } from "./model-provider.js";
 import type { SpaceAdminService } from "../spaces/space-admin-service.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
+import type { ReflectionService } from "../reflection/reflection-service.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,6 +21,32 @@ import type { CapabilityRegistry } from "../capabilities/registry.js";
 export interface PlatformToolConfig {
   spaceAdminService: SpaceAdminService;
   capabilityRegistry: CapabilityRegistry;
+  taskOrchestrationService?: {
+    orchestrate: (input: {
+      taskDescription: string;
+      requestedBy: string;
+      templateHint?: string;
+      templateId?: string;
+      agentCount?: number;
+      agentTier?: string;
+      topology?: "direct" | "shared_team_chat" | "broadcast_team";
+      spaceId?: string;
+      maxTurns?: number;
+    }) => Promise<{
+      taskId: string;
+      spaceId: string;
+      rootTurnId: string;
+      templateId: string;
+      agentCount: number;
+      state: string;
+    }>;
+    getTaskProgress?: (taskId: string, requestedBy?: string) => unknown;
+    listTasks?: (requestedBy?: string) => unknown[];
+  } | null;
+  memoryProvider?: {
+    search: (query: Record<string, unknown>) => Promise<unknown>;
+  } | null;
+  gatewayProfile?: "embedded" | "external";
   /** Optional turn repository for listing recent turns. */
   turnRepo?: {
     listBySpace(spaceId: string, limit?: number, offset?: number): Array<{
@@ -61,12 +89,15 @@ export interface PlatformToolConfig {
   } | null;
   /** Gateway uptime start time (for system status). */
   startedAt?: Date;
+  /** Optional reflection service for concierge-readable digests. */
+  reflectionService?: Pick<ReflectionService, "runSummaryJob">;
 }
 
 export interface PlatformToolExecutionContext {
   spaceId: string;
   agentId: string;
   turnId: string;
+  principalId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +113,50 @@ const MAX_TURN_CONTENT_PREVIEW = 200;
 
 export function createPlatformToolDefinitions(_config?: PlatformToolConfig): ToolDefinition[] {
   return [
+    {
+      name: "platform.orchestrateTask",
+      description:
+        "Create a coordinated multi-agent task and return the task id, space id, and root turn id.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskDescription: { type: "string" },
+          templateHint: { type: "string" },
+          templateId: { type: "string" },
+          agentCount: { type: "integer" },
+          agentTier: { type: "string" },
+          topology: { type: "string" },
+          spaceId: { type: "string" },
+          maxTurns: { type: "integer" },
+        },
+        required: ["taskDescription"],
+      },
+    },
+    {
+      name: "platform.getTaskProgress",
+      description:
+        "Look up the current state and progress for an orchestrated task owned by the current principal.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskId: { type: "string" },
+        },
+        required: ["taskId"],
+      },
+    },
+    {
+      name: "platform.searchExperiences",
+      description:
+        "Search memory/experience records. Embedded mode searches without principal scoping; external mode requires a principal.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "integer" },
+        },
+        required: ["query"],
+      },
+    },
     {
       name: "platform.getSpaceStatus",
       description:
@@ -173,6 +248,26 @@ export function createPlatformToolDefinitions(_config?: PlatformToolConfig): Too
       },
     },
     {
+      name: "platform.getSpaceDigest",
+      description:
+        "Return a concise digest of a space's recent activity for concierge and navigation flows.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          spaceId: {
+            type: "string",
+            description: "Space ID to inspect. Omit to use the current space.",
+          },
+          limit: {
+            type: "integer",
+            description: "Maximum number of recent turns to include. Default: 3.",
+            minimum: 1,
+            maximum: 10,
+          },
+        },
+      },
+    },
+    {
       name: "platform.getSystemStatus",
       description:
         "Get gateway system status: uptime, registered capabilities, and active space count.",
@@ -191,13 +286,32 @@ export function createPlatformToolDefinitions(_config?: PlatformToolConfig): Too
 export function createPlatformToolExecutor(
   config: PlatformToolConfig,
 ): (name: string, args: Record<string, unknown>, context: PlatformToolExecutionContext) => Promise<ToolResult> {
-  const { spaceAdminService, capabilityRegistry, turnRepo, profileRepo, startedAt } = config;
+  const {
+    spaceAdminService,
+    capabilityRegistry,
+    taskOrchestrationService,
+    memoryProvider,
+    gatewayProfile = "embedded",
+    turnRepo,
+    profileRepo,
+    startedAt,
+    reflectionService,
+  } = config;
 
   return async (name: string, args: Record<string, unknown>, context: PlatformToolExecutionContext): Promise<ToolResult> => {
     const toolCallId = `${name}:${context.turnId}`;
 
     try {
       switch (name) {
+        case "platform.orchestrateTask":
+          return await executeOrchestrateTask(args, context, toolCallId);
+
+        case "platform.getTaskProgress":
+          return await executeGetTaskProgress(args, context, toolCallId);
+
+        case "platform.searchExperiences":
+          return await executeSearchExperiences(args, context, toolCallId);
+
         case "platform.getSpaceStatus":
           return await executeGetSpaceStatus(args, context, toolCallId);
 
@@ -212,6 +326,9 @@ export function createPlatformToolExecutor(
 
         case "platform.listRecentTurns":
           return await executeListRecentTurns(args, context, toolCallId);
+
+        case "platform.getSpaceDigest":
+          return await executeGetSpaceDigest(args, context, toolCallId);
 
         case "platform.getSystemStatus":
           return await executeGetSystemStatus(toolCallId);
@@ -233,6 +350,86 @@ export function createPlatformToolExecutor(
   };
 
   // ---- Individual tool implementations ----
+
+  async function executeOrchestrateTask(
+    args: Record<string, unknown>,
+    context: PlatformToolExecutionContext,
+    toolCallId: string,
+  ): Promise<ToolResult> {
+    if (!taskOrchestrationService) {
+      return { toolCallId, result: { error: "Task orchestration service not available" }, isError: true };
+    }
+    const principalId = normalizeOptionalString(context.principalId);
+    if (!principalId) {
+      return { toolCallId, result: { error: "principalId is required" }, isError: true };
+    }
+    const taskDescription = normalizeOptionalString(args.taskDescription);
+    if (!taskDescription) {
+      return { toolCallId, result: { error: "taskDescription is required" }, isError: true };
+    }
+
+    const result = await taskOrchestrationService.orchestrate({
+      taskDescription,
+      requestedBy: principalId,
+      templateHint: normalizeOptionalString(args.templateHint),
+      templateId: normalizeOptionalString(args.templateId),
+      agentCount: normalizeOptionalInteger(args.agentCount),
+      agentTier: normalizeOptionalString(args.agentTier),
+      topology: normalizeTopology(args.topology),
+      spaceId: normalizeOptionalString(args.spaceId),
+      maxTurns: normalizeOptionalInteger(args.maxTurns),
+    });
+    return { toolCallId, result };
+  }
+
+  async function executeGetTaskProgress(
+    args: Record<string, unknown>,
+    context: PlatformToolExecutionContext,
+    toolCallId: string,
+  ): Promise<ToolResult> {
+    if (!taskOrchestrationService?.getTaskProgress) {
+      return { toolCallId, result: { error: "Task orchestration service not available" }, isError: true };
+    }
+    const principalId = normalizeOptionalString(context.principalId);
+    if (!principalId) {
+      return { toolCallId, result: { error: "principalId is required" }, isError: true };
+    }
+    const taskId = normalizeOptionalString(args.taskId);
+    if (!taskId) {
+      return { toolCallId, result: { error: "taskId is required" }, isError: true };
+    }
+    const result = taskOrchestrationService.getTaskProgress(taskId, principalId);
+    if (!result) {
+      return { toolCallId, result: { error: `Task not found: ${taskId}` }, isError: true };
+    }
+    return { toolCallId, result };
+  }
+
+  async function executeSearchExperiences(
+    args: Record<string, unknown>,
+    context: PlatformToolExecutionContext,
+    toolCallId: string,
+  ): Promise<ToolResult> {
+    if (!memoryProvider) {
+      return { toolCallId, result: { error: "Memory provider not available" }, isError: true };
+    }
+    const query = normalizeOptionalString(args.query);
+    if (!query) {
+      return { toolCallId, result: { error: "query is required" }, isError: true };
+    }
+    if (gatewayProfile === "external" && !normalizeOptionalString(context.principalId)) {
+      return { toolCallId, result: { error: "principalId is required" }, isError: true };
+    }
+    const scope = gatewayProfile === "embedded"
+      ? {}
+      : { principalId: normalizeOptionalString(context.principalId) };
+    const result = await memoryProvider.search({
+      query,
+      limit: normalizeOptionalInteger(args.limit),
+      scope,
+    });
+    return { toolCallId, result };
+  }
 
   async function executeGetSpaceStatus(
     args: Record<string, unknown>,
@@ -418,6 +615,51 @@ export function createPlatformToolExecutor(
       },
     };
   }
+
+  async function executeGetSpaceDigest(
+    args: Record<string, unknown>,
+    context: PlatformToolExecutionContext,
+    toolCallId: string,
+  ): Promise<ToolResult> {
+    const spaceId = typeof args.spaceId === "string" ? args.spaceId : context.spaceId;
+    const limit = typeof args.limit === "number"
+      ? Math.min(Math.max(1, args.limit), 10)
+      : 3;
+    const space = await spaceAdminService.getSpace(spaceId);
+    if (!space) {
+      return { toolCallId, result: { error: `Space not found: ${spaceId}` }, isError: true };
+    }
+    if (!turnRepo) {
+      return { toolCallId, result: { error: "Turn repository not available" }, isError: true };
+    }
+    const turns = turnRepo.listBySpace(spaceId, limit).map((turn) => ({
+      agentId: turn.actor_id,
+      status: turn.status,
+      output: extractTextPreview(turn.output_json),
+      createdAt: turn.created_at,
+    }));
+    const digest = await reflectionService?.runSummaryJob({
+      kind: "space_digest",
+      spaceId: space.id,
+      spaceName: space.name,
+      goal: space.goal ?? undefined,
+      activeAgents: space.agents.length,
+      turns,
+      pendingActions: [],
+    });
+
+    return {
+      toolCallId,
+      result: {
+        spaceId: space.id,
+        summary: digest?.summaryText ?? buildSpaceDigestFallback(space.name, turns),
+        activeAgents: space.agents.length,
+        lastTurnAt: turns[0]?.createdAt ?? null,
+        pendingActions: [],
+        trace: digest?.trace ?? null,
+      },
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +722,51 @@ function truncateContent(jsonStr: string | null): string | null {
       ? jsonStr.slice(0, MAX_TURN_CONTENT_PREVIEW) + "..."
       : jsonStr;
   }
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeOptionalInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.floor(value);
+}
+
+function extractTextPreview(raw: string | null): string {
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed === "string") return parsed;
+    if (parsed && typeof parsed === "object" && "text" in parsed && typeof (parsed as Record<string, unknown>).text === "string") {
+      return (parsed as Record<string, unknown>).text as string;
+    }
+  } catch {
+    return raw;
+  }
+  return "";
+}
+
+function buildSpaceDigestFallback(
+  spaceName: string,
+  turns: Array<{ agentId: string; output: string }>,
+): string {
+  if (turns.length === 0) {
+    return `${spaceName} has no recent activity.`;
+  }
+  const preview = turns
+    .slice(0, 3)
+    .map((turn) => `${turn.agentId}: ${turn.output.slice(0, 120)}`)
+    .join(" ");
+  return `${spaceName} recent activity: ${preview}`;
+}
+
+function normalizeTopology(value: unknown): "direct" | "shared_team_chat" | "broadcast_team" | undefined {
+  return value === "direct" || value === "shared_team_chat" || value === "broadcast_team"
+    ? value
+    : undefined;
 }
 
 function safeParseJson<T>(jsonStr: string, fallback: T): T {

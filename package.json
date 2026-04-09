@@ -6,11 +6,11 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "SPACESKIT_PORT=${SPACESKIT_PORT:-9320} SPACESKIT_GATEWAY_PROFILE=${SPACESKIT_GATEWAY_PROFILE:-embedded} SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:main} bun run packages/bootstrap/src/index.ts",
-    "dev:embedded": "SPACESKIT_PORT=${SPACESKIT_PORT:-9320} SPACESKIT_GATEWAY_PROFILE=${SPACESKIT_GATEWAY_PROFILE:-embedded} SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:main} bun run packages/bootstrap/src/index.ts",
-    "dev:external": "SPACESKIT_PORT=${SPACESKIT_PORT:-9321} SPACESKIT_GATEWAY_PROFILE=external SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:external} bun run packages/bootstrap/src/index.ts",
-    "dev:external:strict:example": "SPACESKIT_SANDBOX_RUNTIME_MODULE=${SPACESKIT_SANDBOX_RUNTIME_MODULE:-./docs/examples/sandbox-runtime-module.mjs} SPACESKIT_PORT=${SPACESKIT_PORT:-9321} SPACESKIT_GATEWAY_PROFILE=external SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:external} bun run packages/bootstrap/src/index.ts",
-    "dev:external:local": "SPACESKIT_ARCH_FREEZE_ENFORCED=false SPACESKIT_PORT=${SPACESKIT_PORT:-9321} SPACESKIT_GATEWAY_PROFILE=external SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:external} bun run packages/bootstrap/src/index.ts",
+    "dev": "node ./scripts/workspace-build.mjs build && SPACESKIT_PORT=${SPACESKIT_PORT:-9320} SPACESKIT_GATEWAY_PROFILE=${SPACESKIT_GATEWAY_PROFILE:-embedded} SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:main} bun run packages/bootstrap/src/index.ts",
+    "dev:embedded": "node ./scripts/workspace-build.mjs build && SPACESKIT_PORT=${SPACESKIT_PORT:-9320} SPACESKIT_GATEWAY_PROFILE=${SPACESKIT_GATEWAY_PROFILE:-embedded} SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:main} bun run packages/bootstrap/src/index.ts",
+    "dev:external": "node ./scripts/workspace-build.mjs build && SPACESKIT_PORT=${SPACESKIT_PORT:-9321} SPACESKIT_GATEWAY_PROFILE=external SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:external} bun run packages/bootstrap/src/index.ts",
+    "dev:external:strict:example": "node ./scripts/workspace-build.mjs build && SPACESKIT_SANDBOX_RUNTIME_MODULE=${SPACESKIT_SANDBOX_RUNTIME_MODULE:-./docs/examples/sandbox-runtime-module.mjs} SPACESKIT_PORT=${SPACESKIT_PORT:-9321} SPACESKIT_GATEWAY_PROFILE=external SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:external} bun run packages/bootstrap/src/index.ts",
+    "dev:external:local": "node ./scripts/workspace-build.mjs build && SPACESKIT_ARCH_FREEZE_ENFORCED=false SPACESKIT_PORT=${SPACESKIT_PORT:-9321} SPACESKIT_GATEWAY_PROFILE=external SPACESKIT_MAIN_RESOURCE_ID=${SPACESKIT_MAIN_RESOURCE_ID:-resource:external} bun run packages/bootstrap/src/index.ts",
     "db:reset:all": "node scripts/reset-gateway-dbs.mjs",
     "db:reset:all:dry-run": "node scripts/reset-gateway-dbs.mjs --dry-run",
     "db:reset:all:force": "node scripts/reset-gateway-dbs.mjs --force",
@@ -18,10 +18,13 @@
     "typecheck": "node ./scripts/workspace-build.mjs typecheck",
     "typecheck:scripts": "tsc -p scripts/tsconfig.json --noEmit",
     "check:all": "bash scripts/check-all.sh",
-    "contract-gate": "bun run scripts/verify-protocol-fixtures.ts && bun run scripts/verify-core-client-contract.ts",
+    "contract-gate": "sh -c 'cd ../proto && buf generate && cd ../gateway && git diff --exit-code -- packages/contracts/src/generated'",
     "test": "bun test",
+    "benchmark:gateway": "bun run scripts/benchmark-gateway.ts",
     "docs:generate": "bun run ../dev-services/scripts/generate-docs.ts",
-    "docs:check": "bun run ../dev-services/scripts/generate-docs.ts --check"
+    "docs:check": "bun run ../dev-services/scripts/generate-docs.ts --check",
+    "models:refresh": "bun run ../dev-services/scripts/refresh-model-context-windows.ts",
+    "models:check": "bun run ../dev-services/scripts/refresh-model-context-windows.ts --check"
   },
   "devDependencies": {
     "@spaceskit/noise": "workspace:*",

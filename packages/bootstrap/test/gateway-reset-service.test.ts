@@ -213,11 +213,25 @@ describe("GatewayResetService", () => {
       const preferences = ctx.db.db.query(
         "SELECT COUNT(*) AS count FROM user_preferences WHERE singleton_id = 1",
       ).get() as { count: number };
+      const defaultPersona = ctx.db.db.query(
+        "SELECT persona_id, is_default, archived FROM personas WHERE persona_id = 'persona-default'",
+      ).get() as {
+        persona_id: string;
+        is_default: number;
+        archived: number;
+      } | null;
+      const defaultPersonaRevisionCount = ctx.db.db.query(
+        "SELECT COUNT(*) AS count FROM persona_revisions WHERE persona_id = 'persona-default'",
+      ).get() as { count: number };
 
       expect(entitlement?.tier).toBe("FREE");
       expect(budget?.soft_cap_usd).toBe(20);
       expect(budget?.hard_cap_usd).toBe(50);
       expect(preferences.count).toBe(1);
+      expect(defaultPersona?.persona_id).toBe("persona-default");
+      expect(defaultPersona?.is_default).toBe(1);
+      expect(defaultPersona?.archived).toBe(0);
+      expect(defaultPersonaRevisionCount.count).toBe(1);
     } finally {
       ctx.db.close();
     }

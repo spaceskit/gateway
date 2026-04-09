@@ -15,12 +15,14 @@ import type {
   ProfileRepository,
   SpacePresetApplicationRepository,
   SpaceTemplateRepository,
+  SpaceTemplateRow,
   SpaceTemplateRevisionRow,
 } from "@spaceskit/persistence";
 
 export type PresetKind = "agent" | "space";
 export type PresetSource = "system" | "user";
 export type CommunicationMode = "async_notes" | "chat_first" | "structured_handoff";
+export type ConversationTopology = "direct" | "shared_team_chat" | "broadcast_team";
 
 export interface TemplateAgentDefinition {
   agentId: string;
@@ -71,9 +73,48 @@ export interface SpaceTemplateSummary {
   templateId: string;
   title: string;
   communicationMode: CommunicationMode;
+  conversationTopology?: ConversationTopology;
+  promptPackId?: string;
   agentPresetIds: string[];
   createdBy: string;
   updatedAt: string;
+}
+
+export interface SpaceTemplateRecord {
+  templateId: string;
+  name: string;
+  description?: string;
+  status: "active" | "archived";
+  activeRevision: number;
+  communicationMode: CommunicationMode;
+  conversationTopology?: ConversationTopology;
+  promptPackId?: string;
+  turnModel: TurnModelStrategy;
+  agentDefinitions: TemplateAgentDefinition[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Template catalog metadata */
+  category?: string;
+  complexityTier?: string;
+  icon?: string;
+  featured?: boolean;
+  sortOrder?: number;
+  agentCount?: number;
+}
+
+export interface ListTemplatesInput {
+  includeArchived?: boolean;
+  includeSystem?: boolean;
+}
+
+export interface GetTemplateInput {
+  templateId: string;
+}
+
+export interface ArchiveTemplateInput {
+  templateId: string;
+  idempotencyKey?: string;
 }
 
 export interface SpaceTemplatePreviewResult {
@@ -99,6 +140,11 @@ export interface SpaceCreateFromTemplateResult {
 export interface SaveTemplateResult {
   template: SpaceTemplateSummary;
   created: boolean;
+}
+
+export interface ArchiveTemplateResult {
+  template: SpaceTemplateRecord;
+  archived: boolean;
 }
 
 export interface SaveAgentPresetInput {
@@ -182,6 +228,11 @@ interface StoredTemplateConfig {
   metadata: {
     createdBy: string;
     source: PresetSource;
+    category?: string;
+    complexityTier?: string;
+    icon?: string;
+    featured?: boolean;
+    sortOrder?: number;
   };
 }
 
@@ -212,6 +263,18 @@ const TURN_MODEL_TO_COMMUNICATION_MODE: Record<TurnModelStrategy, CommunicationM
   parallel_race: "structured_handoff",
   debate_synthesis: "structured_handoff",
   adaptive_auto: "chat_first",
+};
+
+const COMMUNICATION_MODE_TO_CONVERSATION_TOPOLOGY: Record<CommunicationMode, ConversationTopology> = {
+  async_notes: "shared_team_chat",
+  chat_first: "direct",
+  structured_handoff: "broadcast_team",
+};
+
+const CONVERSATION_TOPOLOGY_TO_PROMPT_PACK_ID: Record<ConversationTopology, string> = {
+  direct: "single-agent-v1",
+  shared_team_chat: "shared-team-chat-v1",
+  broadcast_team: "broadcast-team-v1",
 };
 
 export type SpaceConfiguratorErrorCode =
@@ -284,6 +347,66 @@ export class SpaceConfiguratorService {
       if (tagsFilter.length > 0 && !preset.tags.some((tag) => tagsFilter.includes(tag))) return false;
       return true;
     });
+  }
+
+  listTemplates(input: ListTemplatesInput = {}, principalId: string): SpaceTemplateRecord[] {
+    if (!this.templates) {
+      throw new SpaceConfiguratorError("FAILED_PRECONDITION", "Template persistence is unavailable");
+    }
+
+    const normalizedPrincipalId = principalId.trim();
+    if (!normalizedPrincipalId) {
+      throw new SpaceConfiguratorError("INVALID_ARGUMENT", "principalId is required");
+    }
+
+    const includeArchived = input.includeArchived === true;
+    const excludeSystem = input.includeSystem === false;
+    const records: SpaceTemplateRecord[] = [];
+
+    for (const template of this.templates.list({ includeArchived: true })) {
+      const revision = this.templates.getActiveRevision(template.template_id);
+      if (!revision) continue;
+      const config = parseTemplateConfig(revision.space_config_json);
+
+      const explicitOwner = template.owner_principal_id.trim();
+      const isSystemTemplate = explicitOwner === "system";
+
+      // System templates are included by default; exclude only if explicitly requested
+      if (isSystemTemplate) {
+        if (excludeSystem) continue;
+      } else {
+        // User-owned template: check ownership
+        const legacyOwnerMatch = explicitOwner.length === 0 && config.metadata.createdBy === normalizedPrincipalId;
+        if (explicitOwner !== normalizedPrincipalId && !legacyOwnerMatch) {
+          continue;
+        }
+        if (legacyOwnerMatch) {
+          this.templates.claimOwnerIfUnowned(template.template_id, normalizedPrincipalId);
+        }
+      }
+
+      const refreshed = this.templates.getById(template.template_id) ?? template;
+      if (!includeArchived && refreshed.archived === 1) {
+        continue;
+      }
+
+      records.push(this.toTemplateRecord(refreshed, config));
+    }
+
+    // Sort: featured first (by sortOrder), then non-featured by sortOrder
+    records.sort((a, b) => {
+      const aSort = a.sortOrder ?? 999;
+      const bSort = b.sortOrder ?? 999;
+      if (a.featured !== b.featured) return a.featured ? -1 : 1;
+      return aSort - bSort;
+    });
+
+    return records;
+  }
+
+  getTemplate(input: GetTemplateInput, principalId: string): SpaceTemplateRecord {
+    const loaded = this.loadReadableTemplateAccessOrThrow(input.templateId, principalId, { includeArchived: true });
+    return this.toTemplateRecord(loaded.template, loaded.config);
   }
 
   getPreset(presetId: string, principalId?: string): PresetDetail {
@@ -618,6 +741,24 @@ export class SpaceConfiguratorService {
     };
   }
 
+  archiveTemplate(input: ArchiveTemplateInput, principalId: string): ArchiveTemplateResult {
+    if (!this.templates) {
+      throw new SpaceConfiguratorError("FAILED_PRECONDITION", "Template persistence is unavailable");
+    }
+
+    const normalizedTemplateId = input.templateId.trim();
+    const existing = this.loadOwnedTemplateAccessOrThrow(normalizedTemplateId, principalId, { includeArchived: true });
+    const archived = existing.template.archived === 1
+      ? false
+      : this.templates.archive(normalizedTemplateId);
+    const refreshed = this.loadOwnedTemplateAccessOrThrow(normalizedTemplateId, principalId, { includeArchived: true });
+
+    return {
+      template: this.toTemplateRecord(refreshed.template, refreshed.config),
+      archived,
+    };
+  }
+
   async saveAgentPreset(input: SaveAgentPresetInput): Promise<SaveAgentPresetResult> {
     if (!this.agentPresets) {
       throw new SpaceConfiguratorError("FAILED_PRECONDITION", "Agent preset persistence is unavailable");
@@ -892,7 +1033,19 @@ export class SpaceConfiguratorService {
   }
 
   private loadTemplateOrThrow(templateId: string, principalId: string): {
-    template: { template_id: string; name: string; description: string; updated_at: string };
+    template: SpaceTemplateRow;
+    revision: SpaceTemplateRevisionRow;
+    config: StoredTemplateConfig;
+  } {
+    return this.loadReadableTemplateAccessOrThrow(templateId, principalId);
+  }
+
+  private loadReadableTemplateAccessOrThrow(
+    templateId: string,
+    principalId: string,
+    options: { includeArchived?: boolean } = {},
+  ): {
+    template: SpaceTemplateRow;
     revision: SpaceTemplateRevisionRow;
     config: StoredTemplateConfig;
   } {
@@ -911,7 +1064,7 @@ export class SpaceConfiguratorService {
     }
 
     const template = this.templates.getById(normalizedTemplateId);
-    if (!template || template.archived === 1) {
+    if (!template || (!options.includeArchived && template.archived === 1)) {
       throw new SpaceConfiguratorError("NOT_FOUND", `Template not found: ${normalizedTemplateId}`);
     }
 
@@ -927,8 +1080,9 @@ export class SpaceConfiguratorService {
     const ownedByPrincipal = template.owner_principal_id === normalizedPrincipalId;
     const ownerMissing = template.owner_principal_id.trim().length === 0;
     const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
+    const isSystemTemplate = template.owner_principal_id.trim() === "system";
 
-    if (!ownedByPrincipal && !legacyOwnerMatch) {
+    if (!ownedByPrincipal && !legacyOwnerMatch && !isSystemTemplate) {
       throw new SpaceConfiguratorError(
         "PERMISSION_DENIED",
         `Template is not accessible for principal: ${normalizedTemplateId}`,
@@ -943,6 +1097,31 @@ export class SpaceConfiguratorService {
       revision,
       config,
     };
+  }
+
+  private loadOwnedTemplateAccessOrThrow(
+    templateId: string,
+    principalId: string,
+    options: { includeArchived?: boolean } = {},
+  ): {
+    template: SpaceTemplateRow;
+    revision: SpaceTemplateRevisionRow;
+    config: StoredTemplateConfig;
+  } {
+    const loaded = this.loadReadableTemplateAccessOrThrow(templateId, principalId, options);
+    const normalizedPrincipalId = principalId.trim();
+    const ownedByPrincipal = loaded.template.owner_principal_id === normalizedPrincipalId;
+    const ownerMissing = loaded.template.owner_principal_id.trim().length === 0;
+    const legacyOwnerMatch = ownerMissing && loaded.config.metadata.createdBy === normalizedPrincipalId;
+
+    if (!ownedByPrincipal && !legacyOwnerMatch) {
+      throw new SpaceConfiguratorError(
+        "PERMISSION_DENIED",
+        `Template is not accessible for principal: ${loaded.template.template_id}`,
+      );
+    }
+
+    return loaded;
   }
 
   private loadTemplateDetail(templateId: string, principalId?: string): PresetDetail | null {
@@ -1101,13 +1280,44 @@ export class SpaceConfiguratorService {
     template: { template_id: string; name: string; updated_at: string },
     config: StoredTemplateConfig,
   ): SpaceTemplateSummary {
+    const conversationTopology = conversationTopologyForCommunicationMode(config.communicationMode);
     return {
       templateId: template.template_id,
       title: template.name,
       communicationMode: config.communicationMode,
+      conversationTopology,
+      promptPackId: promptPackIdForConversationTopology(conversationTopology),
       agentPresetIds: config.agentPresetIds,
       createdBy: config.metadata.createdBy,
       updatedAt: template.updated_at,
+    };
+  }
+
+  private toTemplateRecord(
+    template: SpaceTemplateRow,
+    config: StoredTemplateConfig,
+  ): SpaceTemplateRecord {
+    const summary = this.toTemplateSummary(template, config);
+    return {
+      templateId: summary.templateId,
+      name: template.name,
+      description: template.description || undefined,
+      status: template.archived === 1 ? "archived" : "active",
+      activeRevision: template.active_revision,
+      communicationMode: config.communicationMode,
+      conversationTopology: summary.conversationTopology,
+      promptPackId: summary.promptPackId,
+      turnModel: config.turnModel,
+      agentDefinitions: config.baseAgents,
+      createdBy: config.metadata.createdBy,
+      createdAt: template.created_at,
+      updatedAt: template.updated_at,
+      category: config.metadata.category,
+      complexityTier: config.metadata.complexityTier,
+      icon: config.metadata.icon,
+      featured: config.metadata.featured,
+      sortOrder: config.metadata.sortOrder,
+      agentCount: config.baseAgents.length,
     };
   }
 }
@@ -1149,6 +1359,14 @@ function normalizeTemplateAgents(input: TemplateAgentDefinition[]): TemplateAgen
     .filter((entry) => entry.agentId.length > 0);
 }
 
+function conversationTopologyForCommunicationMode(mode: CommunicationMode): ConversationTopology {
+  return COMMUNICATION_MODE_TO_CONVERSATION_TOPOLOGY[mode] ?? "direct";
+}
+
+function promptPackIdForConversationTopology(topology: ConversationTopology): string {
+  return CONVERSATION_TOPOLOGY_TO_PROMPT_PACK_ID[topology] ?? "single-agent-v1";
+}
+
 function parseTemplateConfig(rawJson: string): StoredTemplateConfig {
   const fallback: StoredTemplateConfig = {
     schemaVersion: 1,
@@ -1187,6 +1405,11 @@ function parseTemplateConfig(rawJson: string): StoredTemplateConfig {
       metadata: {
         createdBy: typeof metadata.createdBy === "string" ? metadata.createdBy : "unknown",
         source: metadata.source === "system" ? "system" : "user",
+        category: typeof metadata.category === "string" ? metadata.category : undefined,
+        complexityTier: typeof metadata.complexityTier === "string" ? metadata.complexityTier : undefined,
+        icon: typeof metadata.icon === "string" ? metadata.icon : undefined,
+        featured: typeof metadata.featured === "boolean" ? metadata.featured : undefined,
+        sortOrder: typeof metadata.sortOrder === "number" ? metadata.sortOrder : undefined,
       },
     };
   } catch {

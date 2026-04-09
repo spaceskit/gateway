@@ -4,9 +4,10 @@ import {
   issueHttpPrincipalToken,
   resolveHttpPrincipalContext,
 } from "../src/services/http-principal-auth.js";
+import { TEST_HTTP_PRINCIPAL_SECRET } from "./http-principal-test-helpers.js";
 
 describe("resolveHttpPrincipalContext", () => {
-  test("accepts legacy principal headers in compatibility mode", () => {
+  test("rejects legacy principal headers", () => {
     const request = new Request("http://localhost/test", {
       headers: {
         "x-spaceskit-principal-id": "principal-legacy",
@@ -14,27 +15,35 @@ describe("resolveHttpPrincipalContext", () => {
       },
     });
     const result = resolveHttpPrincipalContext(request);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.context.principalId).toBe("principal-legacy");
-    expect(result.context.deviceId).toBe("device-legacy");
-    expect(result.context.authMethod).toBe("legacy_header");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("invalid_token");
   });
 
   test("rejects missing bearer token in strict mode", () => {
-    const request = new Request("http://localhost/test", {
-      headers: {
-        "x-spaceskit-principal-id": "forged-principal",
-      },
-    });
+    const request = new Request("http://localhost/test");
     const result = resolveHttpPrincipalContext(request, {
       strictVerification: true,
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("UNAUTHENTICATED");
     expect(result.error.reason).toBe("missing_bearer_token");
+  });
+
+  test("rejects raw bearer tokens", () => {
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer principal-legacy",
+      },
+    });
+    const result = resolveHttpPrincipalContext(request, {
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe("invalid_token");
   });
 
   test("accepts valid signed bearer token in strict mode", () => {
@@ -44,7 +53,7 @@ describe("resolveHttpPrincipalContext", () => {
       device_id: "device-signed",
       iat: Math.floor(now.getTime() / 1000),
       exp: Math.floor(now.getTime() / 1000) + 120,
-    }, "test-secret");
+    }, TEST_HTTP_PRINCIPAL_SECRET);
     const request = new Request("http://localhost/test", {
       headers: {
         authorization: `Bearer ${signedToken}`,
@@ -52,7 +61,7 @@ describe("resolveHttpPrincipalContext", () => {
     });
     const result = resolveHttpPrincipalContext(request, {
       strictVerification: true,
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
       now: () => now,
     });
     expect(result.ok).toBe(true);
@@ -68,7 +77,7 @@ describe("resolveHttpPrincipalContext", () => {
     const signedToken = signHs256Token({
       sub: "principal-expired",
       exp: Math.floor(now.getTime() / 1000) - 300,
-    }, "test-secret");
+    }, TEST_HTTP_PRINCIPAL_SECRET);
     const request = new Request("http://localhost/test", {
       headers: {
         authorization: `Bearer ${signedToken}`,
@@ -76,7 +85,7 @@ describe("resolveHttpPrincipalContext", () => {
     });
     const result = resolveHttpPrincipalContext(request, {
       strictVerification: true,
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
       now: () => now,
     });
     expect(result.ok).toBe(false);
@@ -89,7 +98,7 @@ describe("resolveHttpPrincipalContext", () => {
     const issued = issueHttpPrincipalToken({
       principalId: "principal-issued",
       deviceId: "device-issued",
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
       ttlSeconds: 180,
       now: () => now,
     });
@@ -108,7 +117,7 @@ describe("resolveHttpPrincipalContext", () => {
     });
     const verified = resolveHttpPrincipalContext(request, {
       strictVerification: true,
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
       now: () => now,
     });
     expect(verified.ok).toBe(true);
@@ -122,7 +131,7 @@ describe("resolveHttpPrincipalContext", () => {
     const now = new Date("2026-03-02T20:00:00.000Z");
     const shortTtl = issueHttpPrincipalToken({
       principalId: "principal-short",
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
       ttlSeconds: 1,
       now: () => now,
     });
@@ -131,7 +140,7 @@ describe("resolveHttpPrincipalContext", () => {
 
     const longTtl = issueHttpPrincipalToken({
       principalId: "principal-long",
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
       ttlSeconds: 99_999,
       now: () => now,
     });
@@ -142,7 +151,7 @@ describe("resolveHttpPrincipalContext", () => {
   test("rejects token issuance without required principal or secret", () => {
     expect(() => issueHttpPrincipalToken({
       principalId: "   ",
-      hs256Secret: "test-secret",
+      hs256Secret: TEST_HTTP_PRINCIPAL_SECRET,
     })).toThrow("principalId is required");
 
     expect(() => issueHttpPrincipalToken({

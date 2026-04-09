@@ -4,6 +4,7 @@ export interface SpaceWorkspaceRow {
   space_id: string;
   explicit_root: string;
   effective_root: string;
+  managed_folder_name: string;
   managed_resource_id: string;
   layout_version: number;
   metadata_path: string;
@@ -17,6 +18,7 @@ export interface UpsertSpaceWorkspaceInput {
   spaceId: string;
   explicitRoot: string;
   effectiveRoot: string;
+  managedFolderName?: string;
   managedResourceId: string;
   layoutVersion?: number;
   metadataPath?: string;
@@ -43,6 +45,7 @@ export class SpaceWorkspaceRepository {
         space_id,
         explicit_root,
         effective_root,
+        managed_folder_name,
         managed_resource_id,
         layout_version,
         metadata_path,
@@ -50,10 +53,11 @@ export class SpaceWorkspaceRepository {
         metadata_updated_at,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(space_id) DO UPDATE SET
         explicit_root = excluded.explicit_root,
         effective_root = excluded.effective_root,
+        managed_folder_name = excluded.managed_folder_name,
         managed_resource_id = excluded.managed_resource_id,
         layout_version = excluded.layout_version,
         metadata_path = excluded.metadata_path,
@@ -64,6 +68,7 @@ export class SpaceWorkspaceRepository {
       input.spaceId,
       input.explicitRoot,
       input.effectiveRoot,
+      input.managedFolderName ?? "",
       input.managedResourceId,
       input.layoutVersion ?? 1,
       input.metadataPath ?? "",

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createHmac } from "node:crypto";
 import { GatewayObservabilityApiService } from "../src/services/gateway-observability-api-service.js";
+import { createHttpPrincipalTestContext } from "./http-principal-test-helpers.js";
 
 describe("GatewayObservabilityApiService", () => {
   test("serves summary and metrics endpoints", async () => {
@@ -34,8 +34,10 @@ describe("GatewayObservabilityApiService", () => {
   });
 
   test("requires authenticated principal when configured", async () => {
+    const auth = createHttpPrincipalTestContext();
     const service = new GatewayObservabilityApiService({
       requireAuthenticatedPrincipal: true,
+      principalAuth: auth.principalAuth,
       observabilityService: {
         getSummary: () => ({ generatedAt: "x", relay: {}, sandbox: {} }),
         formatPrometheus: () => "x 1\n",
@@ -48,23 +50,17 @@ describe("GatewayObservabilityApiService", () => {
 
     const authRequest = new Request("http://localhost/metrics", {
       method: "GET",
-      headers: {
-        "x-spaceskit-principal-id": "principal-1",
-      },
+      headers: auth.headers("principal-1"),
     });
     const authResponse = await service.handleRequest(authRequest, new URL(authRequest.url));
     expect(authResponse?.status).toBe(200);
   });
 
   test("enforces signed bearer tokens in strict principal-auth mode", async () => {
-    const now = new Date("2026-03-02T20:00:00.000Z");
+    const auth = createHttpPrincipalTestContext();
     const service = new GatewayObservabilityApiService({
       requireAuthenticatedPrincipal: true,
-      principalAuth: {
-        strictVerification: true,
-        hs256Secret: "test-secret",
-        now: () => now,
-      },
+      principalAuth: auth.strictPrincipalAuth,
       observabilityService: {
         getSummary: () => ({ generatedAt: "x", relay: {}, sandbox: {} }),
         formatPrometheus: () => "x 1\n",
@@ -82,29 +78,11 @@ describe("GatewayObservabilityApiService", () => {
     const forgedBody = await forgedResponse!.json() as { code?: string };
     expect(forgedBody.code).toBe("UNAUTHENTICATED");
 
-    const signedToken = signHs256Token({
-      sub: "principal-strict",
-      exp: Math.floor(now.getTime() / 1000) + 60,
-    }, "test-secret");
     const signedRequest = new Request("http://localhost/metrics", {
       method: "GET",
-      headers: {
-        authorization: `Bearer ${signedToken}`,
-      },
+      headers: auth.headers("principal-strict"),
     });
     const signedResponse = await service.handleRequest(signedRequest, new URL(signedRequest.url));
     expect(signedResponse?.status).toBe(200);
   });
 });
-
-function signHs256Token(payload: Record<string, unknown>, secret: string): string {
-  const encodedHeader = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac("sha256", secret).update(signingInput).digest("base64url");
-  return `${encodedHeader}.${encodedPayload}.${signature}`;
-}
-
-function base64UrlEncode(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64url");
-}

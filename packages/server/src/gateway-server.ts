@@ -31,8 +31,10 @@ import {
   type SyncQueryResourcesResponsePayload,
   type SyncPullResourcesPayload,
   type SyncPullResourcesResponsePayload,
+  type AgentActivityState,
   type TurnEventPayload,
   type TurnStreamPayload,
+  type TypedTurnEventPayload,
 } from "./protocol.js";
 import { buildGatewayErrorPayload } from "./error-contract.js";
 import type { A2AHandler } from "./a2a/a2a-handler.js";
@@ -729,6 +731,32 @@ export class GatewayServer {
     }
   }
 
+  sendToIdentity(principalId: string, deviceId: string | undefined, msg: GatewayMessage): number {
+    const normalizedPrincipalId = principalId.trim();
+    const normalizedDeviceId = deviceId?.trim() || undefined;
+    if (!normalizedPrincipalId) {
+      return 0;
+    }
+
+    const exactMatches: string[] = [];
+    const principalMatches: string[] = [];
+    for (const [sessionId, session] of this.clients) {
+      if (!session.authenticated || session.publicKey !== normalizedPrincipalId) {
+        continue;
+      }
+      principalMatches.push(sessionId);
+      if (normalizedDeviceId && session.deviceId === normalizedDeviceId) {
+        exactMatches.push(sessionId);
+      }
+    }
+
+    const targets = exactMatches.length > 0 ? exactMatches : principalMatches;
+    for (const sessionId of targets) {
+      this.send(sessionId, msg);
+    }
+    return targets.length;
+  }
+
   /** Broadcast a message to all clients subscribed to a space UID via Bun's pub/sub. */
   broadcastToSpace(spaceUid: string, msg: GatewayMessage): void {
     this.server?.publish(`space:${spaceUid}`, JSON.stringify(msg));
@@ -986,6 +1014,56 @@ export class GatewayServer {
           subscribedSpaceUids,
           denied,
         } satisfies SubscribeResponsePayload,
+      });
+      return;
+    }
+
+    if (msg.type === MessageTypes.SUBSCRIBE_NOTIFICATIONS) {
+      if (!this.options.notificationHandler || typeof (this.options.notificationHandler as any).subscribeClient !== "function") {
+        this.sendError(ws, "NOT_AVAILABLE", "Notification subscriptions are not configured", {
+          replyTo: msg.id,
+          correlationId: msg.id,
+        });
+        return;
+      }
+      const payload = msg.payload as { categories?: unknown };
+      const categories = Array.isArray(payload?.categories)
+        ? payload.categories.filter((entry): entry is string => typeof entry === "string")
+        : [];
+      const subscribed = await (this.options.notificationHandler as any).subscribeClient(session.id, categories);
+      this.send(session.id, {
+        type: MessageTypes.SUBSCRIBE_NOTIFICATIONS,
+        id: randomUUID(),
+        replyTo: msg.id,
+        ts: new Date().toISOString(),
+        payload: {
+          categories: subscribed,
+        },
+      });
+      return;
+    }
+
+    if (msg.type === MessageTypes.UNSUBSCRIBE_NOTIFICATIONS) {
+      if (!this.options.notificationHandler || typeof (this.options.notificationHandler as any).unsubscribeClient !== "function") {
+        this.sendError(ws, "NOT_AVAILABLE", "Notification subscriptions are not configured", {
+          replyTo: msg.id,
+          correlationId: msg.id,
+        });
+        return;
+      }
+      const payload = msg.payload as { categories?: unknown };
+      const categories = Array.isArray(payload?.categories)
+        ? payload.categories.filter((entry): entry is string => typeof entry === "string")
+        : [];
+      const unsubscribed = await (this.options.notificationHandler as any).unsubscribeClient(session.id, categories);
+      this.send(session.id, {
+        type: MessageTypes.UNSUBSCRIBE_NOTIFICATIONS,
+        id: randomUUID(),
+        replyTo: msg.id,
+        ts: new Date().toISOString(),
+        payload: {
+          categories: unsubscribed,
+        },
       });
       return;
     }
@@ -1531,18 +1609,30 @@ export class GatewayServer {
 
     const mappedEventType = this.mapTurnLifecycleEventType(eventSubtype, normalizedType);
     const sanitizedData = this.sanitizeTurnLifecycleData(turnEvent ?? eventRecord.data ?? null);
+    const agentId = this.resolveTurnAgentId(eventRecord, turnEvent);
+    const rootTurnId = typeof eventRecord.rootTurnId === "string" ? eventRecord.rootTurnId : undefined;
+    const conversationTopology = typeof eventRecord.conversationTopology === "string" ? eventRecord.conversationTopology : undefined;
+    const transcriptVisibility = typeof eventRecord.transcriptVisibility === "string" ? eventRecord.transcriptVisibility : undefined;
+    const nowIso = new Date().toISOString();
+    const typedPayload = this.buildTypedPayload(eventSubtype, normalizedType, turnEvent ?? eventRecord, agentId, turnId, rootTurnId, conversationTopology, transcriptVisibility);
     const payload: TurnEventPayload = {
       spaceId,
       spaceUid,
       turnId,
+      rootTurnId,
+      agentId,
+      conversationTopology,
+      transcriptVisibility,
       eventType: mappedEventType,
       data: sanitizedData as unknown,
+      typedPayload,
+      ts: nowIso,
     };
 
     this.broadcastToSpace(spaceUid, {
       type: MessageTypes.TURN_EVENT,
       id: randomUUID(),
-      ts: new Date().toISOString(),
+      ts: nowIso,
       payload,
     });
   }
@@ -1561,12 +1651,16 @@ export class GatewayServer {
         return "tool_call";
       case "feedback_requested":
         return "feedback_requested";
+      case "feedback_resolved":
+        return "state_changed";
       case "rate_limited":
         return "rate_limited";
       case "state_changed":
         return "state_changed";
       case "turn_completed":
         return "completed";
+      case "turn_cancelled":
+        return "cancelled";
       case "error":
         return "failed";
       default:
@@ -1577,12 +1671,163 @@ export class GatewayServer {
     }
   }
 
+  private buildTypedPayload(
+    eventSubtype: string,
+    normalizedType: string,
+    eventRecord: Record<string, unknown>,
+    agentId: string,
+    turnId: string,
+    rootTurnId?: string,
+    conversationTopology?: string,
+    transcriptVisibility?: string,
+  ): TypedTurnEventPayload | undefined {
+    const subtype = eventSubtype.trim().toLowerCase();
+
+    switch (subtype) {
+      case "reasoning_delta": {
+        const text = typeof eventRecord.text === "string" ? eventRecord.text : "";
+        return { kind: "reasoning.delta", text };
+      }
+
+      case "tool_call_start": {
+        const toolCallId = typeof eventRecord.toolCallId === "string"
+          ? eventRecord.toolCallId
+          : typeof eventRecord.id === "string" ? eventRecord.id : "";
+        const toolName = typeof eventRecord.toolName === "string"
+          ? eventRecord.toolName
+          : typeof eventRecord.name === "string" ? eventRecord.name : "unknown";
+        const args = eventRecord.arguments && typeof eventRecord.arguments === "object"
+          ? eventRecord.arguments as Record<string, unknown>
+          : undefined;
+        return { kind: "tool.started", toolCallId, toolName, arguments: args, agentId };
+      }
+
+      case "tool_result": {
+        const toolCallId = typeof eventRecord.toolCallId === "string"
+          ? eventRecord.toolCallId
+          : typeof eventRecord.id === "string" ? eventRecord.id : "";
+        const toolName = typeof eventRecord.toolName === "string"
+          ? eventRecord.toolName
+          : typeof eventRecord.name === "string" ? eventRecord.name : undefined;
+        const isError = this.coerceBoolean(eventRecord.isError ?? eventRecord.is_error, false);
+        return { kind: "tool.completed", toolCallId, toolName, result: eventRecord.result ?? null, isError, agentId };
+      }
+
+      case "state_changed": {
+        const state = typeof eventRecord.state === "string" ? eventRecord.state : "idle";
+        const validStates = new Set<AgentActivityState>(["idle", "thinking", "acting", "needs_feedback", "errored"]);
+        return { kind: "state.changed", state: validStates.has(state as AgentActivityState) ? state as AgentActivityState : "idle" };
+      }
+
+      case "feedback_requested": {
+        const requestId = typeof eventRecord.requestId === "string" ? eventRecord.requestId : "";
+        const description = typeof eventRecord.description === "string" ? eventRecord.description : "";
+        const options = Array.isArray(eventRecord.options) ? eventRecord.options.filter((o: unknown) => typeof o === "string") as string[] : ["approve", "reject"];
+        const context = eventRecord.context && typeof eventRecord.context === "object"
+          ? eventRecord.context as Record<string, unknown>
+          : undefined;
+        return { kind: "approval.requested", requestId, agentId, description, options, context };
+      }
+
+      case "feedback_resolved": {
+        const requestId = typeof eventRecord.requestId === "string"
+          ? eventRecord.requestId
+          : turnId;
+        const response = typeof eventRecord.response === "string"
+          ? eventRecord.response
+          : "approved";
+        return { kind: "approval.resolved", requestId, response, agentId };
+      }
+
+      case "rate_limited": {
+        const retryAfterMs = this.coerceInteger(eventRecord.retryAfterMs, 0);
+        const attempt = this.coerceInteger(eventRecord.attempt, 0);
+        const maxAttempts = this.coerceInteger(eventRecord.maxAttempts, 0);
+        const providerId = typeof eventRecord.providerId === "string" ? eventRecord.providerId : "";
+        const retryAt = typeof eventRecord.retryAt === "string" ? eventRecord.retryAt : new Date(Date.now() + retryAfterMs).toISOString();
+        return { kind: "rate_limited", retryAfterMs, attempt, maxAttempts, providerId, retryAt };
+      }
+
+      case "turn_completed": {
+        const result = eventRecord.result && typeof eventRecord.result === "object"
+          ? eventRecord.result as Record<string, unknown>
+          : eventRecord;
+        const usage = result.usage && typeof result.usage === "object"
+          ? result.usage as Record<string, unknown>
+          : undefined;
+        const turnUsage = usage ? {
+          promptTokens: this.coerceInteger(usage.promptTokens ?? usage.prompt_tokens, 0),
+          completionTokens: this.coerceInteger(usage.completionTokens ?? usage.completion_tokens, 0),
+          totalTokens: this.coerceInteger(usage.totalTokens ?? usage.total_tokens, 0),
+        } : undefined;
+        const metadata: Record<string, unknown> = {};
+        for (const key of ["modelId", "providerId", "durationMs", "finishReason", "startedAt", "completedAt", "tokensPerSecond"]) {
+          if (result[key] !== undefined) metadata[key] = result[key];
+        }
+        const finalMessage = typeof result.output === "string" ? result.output : typeof result.finalMessage === "string" ? result.finalMessage : undefined;
+        const effectiveSafetyProfileId = typeof result.effectiveSafetyProfileId === "string" ? result.effectiveSafetyProfileId : undefined;
+        return {
+          kind: "turn.completed",
+          agentId,
+          usage: turnUsage,
+          metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
+          finalMessage,
+          effectiveSafetyProfileId,
+        };
+      }
+
+      case "error": {
+        const errorMessage = typeof eventRecord.message === "string"
+          ? eventRecord.message
+          : typeof eventRecord.error === "string" ? eventRecord.error : "Unknown error";
+        const errorCode = typeof eventRecord.code === "string" ? eventRecord.code : undefined;
+        return { kind: "turn.failed", errorMessage, errorCode };
+      }
+
+      case "turn_cancelled":
+        return { kind: "turn.cancelled", agentId };
+
+      default: {
+        if (normalizedType === "space.turn_started") {
+          const launchSnapshots = this.normalizeLaunchSnapshots(
+            (eventRecord as Record<string, unknown>).launchSnapshots
+            ?? (typeof (eventRecord as Record<string, unknown>).data === "object"
+              && (eventRecord as Record<string, unknown>).data !== null
+              && !Array.isArray((eventRecord as Record<string, unknown>).data)
+              ? ((eventRecord as Record<string, unknown>).data as Record<string, unknown>).launchSnapshots
+              : undefined),
+          );
+          return {
+            kind: "turn.started",
+            agentId,
+            turnId,
+            rootTurnId,
+            conversationTopology,
+            transcriptVisibility,
+            ...(launchSnapshots.length > 0 ? { launchSnapshots } : {}),
+          };
+        }
+        return undefined;
+      }
+    }
+  }
+
   private resolveTurnAgentId(
     eventRecord: Record<string, unknown>,
     turnEvent?: Record<string, unknown>,
   ): string {
     const fromEvent = typeof turnEvent?.agentId === "string" ? turnEvent.agentId.trim() : "";
     if (fromEvent) return fromEvent;
+    const fromLaunchSnapshot = this.normalizeLaunchSnapshots(
+      turnEvent && typeof turnEvent.data === "object" && turnEvent.data !== null && !Array.isArray(turnEvent.data)
+        ? (turnEvent.data as Record<string, unknown>).launchSnapshots
+        : undefined,
+    )[0]?.agentId;
+    if (fromLaunchSnapshot) return fromLaunchSnapshot;
+    const fromAgents = Array.isArray(eventRecord.agents)
+      ? eventRecord.agents.find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)?.trim()
+      : undefined;
+    if (fromAgents) return fromAgents;
     const resultRecord = turnEvent?.result;
     if (resultRecord && typeof resultRecord === "object" && !Array.isArray(resultRecord)) {
       const nested = (resultRecord as Record<string, unknown>).agentId;
@@ -1593,6 +1838,50 @@ export class GatewayServer {
     const fromRecord = typeof eventRecord.agentId === "string" ? eventRecord.agentId.trim() : "";
     if (fromRecord) return fromRecord;
     return "unknown-agent";
+  }
+
+  private normalizeLaunchSnapshots(
+    value: unknown,
+  ): Array<{
+    agentId: string;
+    providerId: string;
+    modelId: string;
+    contextWindowTokens: number;
+    estimatedPromptTokens: number;
+    estimatedRemainingTokens: number;
+    source: "preflight" | "registry" | "reported";
+  }> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        return [];
+      }
+      const record = entry as Record<string, unknown>;
+      const agentId = typeof record.agentId === "string" ? record.agentId.trim() : "";
+      const providerId = typeof record.providerId === "string" ? record.providerId.trim() : "";
+      const modelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
+      const contextWindowTokens = this.coerceInteger(record.contextWindowTokens, 0);
+      const estimatedPromptTokens = this.coerceInteger(record.estimatedPromptTokens, 0);
+      const estimatedRemainingTokens = this.coerceInteger(record.estimatedRemainingTokens, 0);
+      const source = record.source === "preflight" || record.source === "reported"
+        ? record.source
+        : "registry";
+      if (!agentId || !providerId || !modelId || contextWindowTokens <= 0) {
+        return [];
+      }
+      return [{
+        agentId,
+        providerId,
+        modelId,
+        contextWindowTokens,
+        estimatedPromptTokens,
+        estimatedRemainingTokens,
+        source,
+      }];
+    });
   }
 
   private coerceInteger(value: unknown, fallback: number): number {

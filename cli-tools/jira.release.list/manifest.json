@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "jira.release.list",
+  "displayName": "Jira Release List",
+  "description": "List Jira releases (project versions) in the selected project context.",
+  "bundleId": "jira-cli",
+  "bundleDisplayName": "Jira CLI",
+  "bundleDescription": "Gateway-managed Jira CLI bundle for account discovery plus project, board, release, epic, sprint, and issue operations.",
+  "toolGroupId": "releases",
+  "toolGroupDisplayName": "Releases",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "argsTemplate": [
+    "--op",
+    "release.list",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional Jira project key or id override for this call."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool when you need release or version names before planning or updating work. This discovery read is not query-bounded, so keep it targeted and operator-driven.",
+  "examples": [
+    {
+      "name": "List releases for a project",
+      "description": "Shows release versions for the OPS project.",
+      "arguments": {
+        "payload": {
+          "project": "OPS"
+        }
+      },
+      "expectedOutput": "{\n  \"ok\": true,\n  \"operation\": \"release.list\",\n  \"summary\": \"Listed Jira releases.\"\n}"
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 262144,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-08T20:49:28.675Z",
+  "updatedAt": "2026-04-08T20:49:28.675Z"
+}

@@ -70,6 +70,47 @@ function createContext() {
   };
 }
 
+function seedSystemTemplate(context: ReturnType<typeof createContext>) {
+  context.templates.upsertWithNewRevision({
+    templateId: "archetype/research",
+    ownerPrincipalId: "system",
+    name: "Research Team",
+    description: "Coordinator plans research tasks, workers investigate in parallel.",
+    spaceConfigJson: JSON.stringify({
+      schemaVersion: 1,
+      communicationMode: "chat_first",
+      turnModel: "primary_only",
+      baseAgents: [
+        {
+          agentId: "coordinator",
+          profileId: "archetype/research-coordinator",
+          role: "global_coordinator",
+          turnOrder: 0,
+          isPrimary: true,
+        },
+        {
+          agentId: "researcher-1",
+          profileId: "archetype/researcher",
+          role: "participant",
+          turnOrder: 1,
+          isPrimary: false,
+        },
+      ],
+      agentPresetIds: [],
+      tags: ["research", "system"],
+      metadata: {
+        createdBy: "system",
+        source: "system",
+        category: "team_pattern",
+        complexityTier: "advanced",
+        icon: "magnifyingglass.circle.fill",
+        featured: false,
+        sortOrder: 100,
+      },
+    }),
+  });
+}
+
 describe("SpaceConfiguratorService ownership boundaries", () => {
   test("scopes user presets to the owning principal", async () => {
     const context = createContext();
@@ -124,6 +165,151 @@ describe("SpaceConfiguratorService ownership boundaries", () => {
         templateId: saved.template.templateId,
         title: "Hijack Attempt",
         principalId: "principal-other",
+      })).rejects.toThrow("owned by another principal");
+    } finally {
+      context.db.close();
+    }
+  });
+
+  test("lists, reads, and archives owner-scoped managed templates", async () => {
+    const context = createContext();
+    try {
+      const service = new SpaceConfiguratorService({
+        templates: context.templates,
+        agentPresets: context.agentPresets,
+        spaceAdminService: context.spaceAdminService as any,
+        defaultProfileId: "profile-main",
+        defaultAgentId: "agent-main",
+      });
+
+      const saved = await service.saveTemplate({
+        title: "Coding Planning Pair",
+        communicationMode: "async_notes",
+        baseAgents: [
+          {
+            agentId: "planner",
+            profileId: "agent-definition-coding-planner-v1",
+            role: "participant",
+            turnOrder: 0,
+            isPrimary: true,
+          },
+          {
+            agentId: "critic",
+            profileId: "agent-definition-coding-critic-v1",
+            role: "participant",
+            turnOrder: 1,
+            isPrimary: false,
+          },
+        ],
+        principalId: "principal-owner",
+      });
+
+      const listed = service.listTemplates({}, "principal-owner");
+      expect(listed.map((template) => template.templateId)).toContain(saved.template.templateId);
+      expect(listed[0]?.conversationTopology).toBe("shared_team_chat");
+      expect(listed[0]?.turnModel).toBe("sequential_all");
+
+      const fetched = service.getTemplate(
+        { templateId: saved.template.templateId },
+        "principal-owner",
+      );
+      expect(fetched.agentDefinitions.map((agent) => agent.agentId)).toEqual(["planner", "critic"]);
+
+      const archived = service.archiveTemplate(
+        { templateId: saved.template.templateId },
+        "principal-owner",
+      );
+      expect(archived.archived).toBe(true);
+      expect(archived.template.status).toBe("archived");
+
+      expect(
+        service.listTemplates({}, "principal-owner").some((template) => template.templateId == saved.template.templateId),
+      ).toBe(false);
+      expect(
+        service.listTemplates({ includeArchived: true }, "principal-owner")
+          .some((template) => template.templateId == saved.template.templateId && template.status == "archived"),
+      ).toBe(true);
+    } finally {
+      context.db.close();
+    }
+  });
+
+  test("allows principals to read and create spaces from system templates", async () => {
+    const context = createContext();
+    try {
+      seedSystemTemplate(context);
+      const service = new SpaceConfiguratorService({
+        templates: context.templates,
+        agentPresets: context.agentPresets,
+        spaceAdminService: context.spaceAdminService as any,
+        defaultProfileId: "profile-main",
+        defaultAgentId: "agent-main",
+      });
+
+      // System templates are included by default
+      const listed = service.listTemplates({}, "principal-owner");
+      expect(listed.map((template) => template.templateId)).toContain("archetype/research");
+      // Explicitly excluding system templates hides them
+      expect(service.listTemplates({ includeSystem: false }, "principal-owner").map((template) => template.templateId))
+        .not.toContain("archetype/research");
+
+      const fetched = service.getTemplate(
+        { templateId: "archetype/research" },
+        "principal-owner",
+      );
+      expect(fetched.templateId).toBe("archetype/research");
+
+      const preview = service.previewTemplate(
+        { templateId: "archetype/research", resourceId: "resource-preview" },
+        "principal-other",
+      );
+      expect(preview.template.templateId).toBe("archetype/research");
+      expect(preview.resolved.initialAgents.map((agent) => agent.agentId)).toEqual([
+        "coordinator",
+        "researcher-1",
+      ]);
+
+      const created = await service.createFromTemplate(
+        {
+          templateId: "archetype/research",
+          resourceId: "resource-system-template",
+          name: "System Template Space",
+        },
+        "principal-third",
+      );
+      expect(created.template.templateId).toBe("archetype/research");
+      expect(created.space.name).toBe("System Template Space");
+      expect(created.space.agents.map((agent) => agent.agentId)).toEqual([
+        "coordinator",
+        "researcher-1",
+      ]);
+    } finally {
+      context.db.close();
+    }
+  });
+
+  test("keeps system templates immutable for non-system principals", async () => {
+    const context = createContext();
+    try {
+      seedSystemTemplate(context);
+      const service = new SpaceConfiguratorService({
+        templates: context.templates,
+        agentPresets: context.agentPresets,
+        spaceAdminService: context.spaceAdminService as any,
+        defaultProfileId: "profile-main",
+        defaultAgentId: "agent-main",
+      });
+
+      expect(() =>
+        service.archiveTemplate(
+          { templateId: "archetype/research" },
+          "principal-owner",
+        )).toThrow("not accessible");
+
+      await expect(service.saveTemplate({
+        templateId: "archetype/research",
+        title: "Research Team Override",
+        principalId: "principal-owner",
       })).rejects.toThrow("owned by another principal");
     } finally {
       context.db.close();

@@ -15,6 +15,8 @@ export interface SpaceRow {
   space_config_json: string | null;
   template_id: string;
   template_revision: number;
+  archived_at: string | null;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +33,16 @@ export interface CreateSpaceInput {
   templateRevision?: number;
 }
 
+export interface UpdateSpaceMetadataInput {
+  spaceId: string;
+  resourceId?: string;
+  spaceType?: string;
+  name?: string;
+  goal?: string;
+  turnModel?: string;
+  configJson?: string | null;
+}
+
 export interface ListSpacesOptions {
   statuses?: string[];
   resourceId?: string;
@@ -45,9 +57,9 @@ export class SpaceRepository {
     this.db.query(`
       INSERT INTO spaces(
         space_id, resource_id, space_type, name, goal, status,
-        turn_model, space_config_json, template_id, template_revision,
+        turn_model, space_config_json, template_id, template_revision, archived_at, deleted_at,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, NULL, NULL, ?, ?)
     `).run(
       input.spaceId,
       input.resourceId,
@@ -82,6 +94,8 @@ export class SpaceRepository {
     if (options.statuses?.length) {
       whereClauses.push(`status IN (${options.statuses.map(() => "?").join(", ")})`);
       values.push(...options.statuses);
+    } else {
+      whereClauses.push("status NOT IN ('archived', 'deleted')");
     }
 
     let sql = "SELECT * FROM spaces";
@@ -116,6 +130,76 @@ export class SpaceRepository {
     this.db
       .query("UPDATE spaces SET space_config_json = ?, updated_at = ? WHERE space_id = ?")
       .run(configJson, new Date().toISOString(), spaceId);
+  }
+
+  updateMetadata(input: UpdateSpaceMetadataInput): SpaceRow | undefined {
+    const updates: string[] = [];
+    const values: (string | null)[] = [];
+
+    if (input.resourceId !== undefined) {
+      updates.push("resource_id = ?");
+      values.push(input.resourceId);
+    }
+    if (input.spaceType !== undefined) {
+      updates.push("space_type = ?");
+      values.push(input.spaceType);
+    }
+    if (input.name !== undefined) {
+      updates.push("name = ?");
+      values.push(input.name);
+    }
+    if (input.goal !== undefined) {
+      updates.push("goal = ?");
+      values.push(input.goal);
+    }
+    if (input.turnModel !== undefined) {
+      updates.push("turn_model = ?");
+      values.push(input.turnModel);
+    }
+    if (input.configJson !== undefined) {
+      updates.push("space_config_json = ?");
+      values.push(input.configJson);
+    }
+
+    if (updates.length === 0) {
+      return this.getById(input.spaceId);
+    }
+
+    updates.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(input.spaceId);
+
+    this.db
+      .query(`UPDATE spaces SET ${updates.join(", ")} WHERE space_id = ?`)
+      .run(...values);
+    return this.getById(input.spaceId);
+  }
+
+  archive(spaceId: string, archivedAt = new Date().toISOString()): SpaceRow | undefined {
+    this.db
+      .query(`
+        UPDATE spaces
+        SET status = 'archived',
+            archived_at = ?,
+            deleted_at = NULL,
+            updated_at = ?
+        WHERE space_id = ?
+      `)
+      .run(archivedAt, archivedAt, spaceId);
+    return this.getById(spaceId);
+  }
+
+  deleteSoft(spaceId: string, deletedAt = new Date().toISOString()): SpaceRow | undefined {
+    this.db
+      .query(`
+        UPDATE spaces
+        SET status = 'deleted',
+            deleted_at = ?,
+            updated_at = ?
+        WHERE space_id = ?
+      `)
+      .run(deletedAt, deletedAt, spaceId);
+    return this.getById(spaceId);
   }
 
   delete(spaceId: string): boolean {

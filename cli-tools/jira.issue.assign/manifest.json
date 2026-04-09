@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "id": "jira.issue.assign",
+  "displayName": "Jira Issue Assign",
+  "description": "Assign a Jira issue and return the refreshed issue payload.",
+  "bundleId": "jira-cli",
+  "bundleDisplayName": "Jira CLI",
+  "bundleDescription": "Gateway-managed Jira CLI bundle for account discovery plus project, board, release, epic, sprint, and issue operations.",
+  "toolGroupId": "issues",
+  "toolGroupDisplayName": "Issues",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "argsTemplate": [
+    "--op",
+    "issue.assign",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional Jira project key or id override for this call."
+          },
+          "issueKey": {
+            "type": "string",
+            "description": "Jira issue key, for example `OPS-123`."
+          },
+          "assignee": {
+            "type": "string",
+            "description": "Assignee email or exact display name."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "issueKey",
+          "assignee"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool to change issue ownership when you know the exact assignee string Jira expects.",
+  "examples": [
+    {
+      "name": "Assign an issue",
+      "description": "Assigns an issue to a specific person.",
+      "arguments": {
+        "payload": {
+          "issueKey": "OPS-123",
+          "assignee": "alice@example.com"
+        }
+      },
+      "expectedOutput": "{\n  \"ok\": true,\n  \"operation\": \"issue.assign\",\n  \"summary\": \"Assigned Jira issue OPS-123.\"\n}"
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-08T20:49:28.678Z",
+  "updatedAt": "2026-04-08T20:49:28.678Z"
+}

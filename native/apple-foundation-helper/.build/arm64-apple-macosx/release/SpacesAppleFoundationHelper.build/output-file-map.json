@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/SpacesAppleFoundationHelper.d",
+    "object": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/SpacesAppleFoundationHelper.o",
+    "swift-dependencies": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/primary.swiftdeps"
+  },
+  "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/Sources/SpacesAppleFoundationHelper/main.swift": {
+    "object": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main.swift.o",
+    "swiftmodule": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main.swiftdeps",
+    "diagnostics": "/Users/caruso/code/spaces/gateway/native/apple-foundation-helper/.build/arm64-apple-macosx/release/SpacesAppleFoundationHelper.build/main.dia"
+  }
+}

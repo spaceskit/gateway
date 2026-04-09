@@ -166,9 +166,9 @@ function makeDefaultContext(overrides: Partial<PlatformToolExecutionContext> = {
 // ---------------------------------------------------------------------------
 
 describe("platform tool definitions", () => {
-  test("returns 6 tool definitions", () => {
+  test("returns 10 tool definitions", () => {
     const defs = createPlatformToolDefinitions();
-    expect(defs).toHaveLength(6);
+    expect(defs).toHaveLength(10);
   });
 
   test("all tool names start with platform.", () => {
@@ -441,6 +441,53 @@ describe("platform tool executor", () => {
     expect(data.totalReturned).toBe(5);
   });
 
+  test("getSpaceDigest returns a concise reflection-backed digest", async () => {
+    const executor = createPlatformToolExecutor({
+      spaceAdminService: makeSpaceAdminService(),
+      capabilityRegistry: new CapabilityRegistry(new EventBus()),
+      turnRepo: makeTurnRepo([
+        {
+          turn_id: "t1",
+          space_id: "space-main",
+          actor_type: "agent",
+          actor_id: "agent-coordinator",
+          input_json: JSON.stringify({ text: "Investigate reconnect spike" }),
+          output_json: JSON.stringify({ text: "Reconnect spike was caused by a sync queue backlog." }),
+          status: "completed",
+          token_input_count: 10,
+          token_output_count: 15,
+          created_at: "2026-03-28T10:00:00.000Z",
+          completed_at: "2026-03-28T10:00:05.000Z",
+        },
+      ]),
+      profileRepo: null,
+      reflectionService: {
+        async runSummaryJob() {
+          return {
+            summaryText: "Gateway Ops: reconnect spike traced to sync backlog.",
+            fallbackMode: "heuristic",
+            trace: {
+              jobType: "summary",
+              kind: "space_digest",
+              source: "platform-tools",
+              fallbackMode: "heuristic",
+              generatedAt: "2026-03-28T10:01:00.000Z",
+            },
+          };
+        },
+      },
+    });
+
+    const result = await executor("platform.getSpaceDigest", {}, makeDefaultContext());
+    expect(result.isError).toBeFalsy();
+    const data = result.result as Record<string, unknown>;
+    expect(data.summary).toBe("Gateway Ops: reconnect spike traced to sync backlog.");
+    expect(data.activeAgents).toBe(2);
+    expect(data.lastTurnAt).toBe("2026-03-28T10:00:00.000Z");
+    expect(Array.isArray(data.pendingActions)).toBe(true);
+    expect((data.trace as Record<string, unknown>).kind).toBe("space_digest");
+  });
+
   test("getSystemStatus returns uptime and capabilities", async () => {
     const eventBus = new EventBus();
     const registry = new CapabilityRegistry(eventBus);
@@ -580,12 +627,21 @@ describe("DefaultToolExecutor with injected platform tools", () => {
     const { executor } = makeExecutor("global_coordinator");
     const tools = await executor.getAvailableTools("space-main", "agent-coordinator");
     const platformTools = tools.filter((t) => t.name.startsWith("platform."));
-    expect(platformTools.length).toBe(6);
+    expect(platformTools.length).toBe(10);
   });
 
   test("getAvailableTools excludes platform tools for participant", async () => {
     const { executor } = makeExecutor("participant");
     const tools = await executor.getAvailableTools("space-main", "agent-worker");
+    const platformTools = tools.filter((t) => t.name.startsWith("platform."));
+    expect(platformTools.length).toBe(0);
+  });
+
+  test("getAvailableTools can suppress injected platform tools for trivial turns", async () => {
+    const { executor } = makeExecutor("global_coordinator");
+    const tools = await executor.getAvailableTools("space-main", "agent-coordinator", {
+      suppressInjectedTools: true,
+    });
     const platformTools = tools.filter((t) => t.name.startsWith("platform."));
     expect(platformTools.length).toBe(0);
   });
@@ -607,6 +663,22 @@ describe("DefaultToolExecutor with injected platform tools", () => {
     );
     expect(permission.allowed).toBe(false);
     expect(permission.reasonCode).toBe("injected_tool_not_authorized");
+  });
+
+  test("checkPermission denies platform tool when injected tools are suppressed for the turn", async () => {
+    const { executor } = makeExecutor("global_coordinator");
+    const permission = await executor.checkPermission(
+      { id: "call-1", name: "platform.getSpaceStatus", arguments: {} },
+      {
+        spaceId: "space-main",
+        agentId: "agent-coordinator",
+        turnId: "t1",
+        lineageId: "l1",
+        suppressInjectedTools: true,
+      },
+    );
+    expect(permission.allowed).toBe(false);
+    expect(permission.reasonCode).toBe("injected_tool_suppressed");
   });
 
   test("execute routes platform tool to injected executor", async () => {

@@ -13,7 +13,12 @@
 
 import { resolve as resolvePath, sep as pathSep } from "node:path";
 import type { ToolCall, ToolResult, ToolDefinition } from "./model-provider.js";
-import type { ToolExecutor, ToolExecutionContext, ToolPermission } from "./tool-executor.js";
+import type {
+  ToolAvailabilityOptions,
+  ToolExecutor,
+  ToolExecutionContext,
+  ToolPermission,
+} from "./tool-executor.js";
 import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type {
   CapabilityInvocation,
@@ -22,6 +27,7 @@ import type {
 } from "../capabilities/types.js";
 import { isCapabilityType } from "../capabilities/types.js";
 import type { AgentSecurityScope } from "../security/types.js";
+import type { ToolAccessEvaluation } from "../security/tool-access.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { MiddlewarePipeline } from "../middleware/pipeline.js";
 import { MiddlewarePipeline as Pipeline } from "../middleware/pipeline.js";
@@ -68,9 +74,49 @@ export interface DefaultToolExecutorOptions {
   ) => Promise<ToolResult>;
   /**
    * Filter that gates which agents receive injected tools.
-   * Called with (spaceId, agentId); tools are only included if this returns true.
+   * Called with (spaceId, agentId, toolName?); tools are only included if this returns true.
    */
-  injectedToolFilter?: (spaceId: string, agentId: string) => Promise<boolean>;
+  injectedToolFilter?: (spaceId: string, agentId: string, toolName?: string) => Promise<boolean>;
+  /**
+   * Optional runtime policy hook for injected tools that do not map to capability operations.
+   */
+  evaluateInjectedToolAccess?: (input: {
+    spaceId: string;
+    agentId: string;
+    principalId?: string;
+    deviceId?: string;
+    executionOrigin?: ToolExecutionContext["executionOrigin"];
+    accessMode?: ToolExecutionContext["accessMode"];
+    toolName: string;
+  }) => Promise<ToolAccessEvaluation>;
+  /**
+   * Optional runtime policy hook for selector-based approvals and dangerous-capability gating.
+   */
+  evaluateToolAccess?: (input: {
+    spaceId: string;
+    agentId: string;
+    principalId?: string;
+    deviceId?: string;
+    executionOrigin?: ToolExecutionContext["executionOrigin"];
+    accessMode?: ToolExecutionContext["accessMode"];
+    capability: CapabilityType;
+    operation: string;
+    targetProvider?: string;
+  }) => Promise<ToolAccessEvaluation>;
+  /**
+   * Optional audit hook for denied runtime tool invocations.
+   */
+  onPermissionDenied?: (
+    context: ToolExecutionContext,
+    permission: ToolPermission,
+  ) => void;
+  /**
+   * Optional hook that returns tool definitions for managed CLI tools
+   * that require approval on the embedded profile. These are included
+   * in the agent's available tools so it can attempt to call them,
+   * triggering the approval gate at execution time.
+   */
+  getApprovableCliTools?: () => ToolDefinition[];
 }
 
 interface ToolDefinitionHint {
@@ -78,12 +124,103 @@ interface ToolDefinitionHint {
   inputSchema: Record<string, unknown>;
 }
 
-const DEFAULT_TOOL_INPUT_SCHEMA: Record<string, unknown> = {
+const TARGET_PROVIDER_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Optional provider ID override when multiple providers are available.",
+};
+
+function buildObjectSchema(
+  properties: Record<string, Record<string, unknown>>,
+  required: string[] = [],
+): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      targetProvider: TARGET_PROVIDER_PROPERTY,
+      ...properties,
+    },
+    ...(required.length > 0 ? { required } : {}),
+  };
+}
+
+function iso8601TimestampProperty(description: string): Record<string, unknown> {
+  return {
+    type: "string",
+    description: `${description} Use ISO-8601 timestamp format.`,
+  };
+}
+
+const DEFAULT_TOOL_INPUT_SCHEMA: Record<string, unknown> = buildObjectSchema({});
+
+const REMINDER_LIST_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Reminder list identifier returned by lists.listLists.",
+};
+
+const REMINDER_ITEM_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Reminder/task item identifier.",
+};
+
+const REMINDER_PRIORITY_PROPERTY: Record<string, unknown> = {
+  type: "integer",
+  description: "Optional priority from 0 to 9.",
+  minimum: 0,
+  maximum: 9,
+};
+
+const CALENDAR_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Calendar identifier returned by calendar.listCalendars.",
+};
+
+const CALENDAR_EVENT_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Calendar event identifier.",
+};
+
+const EMAIL_ACCOUNT_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Email account identifier returned by email.listAccounts.",
+};
+
+const EMAIL_MAILBOX_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Mailbox identifier returned by email.listMailboxes.",
+};
+
+const EMAIL_MESSAGE_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Observed email message identifier.",
+};
+
+const EMAIL_COMPOSE_SESSION_ID_PROPERTY: Record<string, unknown> = {
+  type: "string",
+  description: "Observed Apple Mail compose session identifier.",
+};
+
+const RECURRENCE_SCHEMA: Record<string, unknown> = {
   type: "object",
+  description: "Optional recurrence rule. Current Apple Calendar support is daily or weekly.",
   properties: {
-    targetProvider: {
+    frequency: {
       type: "string",
-      description: "Optional provider ID override when multiple providers are available.",
+      enum: ["daily", "weekly"],
+      description: "Recurrence frequency.",
+    },
+    interval: {
+      type: "integer",
+      minimum: 1,
+      description: "Repeat interval. Defaults to 1 when omitted.",
+    },
+    daysOfWeek: {
+      type: "array",
+      description: "Weekly recurrence day numbers from 1 (Sunday) to 7 (Saturday).",
+      items: {
+        type: "integer",
+        minimum: 1,
+        maximum: 7,
+      },
     },
   },
 };
@@ -92,73 +229,242 @@ const TOOL_HINTS_BY_CAPABILITY: Partial<Record<CapabilityType, Record<string, To
   lists: {
     listLists: {
       description: "List reminder/task lists from connected list providers (for example Apple Reminders).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          targetProvider: {
-            type: "string",
-            description: "Optional provider ID override.",
-          },
-          includeArchived: {
-            type: "boolean",
-            description: "Include archived/hidden lists when supported.",
-          },
+      inputSchema: buildObjectSchema({}),
+    },
+    createList: {
+      description: "Create a reminder/task list.",
+      inputSchema: buildObjectSchema({
+        name: {
+          type: "string",
+          description: "List name.",
         },
-      },
+      }, ["name"]),
+    },
+    updateList: {
+      description: "Rename/update a reminder/task list. Use lists.listLists first when listId is unknown.",
+      inputSchema: buildObjectSchema({
+        listId: REMINDER_LIST_ID_PROPERTY,
+        name: {
+          type: "string",
+          description: "Updated list name.",
+        },
+      }, ["listId", "name"]),
+    },
+    deleteList: {
+      description: "Delete a reminder/task list. Use lists.listLists first when listId is unknown.",
+      inputSchema: buildObjectSchema({
+        listId: REMINDER_LIST_ID_PROPERTY,
+      }, ["listId"]),
     },
     listItems: {
       description: "List reminders/tasks in a list. Use lists.listLists first when listId is unknown. Returns at most 50 items by default; set limit higher if needed. Response includes totalCount and truncated flag when results are capped.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          targetProvider: {
-            type: "string",
-            description: "Optional provider ID override.",
-          },
-          listId: {
-            type: "string",
-            description: "List identifier returned by lists.listLists.",
-          },
-          includeCompleted: {
-            type: "boolean",
-            description: "Include completed reminders/tasks when supported.",
-          },
-          limit: {
-            type: "integer",
-            description: "Maximum number of items to return. Defaults to 50 if omitted.",
-            minimum: 1,
-          },
+      inputSchema: buildObjectSchema({
+        listId: REMINDER_LIST_ID_PROPERTY,
+        includeCompleted: {
+          type: "boolean",
+          description: "Include completed reminders/tasks. Defaults to true.",
         },
-      },
+        limit: {
+          type: "integer",
+          description: "Maximum number of items to return. Defaults to 50 if omitted.",
+          minimum: 1,
+        },
+      }),
     },
     createItem: {
-      description: "Create a new reminder/task item in the target list.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          targetProvider: {
-            type: "string",
-            description: "Optional provider ID override.",
-          },
-          listId: {
-            type: "string",
-            description: "Target list identifier.",
-          },
-          title: {
-            type: "string",
-            description: "Reminder/task title.",
-          },
-          notes: {
-            type: "string",
-            description: "Optional notes/details for the reminder.",
-          },
-          dueAt: {
-            type: "string",
-            description: "Optional due date/time in ISO-8601 format.",
-          },
+      description: "Create a new reminder/task item in the target list. Use lists.listLists first when listId is unknown.",
+      inputSchema: buildObjectSchema({
+        listId: REMINDER_LIST_ID_PROPERTY,
+        title: {
+          type: "string",
+          description: "Reminder/task title.",
         },
-        required: ["title"],
-      },
+        notes: {
+          type: "string",
+          description: "Optional notes/details for the reminder.",
+        },
+        startAt: iso8601TimestampProperty("Optional start date/time."),
+        dueAt: iso8601TimestampProperty("Optional due date/time."),
+        priority: REMINDER_PRIORITY_PROPERTY,
+        location: {
+          type: "string",
+          description: "Optional reminder location text.",
+        },
+        url: {
+          type: "string",
+          description: "Optional URL associated with the reminder.",
+        },
+      }, ["listId", "title"]),
+    },
+    updateItem: {
+      description: "Update an existing reminder/task item. Use this for general edits, or reopen a completed item with isCompleted: false. Set isCompleted: true to mark it done if lists.completeItem is unavailable.",
+      inputSchema: buildObjectSchema({
+        itemId: REMINDER_ITEM_ID_PROPERTY,
+        listId: REMINDER_LIST_ID_PROPERTY,
+        title: {
+          type: "string",
+          description: "Updated reminder/task title.",
+        },
+        notes: {
+          type: "string",
+          description: "Updated notes/details. Use null to clear.",
+        },
+        startAt: {
+          ...iso8601TimestampProperty("Updated start date/time."),
+          description: "Updated start date/time. Use null to clear. Use ISO-8601 timestamp format.",
+        },
+        dueAt: {
+          ...iso8601TimestampProperty("Updated due date/time."),
+          description: "Updated due date/time. Use null to clear. Use ISO-8601 timestamp format.",
+        },
+        priority: {
+          ...REMINDER_PRIORITY_PROPERTY,
+          description: "Updated priority from 0 to 9. Use null to clear.",
+        },
+        location: {
+          type: "string",
+          description: "Updated location text. Use null to clear.",
+        },
+        url: {
+          type: "string",
+          description: "Updated URL. Use null to clear.",
+        },
+        isCompleted: {
+          type: "boolean",
+          description: "Set true to mark the reminder done. Set false to reopen it.",
+        },
+      }, ["itemId"]),
+    },
+    completeItem: {
+      description: "Mark a reminder/task item as completed/done. Prefer this over lists.updateItem for direct 'mark done' requests.",
+      inputSchema: buildObjectSchema({
+        itemId: REMINDER_ITEM_ID_PROPERTY,
+      }, ["itemId"]),
+    },
+    deleteItem: {
+      description: "Delete a reminder/task item.",
+      inputSchema: buildObjectSchema({
+        itemId: REMINDER_ITEM_ID_PROPERTY,
+      }, ["itemId"]),
+    },
+  },
+  calendar: {
+    listCalendars: {
+      description: "List calendars from connected calendar providers (for example Apple Calendar).",
+      inputSchema: buildObjectSchema({}),
+    },
+    listEvents: {
+      description: "List calendar events in a time window. Use calendar.listCalendars first when calendarId is unknown. Defaults to a rolling time range when startAt/endAt are omitted.",
+      inputSchema: buildObjectSchema({
+        calendarId: CALENDAR_ID_PROPERTY,
+        startAt: iso8601TimestampProperty("Optional window start."),
+        endAt: iso8601TimestampProperty("Optional window end."),
+        limit: {
+          type: "integer",
+          description: "Maximum number of events to return. Defaults to 100.",
+          minimum: 1,
+        },
+      }),
+    },
+    getEvent: {
+      description: "Fetch one calendar event by id.",
+      inputSchema: buildObjectSchema({
+        eventId: CALENDAR_EVENT_ID_PROPERTY,
+      }, ["eventId"]),
+    },
+    createEvent: {
+      description: "Create a calendar event. Use calendar.listCalendars first when calendarId is unknown.",
+      inputSchema: buildObjectSchema({
+        calendarId: CALENDAR_ID_PROPERTY,
+        title: {
+          type: "string",
+          description: "Event title.",
+        },
+        startAt: iso8601TimestampProperty("Event start date/time."),
+        endAt: iso8601TimestampProperty("Event end date/time."),
+        notes: {
+          type: "string",
+          description: "Optional event notes/body.",
+        },
+        recurrence: RECURRENCE_SCHEMA,
+      }, ["calendarId", "title", "startAt", "endAt"]),
+    },
+    updateEvent: {
+      description: "Update a calendar event. Use this for general edits, and set recurrence to null to remove an existing recurrence rule.",
+      inputSchema: buildObjectSchema({
+        eventId: CALENDAR_EVENT_ID_PROPERTY,
+        calendarId: CALENDAR_ID_PROPERTY,
+        title: {
+          type: "string",
+          description: "Updated event title.",
+        },
+        startAt: {
+          ...iso8601TimestampProperty("Updated event start date/time."),
+          description: "Updated event start date/time. Use null to clear. Use ISO-8601 timestamp format.",
+        },
+        endAt: {
+          ...iso8601TimestampProperty("Updated event end date/time."),
+          description: "Updated event end date/time. Use null to clear. Use ISO-8601 timestamp format.",
+        },
+        notes: {
+          type: "string",
+          description: "Updated notes/body. Use null to clear.",
+        },
+        recurrence: {
+          ...RECURRENCE_SCHEMA,
+          description: "Updated recurrence rule. Use null to clear recurrence.",
+        },
+      }, ["eventId"]),
+    },
+    deleteEvent: {
+      description: "Delete a calendar event.",
+      inputSchema: buildObjectSchema({
+        eventId: CALENDAR_EVENT_ID_PROPERTY,
+      }, ["eventId"]),
+    },
+  },
+  email: {
+    listAccounts: {
+      description: "List observed Apple Mail accounts from the built-in MailKit provider.",
+      inputSchema: buildObjectSchema({}),
+    },
+    listMailboxes: {
+      description: "List observed Apple Mail mailboxes. Use email.listAccounts first when accountId is unknown.",
+      inputSchema: buildObjectSchema({
+        accountId: EMAIL_ACCOUNT_ID_PROPERTY,
+      }),
+    },
+    listMessages: {
+      description: "List observed and recent Apple Mail messages. This is not a full mailbox sync. Use email.listMailboxes first when mailboxId is unknown.",
+      inputSchema: buildObjectSchema({
+        accountId: EMAIL_ACCOUNT_ID_PROPERTY,
+        mailboxId: EMAIL_MAILBOX_ID_PROPERTY,
+        threadId: {
+          type: "string",
+          description: "Optional thread identifier filter.",
+        },
+        limit: {
+          type: "integer",
+          description: "Maximum number of observed messages to return. Defaults to 50.",
+          minimum: 1,
+        },
+      }),
+    },
+    getMessage: {
+      description: "Fetch one observed Apple Mail message by id.",
+      inputSchema: buildObjectSchema({
+        messageId: EMAIL_MESSAGE_ID_PROPERTY,
+      }, ["messageId"]),
+    },
+    listComposeSessions: {
+      description: "List observed Apple Mail compose sessions captured through MailKit.",
+      inputSchema: buildObjectSchema({}),
+    },
+    getComposeSession: {
+      description: "Fetch one observed Apple Mail compose session by id.",
+      inputSchema: buildObjectSchema({
+        composeSessionId: EMAIL_COMPOSE_SESSION_ID_PROPERTY,
+      }, ["composeSessionId"]),
     },
   },
 };
@@ -171,6 +477,10 @@ export class DefaultToolExecutor implements ToolExecutor {
   private injectedToolDefinitions: ToolDefinition[];
   private injectedToolExecutor: DefaultToolExecutorOptions["injectedToolExecutor"];
   private injectedToolFilter: DefaultToolExecutorOptions["injectedToolFilter"];
+  private evaluateInjectedToolAccess: DefaultToolExecutorOptions["evaluateInjectedToolAccess"];
+  private evaluateToolAccess: DefaultToolExecutorOptions["evaluateToolAccess"];
+  private onPermissionDenied: DefaultToolExecutorOptions["onPermissionDenied"];
+  private getApprovableCliTools: DefaultToolExecutorOptions["getApprovableCliTools"];
 
   /** Track tool call counts per turn for limit enforcement (instance-scoped). */
   private turnToolCallCounts = new Map<string, number>();
@@ -186,6 +496,10 @@ export class DefaultToolExecutor implements ToolExecutor {
     this.injectedToolDefinitions = options.injectedToolDefinitions ?? [];
     this.injectedToolExecutor = options.injectedToolExecutor;
     this.injectedToolFilter = options.injectedToolFilter;
+    this.evaluateInjectedToolAccess = options.evaluateInjectedToolAccess;
+    this.evaluateToolAccess = options.evaluateToolAccess;
+    this.onPermissionDenied = options.onPermissionDenied;
+    this.getApprovableCliTools = options.getApprovableCliTools;
   }
 
   /**
@@ -195,6 +509,7 @@ export class DefaultToolExecutor implements ToolExecutor {
   async getAvailableTools(
     spaceId: string,
     agentId: string,
+    options?: ToolAvailabilityOptions,
   ): Promise<ToolDefinition[]> {
     const scope = await this.resolveScope(spaceId, agentId);
     const allCapabilities = this.registry.getAvailableCapabilities();
@@ -231,10 +546,22 @@ export class DefaultToolExecutor implements ToolExecutor {
     }
 
     // Append injected tools if the filter passes
-    if (this.injectedToolDefinitions.length > 0) {
-      const includeInjected = await this.checkInjectedToolAccess(spaceId, agentId);
-      if (includeInjected) {
-        tools.push(...this.injectedToolDefinitions);
+    if (this.injectedToolDefinitions.length > 0 && !options?.suppressInjectedTools) {
+      for (const tool of this.injectedToolDefinitions) {
+        const includeInjected = await this.checkInjectedToolAccess(spaceId, agentId, tool.name);
+        if (includeInjected) {
+          tools.push(tool);
+        }
+      }
+    }
+
+    // Append managed CLI tools that require approval (visible but gated at execution time)
+    if (this.getApprovableCliTools) {
+      const existingNames = new Set(tools.map((t) => t.name));
+      for (const cliTool of this.getApprovableCliTools()) {
+        if (!existingNames.has(cliTool.name)) {
+          tools.push(cliTool);
+        }
       }
     }
 
@@ -253,7 +580,17 @@ export class DefaultToolExecutor implements ToolExecutor {
     // Injected tools (e.g. platform.*) bypass capability allowlist checks —
     // access is already gated by the injectedToolFilter.
     if (this.isInjectedTool(toolCall.name)) {
-      const injectedAllowed = await this.checkInjectedToolAccess(context.spaceId, context.agentId);
+      if (context.suppressInjectedTools) {
+        const denied: ToolPermission = {
+          toolName: toolCall.name,
+          allowed: false,
+          reason: "Platform introspection tools are suppressed for trivial or greeting turns",
+          reasonCode: "injected_tool_suppressed",
+        };
+        this.emitPermissionDeniedEvent(context, denied);
+        return denied;
+      }
+      const injectedAllowed = await this.checkInjectedToolAccess(context.spaceId, context.agentId, toolCall.name);
       if (!injectedAllowed) {
         const denied: ToolPermission = {
           toolName: toolCall.name,
@@ -263,6 +600,39 @@ export class DefaultToolExecutor implements ToolExecutor {
         };
         this.emitPermissionDeniedEvent(context, denied);
         return denied;
+      }
+      if (this.evaluateInjectedToolAccess) {
+        const decision = await this.evaluateInjectedToolAccess({
+          spaceId: context.spaceId,
+          agentId: context.agentId,
+          principalId: context.principalId,
+          deviceId: context.deviceId,
+          executionOrigin: context.executionOrigin,
+          accessMode: context.accessMode,
+          toolName: toolCall.name,
+        });
+
+        if (!decision.allowed && !decision.requiresApproval) {
+          const denied: ToolPermission = {
+            toolName: toolCall.name,
+            allowed: false,
+            reason: decision.reason ?? `Tool unavailable: ${toolCall.name}`,
+            reasonCode: decision.reasonCode ?? "tool_unavailable",
+          };
+          this.emitPermissionDeniedEvent(context, denied);
+          return denied;
+        }
+
+        if (decision.requiresApproval) {
+          return {
+            toolName: toolCall.name,
+            allowed: true,
+            requiresApproval: true,
+            reason: decision.reason ?? `Tool "${toolCall.name}" requires approval`,
+            reasonCode: decision.reasonCode,
+            approvalContext: decision.approvalContext,
+          };
+        }
       }
       return { toolName: toolCall.name, allowed: true };
     }
@@ -306,7 +676,7 @@ export class DefaultToolExecutor implements ToolExecutor {
     };
     const operationMetadata = this.registry.getOperationMetadata(invocation, context.spaceId);
 
-    if (operationMetadata.requiresShell && !scope.allowShell) {
+    if (operationMetadata.requiresShell && !scope.allowShell && !this.evaluateToolAccess) {
       const denied: ToolPermission = {
         toolName: toolCall.name,
         allowed: false,
@@ -377,6 +747,42 @@ export class DefaultToolExecutor implements ToolExecutor {
       };
       this.emitPermissionDeniedEvent(context, denied);
       return denied;
+    }
+
+    if (this.evaluateToolAccess) {
+      const decision = await this.evaluateToolAccess({
+        spaceId: context.spaceId,
+        agentId: context.agentId,
+        principalId: context.principalId,
+        deviceId: context.deviceId,
+        executionOrigin: context.executionOrigin,
+        accessMode: context.accessMode,
+        capability: capType,
+        operation,
+        targetProvider: invocation.targetProvider,
+      });
+
+      if (!decision.allowed && !decision.requiresApproval) {
+        const denied: ToolPermission = {
+          toolName: toolCall.name,
+          allowed: false,
+          reason: decision.reason ?? `Tool unavailable: ${toolCall.name}`,
+          reasonCode: decision.reasonCode ?? "tool_unavailable",
+        };
+        this.emitPermissionDeniedEvent(context, denied);
+        return denied;
+      }
+
+      if (decision.requiresApproval) {
+        return {
+          toolName: toolCall.name,
+          allowed: true,
+          requiresApproval: true,
+          reason: decision.reason ?? `Tool "${toolCall.name}" requires approval`,
+          reasonCode: decision.reasonCode,
+          approvalContext: decision.approvalContext,
+        };
+      }
     }
 
     // Check if tool requires human approval
@@ -466,6 +872,7 @@ export class DefaultToolExecutor implements ToolExecutor {
             principalId: context.principalId,
             deviceId: context.deviceId,
             executionOrigin: context.executionOrigin,
+            accessMode: context.accessMode,
           },
         );
         result = "data" in capResult ? capResult.data : capResult;
@@ -539,14 +946,14 @@ export class DefaultToolExecutor implements ToolExecutor {
    * Check if an agent is allowed to use injected tools.
    * Results are cached per (spaceId, agentId) pair for the lifetime of the instance.
    */
-  private async checkInjectedToolAccess(spaceId: string, agentId: string): Promise<boolean> {
+  private async checkInjectedToolAccess(spaceId: string, agentId: string, toolName?: string): Promise<boolean> {
     if (!this.injectedToolFilter) return true;
 
-    const cacheKey = `${spaceId}:${agentId}`;
+    const cacheKey = `${spaceId}:${agentId}:${toolName ?? "*"}`;
     const cached = this.injectedFilterCache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    const allowed = await this.injectedToolFilter(spaceId, agentId);
+    const allowed = await this.injectedToolFilter(spaceId, agentId, toolName);
     this.injectedFilterCache.set(cacheKey, allowed);
     return allowed;
   }
@@ -566,6 +973,7 @@ export class DefaultToolExecutor implements ToolExecutor {
       reason: permission.reason ?? "Permission denied",
       timestamp: new Date(),
     });
+    this.onPermissionDenied?.(context, permission);
   }
 }
 
@@ -763,6 +1171,18 @@ function normalizeTargetProvider(rawValue: unknown, toolName: string): string | 
       || normalized === "eventkit"
     ) {
       return "apple-reminders-eventkit";
+    }
+  }
+
+  if (toolName.startsWith("email.")) {
+    if (
+      normalized === "apple"
+      || normalized === "apple_mail"
+      || normalized === "apple-mail"
+      || normalized === "mail"
+      || normalized === "mailkit"
+    ) {
+      return "apple-mail-mailkit";
     }
   }
 
