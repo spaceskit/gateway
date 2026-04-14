@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { initDatabase, KnowledgeBaseEntryRepository } from "@spaceskit/persistence";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { KnowledgeBaseService, KnowledgeBaseServiceError } from "../src/services/knowledge-base-service.js";
 import { seedRuntimeDocsKnowledgeBase } from "../src/seed/runtime-docs-knowledge-base.js";
 
@@ -132,5 +134,47 @@ describe("KnowledgeBaseService", () => {
       .toBe("https://kgajera.github.io/hrvst-cli/");
     expect(entries.find((entry) => entry.entryId === "kb-runtime-doc-1password-cli")?.uri)
       .toBe("https://developer.1password.com/docs/cli/");
+  });
+
+  test("seeds generated Spaces docs as stable local knowledge entries", () => {
+    const service = createService();
+    const repoRoot = "/tmp/spaces-generated-docs-test";
+
+    seedRuntimeDocsKnowledgeBase(service, { repoRoot });
+    seedRuntimeDocsKnowledgeBase(service, { repoRoot });
+
+    const entries = service.listEntries({ kinds: ["file"], tags: ["generated-docs"] });
+    expect(entries.map((entry) => entry.entryId).sort()).toEqual([
+      "kb-spaces-generated-doc-config-reference",
+      "kb-spaces-generated-doc-protocol-reference",
+    ]);
+
+    const protocol = entries.find((entry) => entry.entryId === "kb-spaces-generated-doc-protocol-reference");
+    expect(protocol?.uri).toBe(pathToFileURL(join(
+      repoRoot,
+      "docs/site/src/content/docs/reference/protocol/index.md",
+    )).toString());
+    expect(protocol?.tags).toEqual([
+      "docs",
+      "spaces",
+      "generated-docs",
+      "protocol",
+      "gateway",
+      "workbench",
+    ]);
+
+    const config = entries.find((entry) => entry.entryId === "kb-spaces-generated-doc-config-reference");
+    expect(config?.uri).toBe(pathToFileURL(join(
+      repoRoot,
+      "docs/site/src/content/docs/reference/config/index.md",
+    )).toString());
+    expect(config?.tags).toEqual([
+      "docs",
+      "spaces",
+      "generated-docs",
+      "config",
+      "gateway",
+      "workbench",
+    ]);
   });
 });

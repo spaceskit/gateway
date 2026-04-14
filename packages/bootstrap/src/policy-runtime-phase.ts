@@ -13,7 +13,10 @@ import {
   repairProfilePersonaAssignments,
   resolveMainProfileRuntimeSelection,
 } from "./main-defaults.js";
-import { seedRuntimeDocsKnowledgeBase } from "./seed/runtime-docs-knowledge-base.js";
+import {
+  resolveGeneratedSpacesDocsRepoRoot,
+  seedRuntimeDocsKnowledgeBase,
+} from "./seed/runtime-docs-knowledge-base.js";
 import { GatewayCapabilityAccessService } from "./services/gateway-capability-access-service.js";
 import { DEFAULT_PERSONA_ID, GatewayIdentityService } from "./services/gateway-identity-service.js";
 import { GatewayObservabilityService } from "./services/gateway-observability-service.js";
@@ -136,7 +139,11 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
     ? new KnowledgeBaseService({ repository: state.knowledgeBaseRepo })
     : null;
   if (knowledgeBaseService) {
-    seedRuntimeDocsKnowledgeBase(knowledgeBaseService);
+    seedRuntimeDocsKnowledgeBase(knowledgeBaseService, {
+      repoRoot: Bun.env.SPACESKIT_REPO_ROOT
+        ?? Bun.env.SPACESKIT_WORKBENCH_REPO_ROOT
+        ?? resolveGeneratedSpacesDocsRepoRoot(),
+    });
   }
 
   const gatewayCapabilityAccessService = state.gatewayCapabilityGrantRepo

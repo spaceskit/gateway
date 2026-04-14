@@ -646,6 +646,12 @@ describe("WorkbenchService", () => {
     expect(docsArtifact?.contentText).toContain("Status: `fresh`");
     expect(docsArtifact?.contentText).toContain("docs-fresh");
     expect(docsArtifact?.contentText).toContain("Blocking: `false`");
+
+    const knowledgeArtifact = artifacts.find((artifact) => artifact.kind === "knowledge");
+    expect(knowledgeArtifact?.title).toBe("Attached Generated Docs Knowledge");
+    expect(knowledgeArtifact?.contentText).toContain("kb-spaces-generated-doc-protocol-reference");
+    expect(knowledgeArtifact?.contentText).toContain("kb-spaces-generated-doc-config-reference");
+    expect(knowledgeArtifact?.contentText).toContain("generated-docs");
   });
 
   test("persists failing verification evidence", async () => {

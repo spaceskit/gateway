@@ -4,7 +4,7 @@
  * Reusable helpers for starting in-process gateways with real client-ts clients.
  */
 
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startGateway } from "../../src/index.js";
@@ -56,9 +56,11 @@ export async function createTestGateway(
     tmpdir(),
     `spaceskit-e2e-${crypto.randomUUID()}.db`,
   );
+  const spacesRoot = mkdtempSync(join(tmpdir(), "spaceskit-e2e-spaces-"));
   const gatewayProfile = options.gatewayProfile ?? "embedded";
   const envOverrides = {
     SPACESKIT_GATEWAY_PROFILE: gatewayProfile,
+    SPACESKIT_SPACES_ROOT: spacesRoot,
     ...(options.env ?? {}),
   };
   const previousEnv = new Map<string, string | undefined>();
@@ -82,6 +84,7 @@ export async function createTestGateway(
       mainSpaceId: `e2e-main-${crypto.randomUUID().slice(0, 8)}`,
       mainProfileId: `e2e-profile-${crypto.randomUUID().slice(0, 8)}`,
       mainAgentId: `e2e-agent-${crypto.randomUUID().slice(0, 8)}`,
+      spacesRoot,
       ...(gatewayProfile === "external"
         ? {
             gatewayProfile: "external",
@@ -110,6 +113,7 @@ export async function createTestGateway(
       await instance.shutdown();
     } catch {}
     removeDbArtifacts(dbPath);
+    rmSync(spacesRoot, { recursive: true, force: true });
   };
 
   return {

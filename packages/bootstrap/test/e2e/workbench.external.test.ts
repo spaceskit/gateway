@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -165,7 +165,46 @@ function createWorkbenchFixtureRepo(): string {
   return repoRoot;
 }
 
+function listCheckoutExternalSpaceDirs(): string[] {
+  const checkoutSpacesRoot = join(process.cwd(), "spaces");
+  if (!existsSync(checkoutSpacesRoot)) {
+    return [];
+  }
+  return readdirSync(checkoutSpacesRoot)
+    .filter((entry) => entry.startsWith("external-"))
+    .sort();
+}
+
 describe("external workbench control plane", () => {
+  test("isolates external gateway spaces under a temp root", {
+    timeout: E2E_TIMEOUT,
+  }, async () => {
+    const marker = `workbench-harness-${crypto.randomUUID().slice(0, 8)}`;
+    const beforeCheckoutEntries = listCheckoutExternalSpaceDirs();
+    const gateway = await createTestGateway({
+      mainSpaceId: `${marker}-main`,
+      conciergeSpaceId: `${marker}-concierge`,
+    }, {
+      gatewayProfile: "external",
+      env: {
+        SPACESKIT_SECRET_REF_MASTER_KEY: "test-workbench-e2e-master-key",
+        SPACESKIT_WORKBENCH_AGENT_LOOP: "false",
+      },
+    });
+    const spacesRoot = gateway.instance.config.spacesRoot;
+
+    try {
+      expect(spacesRoot).not.toBe(join(process.cwd(), "spaces"));
+      expect(spacesRoot).toContain("spaceskit-e2e-spaces-");
+      expect(existsSync(spacesRoot)).toBe(true);
+    } finally {
+      await gateway.cleanup();
+    }
+
+    expect(existsSync(spacesRoot)).toBe(false);
+    expect(listCheckoutExternalSpaceDirs()).toEqual(beforeCheckoutEntries);
+  });
+
   test("supports review-only gating, authenticated run control, and conflict-safe batches", {
     timeout: E2E_TIMEOUT,
   }, async () => {

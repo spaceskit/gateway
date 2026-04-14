@@ -59,6 +59,10 @@ import {
   type WorkbenchCommandEvidence,
 } from "./workbench-verification-executor.js";
 import {
+  buildGeneratedDocsKnowledgeArtifact,
+  runWorkbenchDocsPreflight,
+} from "./workbench-docs-evidence.js";
+import {
   validateGoalContractMarkdown,
   type GoalContractIssue,
 } from "./planning-goal-contract.js";
@@ -453,6 +457,7 @@ export class WorkbenchService {
     }
 
     await this.persistDocsPreflightArtifact(run.run_id, worktree.path);
+    this.persistGeneratedDocsKnowledgeArtifact(run.run_id, worktree.path);
     this.options.runs.update(run.run_id, {
       status: "running",
       currentStage: "verify",
@@ -902,8 +907,13 @@ export class WorkbenchService {
   }
 
   private async persistDocsPreflightArtifact(runId: string, worktreePath: string): Promise<void> {
-    const docsCheck = this.resolveDocsCheck(worktreePath);
-    if (!docsCheck) {
+    const preflight = await runWorkbenchDocsPreflight({
+      worktreePath,
+      timeoutMs: this.verificationCommandTimeoutMs,
+      now: this.now,
+      verificationExecutor: this.verificationExecutor,
+    });
+    if (!preflight.check) {
       this.options.artifacts.create({
         artifactId: `wb-artifact-${randomUUID()}`,
         runId,
@@ -921,13 +931,7 @@ export class WorkbenchService {
       return;
     }
 
-    const evidence = await this.verificationExecutor({
-      command: docsCheck.command,
-      cwd: docsCheck.cwd,
-      timeoutMs: this.verificationCommandTimeoutMs,
-      now: this.now,
-    });
-    const status = docsPreflightStatus(evidence);
+    const evidence = preflight.evidence!;
     this.options.artifacts.create({
       artifactId: `wb-artifact-${randomUUID()}`,
       runId,
@@ -937,8 +941,8 @@ export class WorkbenchService {
       contentText: [
         "# Docs Freshness Preflight",
         "",
-        `- Status: \`${status}\``,
-        `- Command: \`${docsCheck.displayCommand}\``,
+        `- Status: \`${preflight.status}\``,
+        `- Command: \`${preflight.check.displayCommand}\``,
         `- Exit code: \`${evidence.exitCode ?? "null"}\``,
         `- Duration: \`${evidence.durationMs}ms\``,
         `- Timed out: \`${evidence.timedOut}\``,
@@ -957,21 +961,15 @@ export class WorkbenchService {
     });
   }
 
-  private resolveDocsCheck(worktreePath: string): { cwd: string; command: string; displayCommand: string } | null {
-    const gatewayPath = join(worktreePath, "gateway");
-    const packageJsonPath = join(gatewayPath, "package.json");
-    if (!existsSync(packageJsonPath)) {
-      return null;
-    }
-    const packageJson = parseJson<{ scripts?: Record<string, unknown> }>(readFileSync(packageJsonPath, "utf8"));
-    if (typeof packageJson?.scripts?.["docs:check"] !== "string") {
-      return null;
-    }
-    return {
-      cwd: gatewayPath,
-      command: "bun run docs:check",
-      displayCommand: "cd gateway && bun run docs:check",
-    };
+  private persistGeneratedDocsKnowledgeArtifact(runId: string, worktreePath: string): void {
+    this.options.artifacts.create({
+      artifactId: `wb-artifact-${randomUUID()}`,
+      runId,
+      kind: "knowledge",
+      title: "Attached Generated Docs Knowledge",
+      contentType: "text/markdown",
+      contentText: buildGeneratedDocsKnowledgeArtifact(worktreePath),
+    });
   }
 
   async rejectStage(
@@ -1672,17 +1670,6 @@ function parseJson<T>(raw: string): T | null {
   } catch {
     return null;
   }
-}
-
-function docsPreflightStatus(evidence: WorkbenchCommandEvidence): "fresh" | "drifted" | "failed" {
-  if (evidence.status === "passed") {
-    return "fresh";
-  }
-  if (evidence.timedOut || evidence.exitCode === null) {
-    return "failed";
-  }
-  const combinedOutput = `${evidence.stdout}\n${evidence.stderr}`.toLowerCase();
-  return evidence.exitCode === 1 || combinedOutput.includes("drift") ? "drifted" : "failed";
 }
 
 export function auditWorkbenchPlanningRepo(

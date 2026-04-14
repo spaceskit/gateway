@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { KnowledgeBaseService } from "../services/knowledge-base-service.js";
 
 const RUNTIME_DOC_ENTRIES = [
@@ -45,7 +48,63 @@ const RUNTIME_DOC_ENTRIES = [
   },
 ] as const;
 
-export function seedRuntimeDocsKnowledgeBase(service: KnowledgeBaseService): void {
+const GENERATED_SPACES_DOC_ENTRIES = [
+  {
+    entryId: "kb-spaces-generated-doc-protocol-reference",
+    name: "Spaces Protocol Generated Reference",
+    path: "docs/site/src/content/docs/reference/protocol/index.md",
+    description: "Generated Spaces protocol reference rendered from gateway protocol contracts.",
+    tags: ["docs", "spaces", "generated-docs", "protocol", "gateway", "workbench"],
+  },
+  {
+    entryId: "kb-spaces-generated-doc-config-reference",
+    name: "Spaces Configuration Generated Reference",
+    path: "docs/site/src/content/docs/reference/config/index.md",
+    description: "Generated Spaces gateway configuration reference rendered from bootstrap environment contracts.",
+    tags: ["docs", "spaces", "generated-docs", "config", "gateway", "workbench"],
+  },
+] as const;
+
+export interface RuntimeDocsKnowledgeSeedOptions {
+  repoRoot?: string;
+}
+
+export interface GeneratedSpacesDocsKnowledgeEntry {
+  entryId: string;
+  name: string;
+  uri: string;
+  description: string;
+  tags: string[];
+}
+
+export function resolveGeneratedSpacesDocsRepoRoot(startPath = process.cwd()): string {
+  const candidates = [
+    resolve(startPath),
+    resolve(startPath, ".."),
+  ];
+  return candidates.find((candidate) => existsSync(resolve(
+    candidate,
+    "docs/site/src/content/docs/reference",
+  ))) ?? resolve(startPath);
+}
+
+export function listGeneratedSpacesDocsKnowledgeEntries(
+  repoRoot: string,
+): GeneratedSpacesDocsKnowledgeEntry[] {
+  const resolvedRepoRoot = resolve(repoRoot);
+  return GENERATED_SPACES_DOC_ENTRIES.map((entry) => ({
+    entryId: entry.entryId,
+    name: entry.name,
+    uri: pathToFileURL(resolve(resolvedRepoRoot, entry.path)).toString(),
+    description: entry.description,
+    tags: [...entry.tags],
+  }));
+}
+
+export function seedRuntimeDocsKnowledgeBase(
+  service: KnowledgeBaseService,
+  options: RuntimeDocsKnowledgeSeedOptions = {},
+): void {
   for (const entry of RUNTIME_DOC_ENTRIES) {
     service.upsertEntry({
       entryId: entry.entryId,
@@ -54,6 +113,22 @@ export function seedRuntimeDocsKnowledgeBase(service: KnowledgeBaseService): voi
       uri: entry.uri,
       description: entry.description,
       tags: [...entry.tags],
+      scopeType: "global",
+    });
+  }
+
+  if (!options.repoRoot) {
+    return;
+  }
+
+  for (const entry of listGeneratedSpacesDocsKnowledgeEntries(options.repoRoot)) {
+    service.upsertEntry({
+      entryId: entry.entryId,
+      name: entry.name,
+      kind: "file",
+      uri: entry.uri,
+      description: entry.description,
+      tags: entry.tags,
       scopeType: "global",
     });
   }
