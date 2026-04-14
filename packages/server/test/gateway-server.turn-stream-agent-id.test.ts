@@ -35,6 +35,45 @@ describe("GatewayServer turn stream agent id propagation", () => {
     expect(published[0]?.msg.payload.agentId).toBe("agent-stream-1");
   });
 
+  test("preserves transcript visibility and stream kind on turn-stream payloads", async () => {
+    const server = new GatewayServer({
+      port: 0,
+      host: "127.0.0.1",
+      skipAuth: true,
+      eventBus: new EventBus(),
+      onMessage: async () => null,
+    });
+
+    const published: Array<{ spaceUid: string; msg: any }> = [];
+    server.broadcastToSpace = ((spaceUid: string, msg: any) => {
+      published.push({ spaceUid, msg });
+    }) as GatewayServer["broadcastToSpace"];
+
+    await (server as any).broadcastEvent({
+      type: "space.turn_event",
+      spaceId: "space-1",
+      turnId: "turn-visibility-1",
+      rootTurnId: "root-turn-1",
+      conversationTopology: "shared_team_chat",
+      event: {
+        type: "text_delta",
+        text: "checking",
+        agentId: "agent-stream-2",
+        transcriptVisibility: "activity_only",
+        streamKind: "provider_client",
+      },
+      timestamp: new Date(),
+    });
+
+    expect(published).toHaveLength(1);
+    expect(published[0]?.msg.type).toBe(MessageTypes.TURN_STREAM);
+    expect(published[0]?.msg.payload.agentId).toBe("agent-stream-2");
+    expect(published[0]?.msg.payload.rootTurnId).toBe("root-turn-1");
+    expect(published[0]?.msg.payload.conversationTopology).toBe("shared_team_chat");
+    expect(published[0]?.msg.payload.transcriptVisibility).toBe("activity_only");
+    expect(published[0]?.msg.payload.streamKind).toBe("provider_client");
+  });
+
   test("falls back to nested turn_completed.result.agentId when top-level id is absent", () => {
     const server = new GatewayServer({
       port: 0,

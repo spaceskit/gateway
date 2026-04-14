@@ -47,14 +47,14 @@ export class CodexBarUsageAdapter {
   }
 
   readProviderUsage(providerId: string, options: CodexBarUsageReadOptions = {}): CodexBarQuota {
-    if (this.enableWidgetSnapshot) {
-      const snapshotQuota = this.readSnapshotQuota(providerId);
-      if (snapshotQuota?.windows.length) {
-        return snapshotQuota;
+    const allowCommandProbe = options.allowCommandProbe !== false;
+    if (!allowCommandProbe) {
+      if (this.enableWidgetSnapshot) {
+        const snapshotQuota = this.readSnapshotQuota(providerId);
+        if (snapshotQuota?.windows.length) {
+          return snapshotQuota;
+        }
       }
-    }
-
-    if (options.allowCommandProbe !== true) {
       return {
         available: false,
         windows: [],
@@ -101,7 +101,8 @@ export class CodexBarUsageAdapter {
 
       const errorMessage = firstDefined(
         parseCodexBarErrorMessage(payload),
-        normalizeFailureMessage(result.stderr, result.stdout, result.error),
+        payload ? normalizeFailureMessage(result.stderr, "", result.error) : undefined,
+        payload ? undefined : normalizeFailureMessage(result.stderr, result.stdout, result.error),
       );
       if (!fallbackMessage && errorMessage) {
         fallbackMessage = errorMessage;
@@ -126,6 +127,13 @@ export class CodexBarUsageAdapter {
       }
     }
 
+    if (this.enableWidgetSnapshot) {
+      const snapshotQuota = this.readSnapshotQuota(providerId);
+      if (snapshotQuota?.windows.length) {
+        return snapshotQuota;
+      }
+    }
+
     return {
       available: false,
       sourceLabel: fallbackQuota?.sourceLabel,
@@ -133,7 +141,7 @@ export class CodexBarUsageAdapter {
       creditsRemaining: fallbackQuota?.creditsRemaining,
       accountLabel: fallbackQuota?.accountLabel,
       updatedAt: fallbackQuota?.updatedAt,
-      message: fallbackMessage ?? `CodexBar command failed for provider ${providerId}.`,
+      message: fallbackMessage ?? "Not available for provider.",
     };
   }
 
@@ -199,21 +207,14 @@ function parseCodexBarResponse(
   const text = stdoutRaw.trim();
   if (!text) return null;
 
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) {
-      const firstMatching = parsed.find((entry) =>
-        isObjectRecord(entry) && asString(entry.provider)?.toLowerCase() === providerId.toLowerCase(),
-      );
-      const firstObject = parsed.find(isObjectRecord);
-      return isObjectRecord(firstMatching)
-        ? firstMatching
-        : (isObjectRecord(firstObject) ? firstObject : null);
+  for (const parsed of parseJsonPayloads(text)) {
+    const providerPayload = selectProviderPayload(parsed, providerId);
+    if (providerPayload) {
+      return providerPayload;
     }
-    return isObjectRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
   }
+
+  return null;
 }
 
 function buildUsageArgs(
@@ -240,6 +241,104 @@ function resolveSourceAttempts(providerId: string): Array<"auto" | "cli"> {
     return ["auto", "cli"];
   }
   return ["auto"];
+}
+
+function parseJsonPayloads(text: string): unknown[] {
+  const wholeDocument = tryParseJson(text);
+  if (wholeDocument !== undefined) {
+    return [wholeDocument];
+  }
+
+  const payloads: unknown[] = [];
+  let startIndex = -1;
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === undefined) continue;
+
+    if (startIndex < 0) {
+      if (character === "{" || character === "[") {
+        startIndex = index;
+        depth = 1;
+        inString = false;
+        escapeNext = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (character === "\\") {
+        escapeNext = true;
+        continue;
+      }
+      if (character === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (character === "{" || character === "[") {
+      depth += 1;
+      continue;
+    }
+
+    if (character === "}" || character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        const candidate = text.slice(startIndex, index + 1);
+        const parsedCandidate = tryParseJson(candidate);
+        if (parsedCandidate !== undefined) {
+          payloads.push(parsedCandidate);
+        }
+        startIndex = -1;
+      }
+    }
+  }
+
+  return payloads;
+}
+
+function tryParseJson(candidate: string): unknown | undefined {
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+function selectProviderPayload(
+  parsed: unknown,
+  providerId: string,
+): Record<string, unknown> | null {
+  if (Array.isArray(parsed)) {
+    const firstMatching = parsed.find((entry) =>
+      isObjectRecord(entry) && asString(entry.provider)?.toLowerCase() === providerId.toLowerCase(),
+    );
+    return isObjectRecord(firstMatching) ? firstMatching : null;
+  }
+
+  if (!isObjectRecord(parsed)) {
+    return null;
+  }
+
+  const parsedProviderId = asString(parsed.provider)?.toLowerCase();
+  if (!parsedProviderId) {
+    return null;
+  }
+
+  return parsedProviderId === providerId.toLowerCase() ? parsed : null;
 }
 
 function mapParsedQuota(payload: Record<string, unknown>): {

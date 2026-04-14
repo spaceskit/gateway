@@ -82,6 +82,17 @@ export class SpaceAgentAssignmentRepository {
       .all(spaceId) as SpaceAgentAssignmentRow[];
   }
 
+  listByProfile(profileId: string): SpaceAgentAssignmentRow[] {
+    return this.db
+      .query(`
+        SELECT *
+        FROM space_agent_assignments
+        WHERE profile_id = ?
+        ORDER BY space_id ASC, turn_order ASC, assigned_at ASC
+      `)
+      .all(profileId) as SpaceAgentAssignmentRow[];
+  }
+
   delete(spaceId: string, agentId: string): boolean {
     return this.db
       .query("DELETE FROM space_agent_assignments WHERE space_id = ? AND agent_id = ?")

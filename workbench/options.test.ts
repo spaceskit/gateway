@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { filterWorkbenchLayers, parseWorkbenchArgs } from "./options.js";
+import { WORKBENCH_LAYERS } from "./runtime.js";
 import type { Layer } from "./scenarios/index.js";
 
 describe("workbench options", () => {
@@ -36,5 +37,10 @@ describe("workbench options", () => {
     expect(() => filterWorkbenchLayers(layers, new Set(["missing-layer"]))).toThrow(
       "Unknown workbench layers: missing-layer",
     );
+  });
+
+  test("exposes the template handoff layer in the workbench catalog", () => {
+    const selected = filterWorkbenchLayers(WORKBENCH_LAYERS, new Set(["template-handoff"]));
+    expect(selected.map((layer) => layer.name)).toEqual(["template-handoff"]);
   });
 });

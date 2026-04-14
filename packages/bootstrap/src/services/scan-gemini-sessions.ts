@@ -8,18 +8,20 @@ import {
   isObjectRecord,
   mergeSessions,
   normalizeTokenCount,
-  parseJsonEntries,
   purgeMissingFiles,
   readCachedSessions,
   type CachedScannerFile,
   type LocalUsageSessionRecord,
   type LocalUsageSessionScanner,
   walkFiles,
+  yieldToEventLoop,
 } from "./local-usage-scanner.js";
 
 interface GeminiSessionScannerOptions {
   roots?: string[];
 }
+
+const YIELD_EVERY_FILES = 10;
 
 interface MutableGeminiSession {
   sessionId: string;
@@ -50,14 +52,17 @@ export class GeminiSessionScanner implements LocalUsageSessionScanner {
     const retainedPaths = new Set(files);
     const sessions: LocalUsageSessionRecord[] = [];
 
-    for (const filePath of files) {
+    for (const [index, filePath] of files.entries()) {
       sessions.push(
-        ...readCachedSessions(
+        ...await readCachedSessions(
           filePath,
           this.fileCache,
-          (path, content, mtimeMs) => this.parseFile(path, content, mtimeMs),
+          (path, entries, mtimeMs) => this.parseFile(path, entries, mtimeMs),
         ),
       );
+      if ((index + 1) % YIELD_EVERY_FILES === 0) {
+        await yieldToEventLoop();
+      }
     }
 
     purgeMissingFiles(this.fileCache, retainedPaths);
@@ -66,10 +71,9 @@ export class GeminiSessionScanner implements LocalUsageSessionScanner {
 
   private parseFile(
     filePath: string,
-    content: string,
+    entries: Record<string, unknown>[],
     fileMtimeMs: number,
   ): LocalUsageSessionRecord[] {
-    const entries = parseJsonEntries(content);
     if (entries.length === 0) {
       return [];
     }

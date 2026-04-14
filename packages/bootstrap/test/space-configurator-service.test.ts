@@ -112,6 +112,84 @@ function seedSystemTemplate(context: ReturnType<typeof createContext>) {
 }
 
 describe("SpaceConfiguratorService ownership boundaries", () => {
+  test("resolves system placeholder agents to the gateway default profile and materializes user-owned copies", async () => {
+    const context = createContext();
+    try {
+      context.templates.upsertWithNewRevision({
+        templateId: "quickstart/default-main",
+        ownerPrincipalId: "system",
+        name: "Default Main Agent",
+        description: "Managed single-agent starter bound to the gateway default profile.",
+        spaceConfigJson: JSON.stringify({
+          schemaVersion: 1,
+          communicationMode: "chat_first",
+          turnModel: "primary_only",
+          baseAgents: [
+            {
+              agentId: "assistant",
+              profileBinding: "gateway_default_main",
+              role: "participant",
+              turnOrder: 0,
+              isPrimary: true,
+            },
+          ],
+          agentPresetIds: [],
+          tags: ["quickstart", "system"],
+          metadata: {
+            createdBy: "system",
+            source: "system",
+            category: "quick_start",
+          },
+        }),
+      });
+
+      const service = new SpaceConfiguratorService({
+        templates: context.templates,
+        agentPresets: context.agentPresets,
+        spaceAdminService: context.spaceAdminService as any,
+        defaultProfileId: "profile-main",
+        defaultAgentId: "agent-main",
+      });
+
+      const listed = service.listTemplates({}, "principal-owner");
+      const fetched = listed.find((template) => template.templateId === "quickstart/default-main");
+      expect(fetched?.agentDefinitions[0]?.profileBinding).toBe("gateway_default_main");
+      expect(fetched?.agentDefinitions[0]?.profileId).toBe("profile-main");
+
+      const preview = service.previewTemplate(
+        { templateId: "quickstart/default-main", resourceId: "resource-preview" },
+        "principal-owner",
+      );
+      expect(preview.resolved.initialAgents[0]?.profileBinding).toBe("gateway_default_main");
+      expect(preview.resolved.initialAgents[0]?.profileId).toBe("profile-main");
+
+      const created = await service.createFromTemplate(
+        {
+          templateId: "quickstart/default-main",
+          resourceId: "resource-default-main",
+          name: "Default Main Space",
+        },
+        "principal-owner",
+      );
+      expect(created.space.agents[0]?.profileId).toBe("profile-main");
+
+      const saved = await service.saveTemplate({
+        title: "My Default Main Copy",
+        principalId: "principal-owner",
+        baseAgents: preview.resolved.initialAgents,
+      });
+
+      const userTemplate = service.getTemplate(
+        { templateId: saved.template.templateId },
+        "principal-owner",
+      );
+      expect(userTemplate.agentDefinitions[0]?.profileBinding).toBe("explicit");
+      expect(userTemplate.agentDefinitions[0]?.profileId).toBe("profile-main");
+    } finally {
+      context.db.close();
+    }
+  });
+
   test("scopes user presets to the owning principal", async () => {
     const context = createContext();
     try {

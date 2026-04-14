@@ -20,6 +20,24 @@ describe("ExecutionAdapterFactory", () => {
     expect((provider as any).config.authMode).toBe("host_login");
   });
 
+  test("classifies Codex App Server as an executor-backed provider", () => {
+    const factory = new ExecutionAdapterFactory();
+
+    expect(factory.classify("codex-app-server")).toBe("executor");
+
+    const provider = factory.createModelProvider({
+      providerId: "codex-app-server",
+      model: "codex-app-server/gpt-5.4",
+      apiKey: "sk-openai-test",
+      authMode: "api_key",
+    });
+
+    expect(provider.constructor.name).toBe("CodexAppServerModelProvider");
+    expect(provider.id).toBe("codex-app-server");
+    expect(provider.isLocal).toBe(false);
+    expect((provider as any).config.authMode).toBe("api_key");
+  });
+
   test("wires the Apple Foundation helper into apple providers when available", async () => {
     const invocations: Array<{
       executable: string;

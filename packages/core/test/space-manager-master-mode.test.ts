@@ -505,4 +505,91 @@ describe("SpaceManager master-mode orchestration", () => {
     expect(saves[0]?.agentId).toBe("primary-1");
     expect(runtimeByAgent.get("guest-1")?.contexts ?? []).toHaveLength(0);
   });
+
+  test("applies per-turn topology and target subsets without mutating the space default", async () => {
+    const eventBus = new EventBus();
+    const saves: SaveTurnInput[] = [];
+    const runtimeByAgent = new Map<string, ScriptRuntime>();
+    const config = makeSpaceConfig({
+      turnModel: "sequential_all",
+      turnModelConfig: {
+        strategy: "sequential_all",
+        masterModeEnabled: false,
+      },
+      agents: [
+        makeAssignment("plan-coordinator", "global_coordinator", 0, true),
+        makeAssignment("plan-worker", "participant", 1),
+        makeAssignment("code-lead", "participant", 2),
+        makeAssignment("code-reviewer", "participant", 3),
+        makeAssignment("extra-agent", "participant", 4),
+      ],
+    });
+
+    runtimeByAgent.set("plan-coordinator", new ScriptRuntime("plan-coordinator", [
+      {
+        output: JSON.stringify({
+          globalInstruction: "Discuss only the Workbench plan.",
+          guestInstructions: {
+            "plan-worker": "Review the implementation plan for risk.",
+          },
+        }),
+      },
+      { output: "Planning synthesis." },
+    ]));
+    runtimeByAgent.set("plan-worker", new ScriptRuntime("plan-worker", [{ output: "Planning risk report." }]));
+    runtimeByAgent.set("code-lead", new ScriptRuntime("code-lead", [{ output: "Implementation done." }]));
+    runtimeByAgent.set("code-reviewer", new ScriptRuntime("code-reviewer", [{ output: "Implementation reviewed." }]));
+    runtimeByAgent.set("extra-agent", new ScriptRuntime("extra-agent", [{ output: "Should not run." }]));
+
+    const summaryEvents: Array<Record<string, unknown>> = [];
+    eventBus.on("space.orchestrator_event", (event) => {
+      summaryEvents.push(event as Record<string, unknown>);
+    });
+
+    const manager = new SpaceManager({
+      eventBus,
+      loadSpaceConfig: async () => config,
+      updateSpaceStatus: async () => undefined,
+      saveTurn: async (turn) => {
+        saves.push(turn);
+      },
+      loadHistory: async () => [],
+      loadAgentHistory: async () => [],
+      resolveRuntime: async (_spaceId, agentId) => runtimeByAgent.get(agentId)!,
+    });
+
+    const planningAck = await manager.executeTurn("space-1", "Plan this Workbench run", undefined, {
+      targetAgentIds: [" plan-coordinator ", "plan-worker", "plan-coordinator"],
+      conversationTopology: "broadcast_team",
+      mode: "plan",
+    });
+    await waitForSummaryEvent(eventBus);
+
+    const implementationAck = await manager.executeTurn("space-1", "Implement the Workbench run", undefined, {
+      targetAgentIds: ["code-reviewer", "code-lead"],
+      conversationTopology: "shared_team_chat",
+      replyToTurnId: planningAck.turnId,
+      mode: "execute",
+    });
+    await waitForSummaryEvent(eventBus);
+
+    expect(implementationAck.turnId).toBeString();
+    expect(runtimeByAgent.get("plan-coordinator")?.contexts).toHaveLength(2);
+    expect(runtimeByAgent.get("plan-worker")?.contexts).toHaveLength(1);
+    expect(runtimeByAgent.get("code-lead")?.contexts).toHaveLength(1);
+    expect(runtimeByAgent.get("code-reviewer")?.contexts).toHaveLength(1);
+    expect(runtimeByAgent.get("extra-agent")?.contexts).toHaveLength(0);
+    expect(saves.map((entry) => entry.agentId)).toEqual([
+      "plan-worker",
+      "plan-coordinator",
+      "code-lead",
+      "code-reviewer",
+    ]);
+    expect(summaryEvents.map((event) => (event.event as any).summary.turnModel)).toEqual([
+      "primary_only",
+      "sequential_all",
+    ]);
+    expect(config.turnModel).toBe("sequential_all");
+    expect(config.turnModelConfig?.masterModeEnabled).toBe(false);
+  });
 });

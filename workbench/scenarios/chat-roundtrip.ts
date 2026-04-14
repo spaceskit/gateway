@@ -47,9 +47,12 @@ export const chatRoundtripLayer: Layer = {
         const client = await makeClient(ctx.wsUrl);
         try {
           const space = await client.createSpace({
+            idempotencyKey: `workbench:chat-roundtrip:create-space:${crypto.randomUUID()}`,
             name: "bench-chat-test",
             resourceId: `resource:bench-${crypto.randomUUID().slice(0, 8)}`,
+            capabilities: ["lists"],
           });
+          ctx.registerSpace?.(space.id);
           if (!space.id) {
             throw new Error("Space creation did not return an id");
           }
@@ -64,9 +67,12 @@ export const chatRoundtripLayer: Layer = {
         const client = await makeClient(ctx.wsUrl);
         try {
           const space = await client.createSpace({
+            idempotencyKey: `workbench:chat-roundtrip:send-message-ack:${crypto.randomUUID()}`,
             name: "bench-msg-test",
             resourceId: `resource:bench-${crypto.randomUUID().slice(0, 8)}`,
+            capabilities: ["lists"],
           });
+          ctx.registerSpace?.(space.id);
 
           await client.subscribe([space.id]);
 
@@ -77,6 +83,7 @@ export const chatRoundtripLayer: Layer = {
           if (!result.turnId) {
             throw new Error("executeTurn did not return a turnId");
           }
+          ctx.registerTurn?.(space.id, result.turnId);
         } finally {
           await client.disconnect();
         }

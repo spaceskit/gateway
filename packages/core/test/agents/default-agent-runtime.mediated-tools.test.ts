@@ -20,6 +20,7 @@ class MediatedGeminiProvider implements ModelProvider {
   readonly name = "Gemini";
   readonly isLocal = true;
   readonly generateCalls: GenerateOptions[] = [];
+  readonly streamCalls: GenerateOptions[] = [];
 
   async checkHealth(): Promise<{ available: boolean; latencyMs?: number }> {
     return { available: true, latencyMs: 1 };
@@ -68,7 +69,9 @@ class MediatedGeminiProvider implements ModelProvider {
     };
   }
 
-  async *stream(_model: string, _options: GenerateOptions): AsyncIterable<StreamChunk> {}
+  async *stream(_model: string, options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.streamCalls.push(options);
+  }
 }
 
 class EchoToolExecutor implements ToolExecutor {
@@ -104,9 +107,15 @@ class EchoToolExecutor implements ToolExecutor {
   }
 }
 
-function buildRuntime(provider: ModelProvider, toolExecutor: ToolExecutor): DefaultAgentRuntime {
+function buildRuntime(
+  provider: ModelProvider,
+  toolExecutor: ToolExecutor,
+  configOverrides: Partial<AgentConfig> = {},
+): DefaultAgentRuntime {
   const modelId = provider.id === "claude-agent-sdk"
     ? "claude-agent-sdk/claude-sonnet-4-5"
+    : provider.id === "codex-app-server"
+      ? "codex-app-server/gpt-5.4"
     : "gemini/gemini-2.5-flash";
   const config: AgentConfig = {
     id: "agent-1",
@@ -116,6 +125,7 @@ function buildRuntime(provider: ModelProvider, toolExecutor: ToolExecutor): Defa
     modelId,
     tools: ["lists.echo"],
     maxSteps: 4,
+    ...configOverrides,
   };
 
   return new DefaultAgentRuntime({
@@ -126,7 +136,7 @@ function buildRuntime(provider: ModelProvider, toolExecutor: ToolExecutor): Defa
   });
 }
 
-function makeTurnContext(): TurnContext {
+function makeTurnContext(overrides: Partial<TurnContext> = {}): TurnContext {
   return {
     spaceId: "space-1",
     turnId: "turn-1",
@@ -135,6 +145,7 @@ function makeTurnContext(): TurnContext {
     hopCount: 0,
     maxHops: 5,
     accessMode: "default",
+    ...overrides,
   };
 }
 
@@ -156,12 +167,19 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
     const completed = events.find((event): event is Extract<TurnEvent, { type: "turn_completed" }> => event.type === "turn_completed");
     const toolStart = events.find((event): event is Extract<TurnEvent, { type: "tool_call_start" }> => event.type === "tool_call_start");
     const toolResult = events.find((event): event is Extract<TurnEvent, { type: "tool_result" }> => event.type === "tool_result");
+    const systemMessages = provider.generateCalls[0]?.messages
+      .filter((message) => message.role === "system")
+      .map((message) => message.content) ?? [];
 
     expect(provider.generateCalls).toHaveLength(2);
+    expect(provider.streamCalls).toHaveLength(0);
     expect(provider.generateCalls[0]?.tools).toBeUndefined();
     expect(provider.generateCalls[0]?.messages.some((message) =>
       message.role === "system" && message.content.includes("```tool_call")
     )).toBe(true);
+    expect(systemMessages.some((message) => message.includes("Safe read-only tools are available"))).toBe(false);
+    expect(systemMessages.some((message) => message.includes("Native Gemini CLI tools are not available in this turn."))).toBe(true);
+    expect(systemMessages.some((message) => message.includes("fenced `tool_call` blocks"))).toBe(true);
     expect(toolExecutor.executedToolCalls).toEqual([{
       id: expect.any(String),
       name: "lists.echo",
@@ -225,5 +243,111 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
     expect(provider.generateCalls[0]?.mcpBridgeConfig?.toolDefsJson).toContain("\"lists.echo\"");
     expect(provider.generateCalls[0]?.mcpBridgeConfig?.socketPath).toEqual(expect.any(String));
     expect(completed?.result.finalMessage.content).toBe("Bridge connected.");
+  });
+
+  test("passes gateway tool bridge config into codex-app-server mediated turns without MCP discovery fallback", async () => {
+    class MediatedCodexAppServerProvider implements ModelProvider {
+      readonly id = "codex-app-server";
+      readonly name = "Codex App Server";
+      readonly isLocal = false;
+      readonly generateCalls: GenerateOptions[] = [];
+
+      async checkHealth(): Promise<{ available: boolean; latencyMs?: number }> {
+        return { available: true, latencyMs: 1 };
+      }
+
+      async listModels(): Promise<ModelInfo[]> {
+        return [{
+          id: "codex-app-server/gpt-5.4",
+          name: "gpt-5.4",
+          provider: "codex-app-server",
+          isLocal: false,
+          supportsTools: true,
+        }];
+      }
+
+      async generate(_model: string, options: GenerateOptions): Promise<GenerateResult> {
+        this.generateCalls.push(options);
+        return {
+          message: {
+            role: "assistant",
+            content: "App server connected.",
+          },
+          finishReason: "stop",
+          usage: { promptTokens: 4, completionTokens: 2, totalTokens: 6 },
+        };
+      }
+
+      async *stream(_model: string, _options: GenerateOptions): AsyncIterable<StreamChunk> {}
+    }
+
+    const provider = new MediatedCodexAppServerProvider();
+    const toolExecutor = new EchoToolExecutor();
+    const runtime = buildRuntime(provider, toolExecutor);
+
+    const events = await collectEvents(runtime);
+    const completed = events.find((event): event is Extract<TurnEvent, { type: "turn_completed" }> => event.type === "turn_completed");
+
+    expect(provider.generateCalls).toHaveLength(1);
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig).toBeDefined();
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig?.toolDefsJson).toContain("\"lists.echo\"");
+    expect(provider.generateCalls[0]?.mcpBridgeConfig?.socketPath).toEqual(
+      provider.generateCalls[0]?.gatewayToolBridgeConfig?.socketPath,
+    );
+    expect(completed?.result.finalMessage.content).toBe("App server connected.");
+  });
+
+  test("keeps gemini full-access turns on native CLI streaming", async () => {
+    class NativeGeminiProvider implements ModelProvider {
+      readonly id = "gemini";
+      readonly name = "Gemini";
+      readonly isLocal = true;
+      readonly generateCalls: GenerateOptions[] = [];
+      readonly streamCalls: GenerateOptions[] = [];
+
+      async checkHealth(): Promise<{ available: boolean; latencyMs?: number }> {
+        return { available: true, latencyMs: 1 };
+      }
+
+      async listModels(): Promise<ModelInfo[]> {
+        return [{
+          id: "gemini/gemini-2.5-flash",
+          name: "gemini-2.5-flash",
+          provider: "gemini",
+          isLocal: true,
+          supportsTools: true,
+        }];
+      }
+
+      async generate(_model: string, options: GenerateOptions): Promise<GenerateResult> {
+        this.generateCalls.push(options);
+        throw new Error("generate() should not run for Gemini full-access streaming turns");
+      }
+
+      async *stream(_model: string, options: GenerateOptions): AsyncIterable<StreamChunk> {
+        this.streamCalls.push(options);
+        yield { type: "text_delta", text: "Native OK" };
+        yield {
+          type: "finish",
+          finishReason: "stop",
+          usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+        };
+      }
+    }
+
+    const provider = new NativeGeminiProvider();
+    const runtime = buildRuntime(provider, new EchoToolExecutor(), { tools: [] });
+
+    const events: TurnEvent[] = [];
+    for await (const event of runtime.executeTurn(makeTurnContext({ accessMode: "full_access" }))) {
+      events.push(event);
+    }
+
+    const completed = events.find((event): event is Extract<TurnEvent, { type: "turn_completed" }> => event.type === "turn_completed");
+
+    expect(provider.streamCalls).toHaveLength(1);
+    expect(provider.streamCalls[0]?.accessMode).toBe("full_access");
+    expect(provider.generateCalls).toHaveLength(0);
+    expect(completed?.result.finalMessage.content).toBe("Native OK");
   });
 });

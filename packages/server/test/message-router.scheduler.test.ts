@@ -61,6 +61,17 @@ function makeSchedulerJob(overrides: Record<string, unknown> = {}): any {
         linkedAt: now,
       },
     ],
+    executionTarget: { mode: "existing_space" },
+    evalConfig: {
+      evalDefinitionId: "suite:full",
+      scenarioIds: ["space-interactions.in-process-combined-smoke"],
+      summaryMode: "checkpoints",
+      selfImproveEnabled: false,
+    },
+    evalSelfImproveState: {
+      enabled: false,
+      appliedRevisionIds: [],
+    },
     ...overrides,
   };
 }
@@ -80,6 +91,17 @@ function makeSchedulerRun(overrides: Record<string, unknown> = {}): any {
     errorCode: null,
     errorMessage: null,
     result: {},
+    evalRun: {
+      evalRunId: "run-1",
+      evalDefinitionId: "suite:full",
+      scenarioIds: ["space-interactions.in-process-combined-smoke"],
+      summaryMode: "checkpoints",
+      selfImproveEnabled: false,
+      artifactRefs: [],
+      checkpoints: [],
+      scenarioResults: [],
+      recommendations: [],
+    },
     ...overrides,
   };
 }
@@ -118,6 +140,7 @@ describe("MessageRouter scheduler handlers", () => {
       create: [],
       get: [],
       list: [],
+      listEvalDefinitions: [],
       update: [],
       delete: [],
       link: [],
@@ -139,6 +162,20 @@ describe("MessageRouter scheduler handlers", () => {
         listJobs: async (input: any) => {
           calls.list.push(input);
           return [makeSchedulerJob({ jobId: "job-listed" })];
+        },
+        listEvalDefinitions: async (input: any) => {
+          calls.listEvalDefinitions.push(input);
+          return [{
+            evalDefinitionId: "suite:full",
+            suiteId: "full",
+            description: "Full eval suite",
+            domainIds: ["space-interactions"],
+            scenarioIds: ["space-interactions.in-process-combined-smoke"],
+            domains: [{
+              domainId: "space-interactions",
+              scenarioIds: ["space-interactions.in-process-combined-smoke"],
+            }],
+          }];
         },
         updateJob: async (input: any) => {
           calls.update.push(input);
@@ -193,6 +230,14 @@ describe("MessageRouter scheduler handlers", () => {
         schedulePreset: { kind: "daily", minute: 0, hour: 9 },
         action: { type: "space_prompt", promptText: "Summarize updates." },
         relatedSpaceIds: ["space-related"],
+        executionTarget: { mode: "new_space" },
+        evalConfig: {
+          evalDefinitionId: "suite:full",
+          scenarioIds: ["space-interactions.in-process-combined-smoke"],
+          flowVariantId: "research",
+          summaryMode: "checkpoints",
+          selfImproveEnabled: true,
+        },
       }),
     );
     expect(createResponse?.type).toBe(MessageTypes.SCHEDULER_CREATE_JOB);
@@ -209,9 +254,25 @@ describe("MessageRouter scheduler handlers", () => {
     );
     expect(listResponse?.type).toBe(MessageTypes.SCHEDULER_LIST_JOBS);
 
+    const listEvalDefinitionsResponse = await router.handle(
+      client,
+      makeMessage(MessageTypes.SCHEDULER_LIST_EVAL_DEFINITIONS, {}),
+    );
+    expect(listEvalDefinitionsResponse?.type).toBe(MessageTypes.SCHEDULER_LIST_EVAL_DEFINITIONS);
+
     const updateResponse = await router.handle(
       client,
-      makeMessage(MessageTypes.SCHEDULER_UPDATE_JOB, { jobId: "job-created", status: "paused" }),
+      makeMessage(MessageTypes.SCHEDULER_UPDATE_JOB, {
+        jobId: "job-created",
+        status: "paused",
+        evalConfig: {
+          evalDefinitionId: "suite:full",
+          scenarioIds: ["space-interactions.in-process-combined-smoke"],
+          promptPackId: "pack-collab",
+          summaryMode: "checkpoints",
+          selfImproveEnabled: false,
+        },
+      }),
     );
     expect(updateResponse?.type).toBe(MessageTypes.SCHEDULER_UPDATE_JOB);
 
@@ -246,9 +307,13 @@ describe("MessageRouter scheduler handlers", () => {
     expect(runNowResponse?.type).toBe(MessageTypes.SCHEDULER_RUN_NOW);
 
     expect(calls.create[0]?.principalId).toBe("principal-owner");
+    expect(calls.create[0]?.executionTarget).toEqual({ mode: "new_space" });
+    expect(calls.create[0]?.evalConfig?.evalDefinitionId).toBe("suite:full");
     expect(calls.get[0]?.principalId).toBe("principal-owner");
     expect(calls.list[0]?.principalId).toBe("principal-owner");
+    expect(calls.listEvalDefinitions).toHaveLength(1);
     expect(calls.update[0]?.principalId).toBe("principal-owner");
+    expect(calls.update[0]?.evalConfig?.promptPackId).toBe("pack-collab");
     expect(calls.delete[0]?.principalId).toBe("principal-owner");
     expect(calls.link[0]?.principalId).toBe("principal-owner");
     expect(calls.unlink[0]?.principalId).toBe("principal-owner");

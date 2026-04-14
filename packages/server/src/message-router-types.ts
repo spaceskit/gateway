@@ -19,6 +19,7 @@ import type {
   GatewayWorkspaceDefaultsService,
   OrchestratorCommandService,
   SchedulerService,
+  WorkbenchService,
   SpeechSessionService,
   ToolAccessPolicyService,
   UsageSnapshotService,
@@ -55,6 +56,7 @@ export interface MessageRouterOptions {
   spaceTemplateService?: SpaceTemplateService;
   usageSnapshotService?: UsageSnapshotService;
   schedulerService?: SchedulerService;
+  workbenchService?: WorkbenchService;
   spaceContextService?: SpaceContextService;
   spaceSharingService?: SpaceSharingService;
   turnHistoryService?: TurnHistoryService;
@@ -92,6 +94,16 @@ export interface MessageRouterOptions {
   logger: Logger;
   sendToClient?: (clientId: string, msg: GatewayMessage) => void;
   broadcastToSpace?: (spaceUid: string, msg: GatewayMessage) => void;
+  resolveSpaceUid?: (spaceId: string) => string | undefined | Promise<string | undefined>;
+  listAssignmentsByProfileId?: (profileId: string) => Array<{
+    spaceId: string;
+    agentId: string;
+    profileId: string;
+  }> | Promise<Array<{
+    spaceId: string;
+    agentId: string;
+    profileId: string;
+  }>>;
   adapterInvocationTimeoutMs?: number;
   sessionContinuityManager?: SessionContinuityManager;
   agentSessionReplacementEnabled?: boolean;

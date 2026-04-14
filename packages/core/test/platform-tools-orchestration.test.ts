@@ -138,4 +138,103 @@ describe("platform orchestration tools", () => {
     );
     expect(externalResult.isError).toBe(true);
   });
+
+  test("searchExperiences defaults to accepted knowledge and forwards status/minScore with external user scope", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const executor = createPlatformToolExecutor(makeConfig({
+      gatewayProfile: "external",
+      memoryProvider: {
+        async search(query: Record<string, unknown>) {
+          calls.push(query);
+          return { results: [] };
+        },
+      },
+    }) as never);
+
+    const result = await executor(
+      "platform.searchExperiences",
+      {
+        query: "gateway reliability",
+        status: "rejected",
+        minScore: 0.7,
+        limit: 5,
+      },
+      { spaceId: "space-1", agentId: "agent-1", turnId: "turn-1", principalId: "owner-1" },
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      text: "gateway reliability",
+      status: "rejected",
+      minScore: 0.7,
+      limit: 5,
+      scope: { userId: "owner-1" },
+    });
+  });
+
+  test("orchestrateTask denies nested orchestration from system-origin worker turns", async () => {
+    const executor = createPlatformToolExecutor(makeConfig({
+      taskOrchestrationService: {
+        async orchestrate() {
+          return {
+            taskId: "task-1",
+            spaceId: "space-1",
+            rootTurnId: "turn-99",
+            templateId: "archetype/research",
+            agentCount: 3,
+            state: "running",
+          };
+        },
+        getTaskProgress() {
+          return undefined;
+        },
+        listTasks() {
+          return [];
+        },
+      },
+    }) as never);
+
+    const result = await executor(
+      "platform.orchestrateTask",
+      { taskDescription: "Investigate regression", templateHint: "research" },
+      {
+        spaceId: "space-1",
+        agentId: "agent-1",
+        turnId: "turn-1",
+        principalId: "owner-1",
+        executionOrigin: "system",
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.result).toEqual({
+      error: "Nested task orchestration is not permitted. Complete your assigned task directly.",
+    });
+  });
+
+  test("orchestrateTask returns a structured unavailable error when orchestration is not configured", async () => {
+    const executor = createPlatformToolExecutor(makeConfig({
+      taskOrchestrationService: null,
+    }) as never);
+
+    const result = await executor(
+      "platform.orchestrateTask",
+      { taskDescription: "Investigate regression", templateHint: "research" },
+      {
+        spaceId: "space-1",
+        agentId: "agent-1",
+        turnId: "turn-1",
+        principalId: "owner-1",
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.result).toEqual({
+      error: {
+        code: "task_orchestration_unavailable",
+        message: "Task orchestration requires a configured model provider. Set up a provider in gateway settings.",
+      },
+    });
+  });
 });

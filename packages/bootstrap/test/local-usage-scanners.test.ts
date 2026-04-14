@@ -64,6 +64,147 @@ describe("Local usage scanners", () => {
     }
   });
 
+  test("codex scanner preserves total tokens when reasoning output is reported separately", async () => {
+    const root = await mkdtemp(join(tmpdir(), "spaceskit-codex-reasoning-scan-"));
+    const sessionsDir = join(root, "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    const sessionPath = join(sessionsDir, "session-codex-reasoning.jsonl");
+    await writeFile(
+      sessionPath,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          session_meta: {
+            session_id: "session-codex-reasoning",
+            model: "codex/gpt-5.1-codex",
+          },
+          timestamp: "2026-02-28T08:00:00.000Z",
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          session_id: "session-codex-reasoning",
+          event_msg: {
+            token_count: {
+              total_token_usage: {
+                input_tokens: 100,
+                cached_input_tokens: 10,
+                output_tokens: 40,
+                reasoning_output_tokens: 5,
+                total_tokens: 155,
+              },
+            },
+          },
+          timestamp: "2026-02-28T08:10:00.000Z",
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const scanner = new CodexSessionScanner({
+        roots: [sessionsDir],
+      });
+      const sessions = await scanner.scan(Date.parse("2026-01-01T00:00:00.000Z"));
+      expect(sessions.length).toBe(1);
+      expect(sessions[0]?.inputTokens).toBe(100);
+      expect(sessions[0]?.cachedInputTokens).toBe(10);
+      expect(sessions[0]?.outputTokens).toBe(40);
+      expect(sessions[0]?.totalTokens).toBe(155);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("codex scanner ignores JSONL files outside sessions and archived_sessions roots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "spaceskit-codex-strict-roots-"));
+    const sessionsDir = join(root, "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(
+      join(root, "noise.jsonl"),
+      JSON.stringify({
+        session_id: "session-noise",
+        token_count: {
+          input_tokens: 999,
+        },
+        timestamp: "2026-02-28T08:00:00.000Z",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(sessionsDir, "session-codex-allowed.jsonl"),
+      JSON.stringify({
+        session_id: "session-codex-allowed",
+        token_count: {
+          input_tokens: 9,
+          output_tokens: 1,
+        },
+        timestamp: "2026-02-28T08:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    try {
+      const scanner = new CodexSessionScanner({ roots: [root] });
+      const sessions = await scanner.scan(Date.parse("2026-01-01T00:00:00.000Z"));
+      expect(sessions.map((session) => session.sessionId)).toEqual(["session-codex-allowed"]);
+      expect(sessions[0]?.inputTokens).toBe(9);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("codex scanner ignores malformed JSONL lines and invalidates cached file entries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "spaceskit-codex-cache-scan-"));
+    const sessionsDir = join(root, "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    const sessionPath = join(sessionsDir, "session-codex-cache.jsonl");
+    await writeFile(
+      sessionPath,
+      [
+        "{not-valid-json",
+        JSON.stringify({
+          session_id: "session-codex-cache",
+          token_count: {
+            input_tokens: 4,
+            output_tokens: 1,
+          },
+          timestamp: "2026-02-28T08:00:00.000Z",
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const scanner = new CodexSessionScanner({ roots: [sessionsDir] });
+      const firstScan = await scanner.scan(Date.parse("2026-01-01T00:00:00.000Z"));
+      expect(firstScan.length).toBe(1);
+      expect(firstScan[0]?.inputTokens).toBe(4);
+
+      await writeFile(
+        sessionPath,
+        [
+          "{not-valid-json",
+          JSON.stringify({
+            session_id: "session-codex-cache",
+            token_count: {
+              input_tokens: 9,
+              output_tokens: 2,
+            },
+            timestamp: "2026-02-28T08:00:00.000Z",
+          }),
+        ].join("\n"),
+        "utf8",
+      );
+
+      const secondScan = await scanner.scan(Date.parse("2026-01-01T00:00:00.000Z"));
+      expect(secondScan.length).toBe(1);
+      expect(secondScan[0]?.inputTokens).toBe(9);
+      expect(secondScan[0]?.outputTokens).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("claude scanner deduplicates repeated message.id + requestId entries", async () => {
     const root = await mkdtemp(join(tmpdir(), "spaceskit-claude-scan-"));
     const projectsDir = join(root, "projects");

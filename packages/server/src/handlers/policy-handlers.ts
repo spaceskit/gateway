@@ -33,6 +33,7 @@ import type {
   SpaceToolPolicyService,
   ToolAccessPolicyService,
 } from "../message-router.js";
+import { legacyEffectiveToolMatrixFromAccess } from "../effective-tool-matrix.js";
 import { normalizeString } from "../message-router-utils.js";
 
 export interface PolicyHandlerContext {
@@ -293,49 +294,6 @@ export async function handleGatewaySetWorkspaceDefaults(
       updatedAt: row.updated_at,
     },
   } satisfies GatewaySetWorkspaceDefaultsResponsePayload);
-}
-
-function legacyEffectiveToolMatrixFromAccess(access: {
-  spaceId: string;
-  agentId?: string;
-  policyVersion: string;
-  generatedAt: string;
-  operations: Array<{
-    operationId: string;
-    capability: string;
-    operation: string;
-    providerIds: string[];
-    allowed: boolean;
-    denialReasonCode?: string;
-    denialReason?: string;
-    escalationAllowed?: boolean;
-  }>;
-}) {
-  return {
-    spaceId: access.spaceId,
-    agentId: access.agentId,
-    policyVersion: access.policyVersion,
-    generatedAt: access.generatedAt,
-    operations: access.operations.map((operation) => ({
-      operationId: operation.operationId,
-      capability: operation.capability,
-      operation: operation.operation,
-      providerIds: operation.providerIds,
-      allowed: operation.allowed,
-      denyReasons: operation.allowed
-        ? []
-        : [{
-          code: operation.denialReasonCode ?? (
-            operation.escalationAllowed ? "policy_escalation_required" : "access_denied"
-          ),
-          message: operation.denialReason ?? (
-            operation.escalationAllowed
-              ? "This operation requires approval before it can continue."
-              : "This operation is blocked by the unified tool access policy."
-          ),
-        }],
-    })),
-  };
 }
 
 export async function handleGatewayGetExternalConnectivity(

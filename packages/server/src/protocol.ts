@@ -19,6 +19,7 @@ export * from "./protocol/connectors.js";
 export * from "./protocol/usage-policy.js";
 export * from "./protocol/library.js";
 export * from "./protocol/scheduler.js";
+export * from "./protocol/workbench.js";
 export * from "./protocol/collaboration.js";
 export * from "./protocol/changesets.js";
 export * from "./protocol/settings.js";

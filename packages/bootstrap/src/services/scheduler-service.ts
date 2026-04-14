@@ -5,6 +5,7 @@ import {
   SchedulerJobRepository,
   SchedulerJobRunRepository,
   SchedulerJobSpaceRepository,
+  OrchestrationJournalRepository,
   SpaceRepository,
   type SchedulerJobRow,
   type SchedulerJobStatus,
@@ -12,16 +13,25 @@ import {
   type SchedulerRunStatus,
   type SchedulerRunTrigger,
 } from "@spaceskit/persistence";
-import type { SpaceAdminService } from "@spaceskit/core";
+import type { EventBus, SpaceAdminService } from "@spaceskit/core";
 import type {
   SchedulerActionPayload,
+  SchedulerCalendarBindingPayload,
   SchedulerCreateJobPayload,
   SchedulerDeleteJobPayload,
   SchedulerDeleteJobResponsePayload,
+  SchedulerEvalCheckpointPayload,
+  SchedulerEvalConfigPayload,
+  SchedulerEvalDefinitionPayload,
+  SchedulerEvalRecommendationPayload,
+  SchedulerEvalRunPayload,
+  SchedulerEvalSelfImproveStatePayload,
+  SchedulerExecutionTargetPayload,
   SchedulerGetJobResponsePayload,
   SchedulerJobPayload,
   SchedulerJobRunPayload,
   SchedulerLinkSpacePayload,
+  SchedulerListEvalDefinitionsResponsePayload,
   SchedulerListJobsPayload,
   SchedulerListJobsResponsePayload,
   SchedulerListRunsPayload,
@@ -34,6 +44,8 @@ import type {
   SchedulerUpdateJobPayload,
 } from "@spaceskit/server";
 import type { OrchestratorCommandService } from "./orchestrator-command-service.js";
+import { SchedulerEvalCatalogService } from "./scheduler-eval-catalog-service.js";
+import type { SpaceConfiguratorService } from "./space-configurator-service.js";
 import type { SpaceSharingService } from "./space-sharing-service.js";
 
 const RUN_RETENTION_LIMIT = 200;
@@ -61,8 +73,12 @@ export interface SchedulerServiceOptions {
   jobSpaces: SchedulerJobSpaceRepository;
   runs: SchedulerJobRunRepository;
   spaces: SpaceRepository;
+  eventBus?: Pick<EventBus, "on">;
+  orchestrationJournal?: Pick<OrchestrationJournalRepository, "list">;
   spaceAdminService: Pick<SpaceAdminService, "getSpace">;
+  spaceTemplateService?: Pick<SpaceConfiguratorService, "createFromTemplate">;
   orchestratorCommandService: Pick<OrchestratorCommandService, "submitCommand">;
+  evalCatalogService?: Pick<SchedulerEvalCatalogService, "getDefinition" | "listDefinitions">;
   spaceSharingService?: SpaceSharingService | null;
   logger?: Logger;
   now?: () => Date;
@@ -108,12 +124,20 @@ export class SchedulerService {
   private readonly logger: Logger | null;
   private readonly spaceSharingService: SpaceSharingService | null;
   private readonly executionTimeoutMs: number;
+  private readonly eventBus: Pick<EventBus, "on"> | null;
+  private readonly orchestrationJournal: Pick<OrchestrationJournalRepository, "list"> | null;
+  private readonly spaceTemplateService: Pick<SpaceConfiguratorService, "createFromTemplate"> | null;
+  private readonly evalCatalogService: Pick<SchedulerEvalCatalogService, "getDefinition" | "listDefinitions">;
 
   constructor(private readonly options: SchedulerServiceOptions) {
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? null;
     this.spaceSharingService = options.spaceSharingService ?? null;
     this.executionTimeoutMs = options.executionTimeoutMs ?? DEFAULT_EXECUTION_TIMEOUT_MS;
+    this.eventBus = options.eventBus ?? null;
+    this.orchestrationJournal = options.orchestrationJournal ?? null;
+    this.spaceTemplateService = options.spaceTemplateService ?? null;
+    this.evalCatalogService = options.evalCatalogService ?? new SchedulerEvalCatalogService();
   }
 
   async reconcileSchedulesOnStartup(): Promise<void> {
@@ -165,6 +189,10 @@ export class SchedulerService {
     const schedulePreset = validateSchedulePreset(input.schedulePreset);
     const action = validateAction(input.action);
     const relatedSpaceIds = normalizeSpaceIds(input.relatedSpaceIds ?? []);
+    const executionTarget = validateExecutionTarget(input.executionTarget);
+    const calendarBinding = validateCalendarBinding(input.calendarBinding);
+    const evalConfig = await validateEvalConfig(input.evalConfig, this.evalCatalogService);
+    const evalSelfImproveState = buildEvalSelfImproveState(evalConfig);
 
     this.assertSpaceExists(primarySpaceId);
     for (const relatedSpaceId of relatedSpaceIds) {
@@ -186,6 +214,10 @@ export class SchedulerService {
       actionType: "space_prompt",
       promptText: action.promptText,
       targetAgentId: action.targetAgentId,
+      executionTargetJson: JSON.stringify(executionTarget),
+      calendarBindingJson: calendarBinding ? JSON.stringify(calendarBinding) : null,
+      evalConfigJson: evalConfig ? JSON.stringify(evalConfig) : null,
+      evalSelfImproveStateJson: evalSelfImproveState ? JSON.stringify(evalSelfImproveState) : null,
       primarySpaceId,
       invalidReason: "",
       nextRunAt,
@@ -231,6 +263,10 @@ export class SchedulerService {
     return jobs;
   }
 
+  async listEvalDefinitions(): Promise<SchedulerListEvalDefinitionsResponsePayload["definitions"]> {
+    return this.evalCatalogService.listDefinitions() as Promise<SchedulerEvalDefinitionPayload[]>;
+  }
+
   async updateJob(
     input: SchedulerUpdateJobPayload & { principalId: string },
   ): Promise<SchedulerJobPayload> {
@@ -257,6 +293,10 @@ export class SchedulerService {
       timezone?: string;
       promptText?: string;
       targetAgentId?: string | null;
+      executionTargetJson?: string;
+      calendarBindingJson?: string | null;
+      evalConfigJson?: string | null;
+      evalSelfImproveStateJson?: string | null;
       primarySpaceId?: string | null;
       invalidReason?: string;
       nextRunAt?: string | null;
@@ -290,6 +330,27 @@ export class SchedulerService {
       action = validateAction(input.action);
       patch.promptText = action.promptText;
       patch.targetAgentId = action.targetAgentId ?? null;
+    }
+
+    if (input.executionTarget !== undefined) {
+      patch.executionTargetJson = JSON.stringify(validateExecutionTarget(input.executionTarget));
+    }
+
+    if (input.calendarBinding !== undefined) {
+      const calendarBinding = validateCalendarBinding(input.calendarBinding);
+      patch.calendarBindingJson = calendarBinding ? JSON.stringify(calendarBinding) : null;
+    }
+
+    if (input.evalConfig !== undefined) {
+      const evalConfig = await validateEvalConfig(input.evalConfig, this.evalCatalogService);
+      patch.evalConfigJson = evalConfig ? JSON.stringify(evalConfig) : null;
+      const nextSelfImproveState = mergeEvalSelfImproveState(
+        parseEvalSelfImproveState(existing.eval_self_improve_state_json, parseEvalConfig(existing.eval_config_json)),
+        evalConfig,
+      );
+      patch.evalSelfImproveStateJson = nextSelfImproveState
+        ? JSON.stringify(nextSelfImproveState)
+        : null;
     }
 
     if (input.status !== undefined) {
@@ -601,6 +662,9 @@ export class SchedulerService {
     errorCode?: string;
     errorMessage?: string;
     result?: Record<string, unknown>;
+    evalRun?: SchedulerEvalRunPayload;
+    evalConfigJson?: string | null;
+    evalSelfImproveStateJson?: string | null;
   }> {
     if (!job.primary_space_id) {
       return {
@@ -611,10 +675,20 @@ export class SchedulerService {
     }
 
     const action = parseAction(job);
+    const executionTarget = parseExecutionTarget(job.execution_target_json);
+    const evalConfig = parseEvalConfig(job.eval_config_json);
+    const initialSelfImproveState = parseEvalSelfImproveState(
+      job.eval_self_improve_state_json,
+      evalConfig,
+    );
+    const executionSpace = await this.resolveExecutionSpace(job, run, executionTarget, evalConfig);
+    const evalObserver = evalConfig
+      ? this.createEvalObserver(executionSpace.spaceId)
+      : null;
     try {
       const commandPromise = this.options.orchestratorCommandService.submitCommand({
         commandType: "run_space_prompt",
-        targetSpaceId: job.primary_space_id,
+        targetSpaceId: executionSpace.spaceId,
         targetAgentId: action.targetAgentId,
         principalId: job.created_by_principal_id,
         correlationId: `scheduler:${job.job_id}:${run.run_id}`,
@@ -627,6 +701,8 @@ export class SchedulerService {
             jobId: job.job_id,
             runId: run.run_id,
             trigger: run.trigger,
+            executionTarget: executionTarget.mode,
+            evalDefinitionId: evalConfig?.evalDefinitionId,
           },
         },
       });
@@ -641,6 +717,18 @@ export class SchedulerService {
       });
 
       const command = await Promise.race([commandPromise, timeoutPromise]);
+      const rootTurnId = normalizeOptionalString(command.result?.turnId);
+      const evalRun = evalConfig
+        ? this.buildEvalRun({
+          job,
+          run,
+          evalConfig,
+          selfImproveState: initialSelfImproveState,
+          executionSpace,
+          rootTurnId,
+          observedEvents: evalObserver?.events ?? [],
+        })
+        : undefined;
 
       if (command.status === "failed") {
         return {
@@ -649,6 +737,7 @@ export class SchedulerService {
           errorCode: command.error?.code ?? "ORCHESTRATOR_FAILED",
           errorMessage: command.error?.message ?? "Orchestrator command failed.",
           result: command.result,
+          evalRun,
         };
       }
 
@@ -656,6 +745,13 @@ export class SchedulerService {
         status: "completed",
         commandId: command.commandId,
         result: command.result,
+        evalRun,
+        evalConfigJson: evalRun?.recommendations.some((recommendation) => recommendation.status === "applied")
+          ? JSON.stringify(applyRecommendationConfig(evalConfig, evalRun.recommendations))
+          : undefined,
+        evalSelfImproveStateJson: evalRun
+          ? JSON.stringify(nextEvalSelfImproveState(initialSelfImproveState, evalConfig, evalRun))
+          : undefined,
       };
     } catch (error) {
       const normalized = normalizeError(error);
@@ -670,6 +766,8 @@ export class SchedulerService {
         errorCode: normalized.code,
         errorMessage: normalized.message,
       };
+    } finally {
+      evalObserver?.dispose();
     }
   }
 
@@ -682,6 +780,9 @@ export class SchedulerService {
       errorCode?: string;
       errorMessage?: string;
       result?: Record<string, unknown>;
+      evalRun?: SchedulerEvalRunPayload;
+      evalConfigJson?: string | null;
+      evalSelfImproveStateJson?: string | null;
     },
   ): SchedulerJobRunRow {
     const finishedAt = this.now().toISOString();
@@ -692,6 +793,7 @@ export class SchedulerService {
       errorCode: result.errorCode ?? "",
       errorMessage: result.errorMessage ?? "",
       resultJson: result.result ? JSON.stringify(result.result) : null,
+      evalRunJson: result.evalRun ? JSON.stringify(result.evalRun) : null,
     });
 
     const finalRun = run ?? this.options.runs.get(runId);
@@ -704,6 +806,10 @@ export class SchedulerService {
       lastRunStatus: result.status,
       lastErrorCode: result.errorCode ?? "",
       lastErrorMessage: result.errorMessage ?? "",
+      ...(result.evalConfigJson !== undefined ? { evalConfigJson: result.evalConfigJson } : {}),
+      ...(result.evalSelfImproveStateJson !== undefined
+        ? { evalSelfImproveStateJson: result.evalSelfImproveStateJson }
+        : {}),
     });
     this.options.runs.pruneToLatest(jobId, RUN_RETENTION_LIMIT);
     return finalRun;
@@ -741,6 +847,165 @@ export class SchedulerService {
 
   private computeNextRunFromRow(job: SchedulerJobRow, referenceIso: string): string | null {
     return computeNextRun(job.cron_expression, job.timezone, referenceIso);
+  }
+
+  private async resolveExecutionSpace(
+    job: SchedulerJobRow,
+    run: SchedulerJobRunRow,
+    executionTarget: SchedulerExecutionTargetPayload,
+    evalConfig: SchedulerEvalConfigPayload | null,
+  ): Promise<{ spaceId: string; spaceUid?: string; name?: string }> {
+    if (executionTarget.mode !== "new_space") {
+      const space = job.primary_space_id
+        ? await this.options.spaceAdminService.getSpace(job.primary_space_id).catch(() => null)
+        : null;
+      return {
+        spaceId: job.primary_space_id ?? "",
+        spaceUid: normalizeOptionalString(space?.spaceUid),
+        name: normalizeOptionalString(space?.name),
+      };
+    }
+
+    if (!this.spaceTemplateService) {
+      throw new SchedulerServiceError(
+        "FAILED_PRECONDITION",
+        "Space template service is unavailable for new-space scheduler runs.",
+      );
+    }
+
+    const templateId = resolveTemplateId(evalConfig?.flowVariantId);
+    const created = await this.spaceTemplateService.createFromTemplate({
+      templateId,
+      spaceId: `space-eval-${run.run_id.slice(4)}`,
+      resourceId: `scheduler:${job.job_id}:run:${run.run_id}`,
+      name: `${job.name} • ${run.run_id}`,
+      goal: parseAction(job).promptText,
+      visibility: "shared",
+      idempotencyKey: `scheduler:${job.job_id}:${run.run_id}:space`,
+    }, job.created_by_principal_id);
+
+    return {
+      spaceId: created.space.id,
+      spaceUid: normalizeOptionalString((created.space as { spaceUid?: string }).spaceUid),
+      name: normalizeOptionalString((created.space as { name?: string }).name),
+    };
+  }
+
+  private createEvalObserver(spaceId: string): {
+    events: Array<Record<string, unknown>>;
+    dispose: () => void;
+  } {
+    if (!this.eventBus) {
+      return { events: [], dispose: () => {} };
+    }
+
+    const events: Array<Record<string, unknown>> = [];
+    const unsubscribers = [
+      this.eventBus.on("space.orchestrator_event", (event) => {
+        if ((event as { spaceId?: string }).spaceId !== spaceId) return;
+        events.push({ ...event, observedType: "space.orchestrator_event" });
+      }),
+      this.eventBus.on("context.summarizing", (event) => {
+        if ((event as { spaceId?: string }).spaceId !== spaceId) return;
+        events.push({ ...event, observedType: "context.summarizing" });
+      }),
+      this.eventBus.on("context.summarized", (event) => {
+        if ((event as { spaceId?: string }).spaceId !== spaceId) return;
+        events.push({ ...event, observedType: "context.summarized" });
+      }),
+    ];
+
+    return {
+      events,
+      dispose: () => {
+        for (const unsubscribe of unsubscribers) {
+          unsubscribe();
+        }
+      },
+    };
+  }
+
+  private buildEvalRun(input: {
+    job: SchedulerJobRow;
+    run: SchedulerJobRunRow;
+    evalConfig: SchedulerEvalConfigPayload;
+    selfImproveState: SchedulerEvalSelfImproveStatePayload | null;
+    executionSpace: { spaceId: string; spaceUid?: string; name?: string };
+    rootTurnId?: string;
+    observedEvents: Array<Record<string, unknown>>;
+  }): SchedulerEvalRunPayload {
+    const journalCheckpoints = this.orchestrationJournal && input.rootTurnId
+      ? this.orchestrationJournal.list({
+        spaceId: input.executionSpace.spaceId,
+        turnId: input.rootTurnId,
+        limit: 500,
+        offset: 0,
+      }).map((row) => ({
+        checkpointId: row.event_id,
+        kind: row.event_type,
+        status: "completed" as const,
+        actorId: normalizeOptionalString(row.actor_id),
+        createdAt: row.created_at,
+        detail: parseResultJson(row.payload_json),
+      }))
+      : [];
+    const observedCheckpoints = input.observedEvents
+      .map((event, index) => eventToEvalCheckpoint(event, index))
+      .filter((checkpoint): checkpoint is SchedulerEvalCheckpointPayload => checkpoint !== null);
+    const checkpoints = [...journalCheckpoints, ...observedCheckpoints]
+      .sort((lhs, rhs) => lhs.createdAt.localeCompare(rhs.createdAt));
+
+    const summaryEvent = input.observedEvents.find((event) =>
+      (event as { observedType?: string }).observedType === "space.orchestrator_event"
+      && (event as { turnId?: string }).turnId === input.rootTurnId
+      && (event as { eventType?: string }).eventType === "summary.completed",
+    ) as { event?: { summary?: { finalSummaryText?: string } } } | undefined;
+    const finalSummaryText = normalizeOptionalString(summaryEvent?.event?.summary?.finalSummaryText);
+    const recommendations = generateEvalRecommendations(input.evalConfig, checkpoints, input.run.run_id);
+    const appliedRecommendations = input.evalConfig.selfImproveEnabled
+      ? applyRecommendations(recommendations, input.selfImproveState, input.run.run_id)
+      : recommendations;
+
+    return {
+      evalRunId: input.run.run_id,
+      evalDefinitionId: input.evalConfig.evalDefinitionId,
+      scenarioIds: input.evalConfig.scenarioIds ?? [],
+      promptVariantId: input.evalConfig.promptVariantId,
+      promptPackId: input.evalConfig.promptPackId,
+      flowVariantId: input.evalConfig.flowVariantId,
+      summaryMode: input.evalConfig.summaryMode ?? "checkpoints",
+      selfImproveEnabled: input.evalConfig.selfImproveEnabled ?? false,
+      spaceId: input.executionSpace.spaceId,
+      spaceUid: input.executionSpace.spaceUid,
+      rootTurnId: input.rootTurnId,
+      finalSummaryText,
+      artifactRefs: [
+        {
+          kind: "space",
+          id: input.executionSpace.spaceId,
+          label: input.executionSpace.name,
+        },
+        ...(input.rootTurnId
+          ? [{
+            kind: "turn" as const,
+            id: input.rootTurnId,
+            label: "Root Turn",
+          }]
+          : []),
+        {
+          kind: "scheduler_run",
+          id: input.run.run_id,
+          label: input.job.job_id,
+        },
+      ],
+      checkpoints,
+      scenarioResults: (input.evalConfig.scenarioIds ?? []).map((scenarioId) => ({
+        scenarioId,
+        status: checkpoints.some((checkpoint) => checkpoint.status === "failed") ? "fail" : "pass",
+        checkpointCount: checkpoints.length,
+      })),
+      recommendations: appliedRecommendations,
+    };
   }
 
   private assertSpaceExists(spaceId: string): void {
@@ -833,6 +1098,8 @@ export class SchedulerService {
 
     const schedulePreset = parseSchedulePreset(row.schedule_preset_json);
     const action = parseAction(row);
+    const evalConfig = parseEvalConfig(row.eval_config_json);
+    const evalSelfImproveState = parseEvalSelfImproveState(row.eval_self_improve_state_json, evalConfig);
     return {
       jobId: row.job_id,
       name: row.name,
@@ -853,6 +1120,10 @@ export class SchedulerService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       linkedSpaces,
+      executionTarget: parseExecutionTarget(row.execution_target_json),
+      calendarBinding: parseCalendarBinding(row.calendar_binding_json),
+      evalConfig: evalConfig ?? undefined,
+      evalSelfImproveState: evalSelfImproveState ?? undefined,
     };
   }
 }
@@ -1000,6 +1271,78 @@ function validateAction(action: SchedulerActionPayload | undefined): SchedulerAc
   };
 }
 
+function validateExecutionTarget(
+  executionTarget: SchedulerExecutionTargetPayload | undefined,
+): SchedulerExecutionTargetPayload {
+  return executionTarget?.mode === "new_space"
+    ? { mode: "new_space" }
+    : { mode: "existing_space" };
+}
+
+function validateCalendarBinding(
+  calendarBinding: SchedulerCalendarBindingPayload | null | undefined,
+): SchedulerCalendarBindingPayload | null {
+  if (!calendarBinding) return null;
+  const providerId = normalizeOptionalString(calendarBinding.providerId);
+  const calendarId = normalizeOptionalString(calendarBinding.calendarId);
+  if (!providerId || !calendarId) {
+    throw new SchedulerServiceError(
+      "INVALID_ARGUMENT",
+      "calendarBinding.providerId and calendarBinding.calendarId are required",
+    );
+  }
+  return {
+    providerId,
+    calendarId,
+    eventId: normalizeOptionalString(calendarBinding.eventId),
+    syncStatus: calendarBinding.syncStatus,
+    driftStatus: calendarBinding.driftStatus,
+    driftMessage: normalizeOptionalString(calendarBinding.driftMessage),
+    lastSyncedAt: normalizeOptionalString(calendarBinding.lastSyncedAt),
+  };
+}
+
+async function validateEvalConfig(
+  evalConfig: SchedulerEvalConfigPayload | null | undefined,
+  evalCatalogService: Pick<SchedulerEvalCatalogService, "getDefinition">,
+): Promise<SchedulerEvalConfigPayload | null> {
+  if (!evalConfig) return null;
+  const evalDefinitionId = normalizeNonEmpty(evalConfig.evalDefinitionId, "evalConfig.evalDefinitionId");
+  const definition = await evalCatalogService.getDefinition(evalDefinitionId);
+  if (!definition) {
+    throw new SchedulerServiceError(
+      "INVALID_ARGUMENT",
+      `Unknown scheduler eval definition: ${evalDefinitionId}`,
+    );
+  }
+  if (evalConfig.promptVariantId && evalConfig.promptPackId) {
+    throw new SchedulerServiceError(
+      "INVALID_ARGUMENT",
+      "Provide either evalConfig.promptVariantId or evalConfig.promptPackId, not both",
+    );
+  }
+  const scenarioIds = normalizeSpaceIds(evalConfig.scenarioIds ?? []);
+  if (scenarioIds.length > 0) {
+    for (const scenarioId of scenarioIds) {
+      if (!definition.scenarioIds.includes(scenarioId)) {
+        throw new SchedulerServiceError(
+          "INVALID_ARGUMENT",
+          `Scenario ${scenarioId} is not part of ${evalDefinitionId}`,
+        );
+      }
+    }
+  }
+  return {
+    evalDefinitionId,
+    scenarioIds,
+    promptVariantId: normalizeOptionalString(evalConfig.promptVariantId),
+    promptPackId: normalizeOptionalString(evalConfig.promptPackId),
+    flowVariantId: normalizeOptionalString(evalConfig.flowVariantId),
+    summaryMode: evalConfig.summaryMode === "final_summary" ? "final_summary" : "checkpoints",
+    selfImproveEnabled: evalConfig.selfImproveEnabled === true,
+  };
+}
+
 function compilePresetToCron(preset: SchedulerSchedulePresetPayload): string {
   switch (preset.kind) {
     case "hourly": {
@@ -1044,6 +1387,99 @@ function parseAction(row: SchedulerJobRow): SchedulerActionPayload {
   });
 }
 
+function parseExecutionTarget(raw: string | null | undefined): SchedulerExecutionTargetPayload {
+  const parsed = parseJsonRecord(raw);
+  return parsed?.mode === "new_space" ? { mode: "new_space" } : { mode: "existing_space" };
+}
+
+function parseCalendarBinding(raw: string | null | undefined): SchedulerCalendarBindingPayload | undefined {
+  const parsed = parseJsonRecord(raw);
+  if (!parsed) return undefined;
+  const providerId = normalizeOptionalString(parsed.providerId);
+  const calendarId = normalizeOptionalString(parsed.calendarId);
+  if (!providerId || !calendarId) return undefined;
+  return {
+    providerId,
+    calendarId,
+    eventId: normalizeOptionalString(parsed.eventId),
+    syncStatus: normalizeCalendarSyncStatus(parsed.syncStatus),
+    driftStatus: normalizeCalendarDriftStatus(parsed.driftStatus),
+    driftMessage: normalizeOptionalString(parsed.driftMessage),
+    lastSyncedAt: normalizeOptionalString(parsed.lastSyncedAt),
+  };
+}
+
+function parseEvalConfig(raw: string | null | undefined): SchedulerEvalConfigPayload | null {
+  const parsed = parseJsonRecord(raw);
+  const evalDefinitionId = normalizeOptionalString(parsed?.evalDefinitionId);
+  if (!evalDefinitionId) return null;
+  const scenarioIds = Array.isArray(parsed?.scenarioIds)
+    ? parsed!.scenarioIds
+      .map((value) => normalizeOptionalString(value))
+      .filter((value): value is string => Boolean(value))
+    : [];
+  return {
+    evalDefinitionId,
+    scenarioIds,
+    promptVariantId: normalizeOptionalString(parsed?.promptVariantId),
+    promptPackId: normalizeOptionalString(parsed?.promptPackId),
+    flowVariantId: normalizeOptionalString(parsed?.flowVariantId),
+    summaryMode: parsed?.summaryMode === "final_summary" ? "final_summary" : "checkpoints",
+    selfImproveEnabled: parsed?.selfImproveEnabled === true,
+  };
+}
+
+function parseEvalSelfImproveState(
+  raw: string | null | undefined,
+  evalConfig: SchedulerEvalConfigPayload | null,
+): SchedulerEvalSelfImproveStatePayload | null {
+  const parsed = parseJsonRecord(raw);
+  if (!parsed) {
+    return evalConfig
+      ? buildEvalSelfImproveState(evalConfig)
+      : null;
+  }
+  const appliedRevisionIds = Array.isArray(parsed.appliedRevisionIds)
+    ? parsed.appliedRevisionIds
+      .map((value) => normalizeOptionalString(value))
+      .filter((value): value is string => Boolean(value))
+    : [];
+  return {
+    enabled: parsed.enabled === true || evalConfig?.selfImproveEnabled === true,
+    appliedRevisionIds,
+    lastAppliedRunId: normalizeOptionalString(parsed.lastAppliedRunId),
+  };
+}
+
+function parseEvalRun(raw: string | null | undefined): SchedulerEvalRunPayload | null {
+  const parsed = parseJsonRecord(raw);
+  const evalRunId = normalizeOptionalString(parsed?.evalRunId);
+  const evalDefinitionId = normalizeOptionalString(parsed?.evalDefinitionId);
+  if (!parsed || !evalRunId || !evalDefinitionId) return null;
+  return {
+    evalRunId,
+    evalDefinitionId,
+    scenarioIds: Array.isArray(parsed.scenarioIds)
+      ? parsed.scenarioIds
+        .map((value) => normalizeOptionalString(value))
+        .filter((value): value is string => Boolean(value))
+      : [],
+    promptVariantId: normalizeOptionalString(parsed.promptVariantId),
+    promptPackId: normalizeOptionalString(parsed.promptPackId),
+    flowVariantId: normalizeOptionalString(parsed.flowVariantId),
+    summaryMode: parsed.summaryMode === "final_summary" ? "final_summary" : "checkpoints",
+    selfImproveEnabled: parsed.selfImproveEnabled === true,
+    spaceId: normalizeOptionalString(parsed.spaceId),
+    spaceUid: normalizeOptionalString(parsed.spaceUid),
+    rootTurnId: normalizeOptionalString(parsed.rootTurnId),
+    finalSummaryText: normalizeOptionalString(parsed.finalSummaryText),
+    artifactRefs: Array.isArray(parsed.artifactRefs) ? parsed.artifactRefs as any[] : [],
+    checkpoints: Array.isArray(parsed.checkpoints) ? parsed.checkpoints as SchedulerEvalCheckpointPayload[] : [],
+    scenarioResults: Array.isArray(parsed.scenarioResults) ? parsed.scenarioResults as any[] : [],
+    recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations as SchedulerEvalRecommendationPayload[] : [],
+  };
+}
+
 function parseInteger(value: unknown, field: string, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
     throw new SchedulerServiceError(
@@ -1068,20 +1504,236 @@ function toRunPayload(row: SchedulerJobRunRow): SchedulerJobRunPayload {
     errorCode: normalizeOptionalString(row.error_code),
     errorMessage: normalizeOptionalString(row.error_message),
     result: parseResultJson(row.result_json),
+    evalRun: parseEvalRun(row.eval_run_json) ?? undefined,
   };
 }
 
 function parseResultJson(raw: string | null): Record<string, unknown> | undefined {
-  if (!raw) return undefined;
+  return parseJsonRecord(raw) ?? undefined;
+}
+
+function parseJsonRecord(raw: string | null | undefined): Record<string, any> | null {
+  if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+      return parsed as Record<string, any>;
     }
   } catch {
-    // ignore malformed result payloads
+    // ignore malformed json payloads
   }
-  return undefined;
+  return null;
+}
+
+function normalizeCalendarSyncStatus(value: unknown): SchedulerCalendarBindingPayload["syncStatus"] | undefined {
+  return value === "pending" || value === "synced" || value === "error" ? value : undefined;
+}
+
+function normalizeCalendarDriftStatus(value: unknown): SchedulerCalendarBindingPayload["driftStatus"] | undefined {
+  return value === "none" || value === "drifted" ? value : undefined;
+}
+
+function buildEvalSelfImproveState(
+  evalConfig: SchedulerEvalConfigPayload | null,
+): SchedulerEvalSelfImproveStatePayload | null {
+  if (!evalConfig) return null;
+  return {
+    enabled: evalConfig.selfImproveEnabled === true,
+    appliedRevisionIds: [],
+  };
+}
+
+function mergeEvalSelfImproveState(
+  current: SchedulerEvalSelfImproveStatePayload | null,
+  evalConfig: SchedulerEvalConfigPayload | null,
+): SchedulerEvalSelfImproveStatePayload | null {
+  if (!evalConfig) return null;
+  return {
+    enabled: evalConfig.selfImproveEnabled === true,
+    appliedRevisionIds: current?.appliedRevisionIds ?? [],
+    lastAppliedRunId: current?.lastAppliedRunId,
+  };
+}
+
+function resolveTemplateId(flowVariantId: string | undefined): string {
+  switch (flowVariantId) {
+    case "analysis":
+      return "archetype/analysis";
+    case "discussion":
+      return "archetype/discussion";
+    case "debate":
+      return "archetype/debate";
+    case "coding":
+      return "archetype/coding";
+    case "research":
+    default:
+      return "archetype/research";
+  }
+}
+
+function eventToEvalCheckpoint(
+  event: Record<string, unknown>,
+  index: number,
+): SchedulerEvalCheckpointPayload | null {
+  const observedType = normalizeOptionalString(event.observedType);
+  if (!observedType) return null;
+  if (observedType === "context.summarizing" || observedType === "context.summarized") {
+    return {
+      checkpointId: `${observedType}:${index}`,
+      kind: observedType,
+      status: "observed",
+      createdAt: serializeEventTimestamp(event.timestamp),
+      detail: sanitizeEventDetail(event),
+    };
+  }
+  if (observedType === "space.orchestrator_event") {
+    const eventType = normalizeOptionalString(event.eventType);
+    if (!eventType) return null;
+    return {
+      checkpointId: `${eventType}:${index}`,
+      kind: eventType,
+      status: eventType === "summary.failed" ? "failed" : "completed",
+      createdAt: normalizeOptionalString(event.createdAt) ?? serializeEventTimestamp(event.timestamp),
+      detail: sanitizeEventDetail(event.event),
+    };
+  }
+  return null;
+}
+
+function sanitizeEventDetail(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(record).filter(([, entry]) =>
+      typeof entry === "string"
+      || typeof entry === "number"
+      || typeof entry === "boolean"
+      || (entry && typeof entry === "object" && !Array.isArray(entry)),
+    ),
+  );
+}
+
+function serializeEventTimestamp(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Date) return value.toISOString();
+  return new Date().toISOString();
+}
+
+function generateEvalRecommendations(
+  evalConfig: SchedulerEvalConfigPayload,
+  checkpoints: SchedulerEvalCheckpointPayload[],
+  runId: string,
+): SchedulerEvalRecommendationPayload[] {
+  const recommendations: SchedulerEvalRecommendationPayload[] = [];
+  if (!evalConfig.promptPackId && checkpoints.some((checkpoint) => checkpoint.kind.startsWith("peer_review."))) {
+    recommendations.push({
+      recommendationId: `${runId}:prompt-pack`,
+      status: "suggested",
+      kind: "prompt_pack",
+      title: "Pin a prompt pack for consistent collaboration replay",
+      summary: "Peer-review checkpoints were present without an explicit prompt pack.",
+      originatingRunId: runId,
+      promptPackId: defaultPromptPackId(evalConfig.flowVariantId),
+      flowVariantId: evalConfig.flowVariantId,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  if (evalConfig.flowVariantId !== "research" && checkpoints.some((checkpoint) => checkpoint.kind === "context.summarized")) {
+    recommendations.push({
+      recommendationId: `${runId}:flow-variant`,
+      status: "suggested",
+      kind: "flow_variant",
+      title: "Switch to the research flow for better context compression resilience",
+      summary: "The run compacted context; the research flow is the safest default for long overnight evals.",
+      originatingRunId: runId,
+      flowVariantId: "research",
+      createdAt: new Date().toISOString(),
+    });
+  }
+  if (evalConfig.summaryMode !== "checkpoints" && checkpoints.some((checkpoint) => checkpoint.kind.startsWith("summary."))) {
+    recommendations.push({
+      recommendationId: `${runId}:summary-mode`,
+      status: "suggested",
+      kind: "summary_mode",
+      title: "Use checkpoint summaries for overnight eval visibility",
+      summary: "Terminal summaries were produced; checkpoint summaries make long unattended runs easier to audit.",
+      originatingRunId: runId,
+      createdAt: new Date().toISOString(),
+      detail: { summaryMode: "checkpoints" },
+    });
+  }
+  return recommendations;
+}
+
+function applyRecommendations(
+  recommendations: SchedulerEvalRecommendationPayload[],
+  selfImproveState: SchedulerEvalSelfImproveStatePayload | null,
+  runId: string,
+): SchedulerEvalRecommendationPayload[] {
+  if (!selfImproveState?.enabled) {
+    return recommendations;
+  }
+  return recommendations.map((recommendation, index) => ({
+    ...recommendation,
+    status: "applied",
+    appliedRevisionId: `eval-rev-${runId}-${index + 1}`,
+  }));
+}
+
+function applyRecommendationConfig(
+  evalConfig: SchedulerEvalConfigPayload | null,
+  recommendations: SchedulerEvalRecommendationPayload[],
+): SchedulerEvalConfigPayload | null {
+  if (!evalConfig) return null;
+  const next = { ...evalConfig };
+  for (const recommendation of recommendations) {
+    if (recommendation.status !== "applied") continue;
+    if (recommendation.kind === "flow_variant" && recommendation.flowVariantId) {
+      next.flowVariantId = recommendation.flowVariantId;
+    }
+    if (recommendation.kind === "prompt_pack" && recommendation.promptPackId) {
+      next.promptPackId = recommendation.promptPackId;
+      delete next.promptVariantId;
+    }
+    if (recommendation.kind === "summary_mode") {
+      next.summaryMode = "checkpoints";
+    }
+  }
+  return next;
+}
+
+function nextEvalSelfImproveState(
+  current: SchedulerEvalSelfImproveStatePayload | null,
+  evalConfig: SchedulerEvalConfigPayload | null,
+  evalRun: SchedulerEvalRunPayload,
+): SchedulerEvalSelfImproveStatePayload | null {
+  if (!evalConfig) return null;
+  const appliedRevisionIds = [
+    ...(current?.appliedRevisionIds ?? []),
+    ...evalRun.recommendations
+      .map((recommendation) => recommendation.appliedRevisionId)
+      .filter((revisionId): revisionId is string => Boolean(revisionId)),
+  ];
+  return {
+    enabled: evalConfig.selfImproveEnabled === true,
+    appliedRevisionIds,
+    lastAppliedRunId: evalRun.recommendations.some((recommendation) => recommendation.status === "applied")
+      ? evalRun.evalRunId
+      : current?.lastAppliedRunId,
+  };
+}
+
+function defaultPromptPackId(flowVariantId: string | undefined): string {
+  switch (flowVariantId) {
+    case "discussion":
+      return "shared-team-chat-v1";
+    case "analysis":
+    case "debate":
+    case "coding":
+    case "research":
+    default:
+      return "broadcast-team-v1";
+  }
 }
 
 function normalizeError(error: unknown): { code: string; message: string } {

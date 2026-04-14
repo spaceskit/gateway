@@ -222,6 +222,7 @@ export type {
   EnsureAgentUsageSessionInput,
   ResetAgentUsageSessionInput,
   AgentUsageSessionResetResult,
+  UpdateAgentUsageSessionRuntimeMetadataInput,
 } from "./repositories/agent-usage-sessions.js";
 
 export { UsageAnalyticsRepository } from "./repositories/usage-analytics.js";
@@ -297,6 +298,12 @@ export type {
   GatewayWorkspaceDefaultsRow,
   SetGatewayWorkspaceDefaultsInput,
 } from "./repositories/gateway-workspace-defaults.js";
+
+export { GatewayRuntimeDefaultsRepository } from "./repositories/gateway-runtime-defaults.js";
+export type {
+  GatewayRuntimeDefaultsRow,
+  SetGatewayRuntimeDefaultsInput,
+} from "./repositories/gateway-runtime-defaults.js";
 
 export { GatewayExternalConnectivityRepository } from "./repositories/gateway-external-connectivity.js";
 export type {
@@ -498,6 +505,38 @@ export { SchedulerJobSpaceRepository } from "./repositories/scheduler-job-spaces
 export type {
   SchedulerJobSpaceRow,
 } from "./repositories/scheduler-job-spaces.js";
+
+export { WorkbenchBatchRepository } from "./repositories/workbench-batches.js";
+export type {
+  WorkbenchBatchRow,
+  WorkbenchBatchStatus,
+  WorkbenchExecutionMode,
+  CreateWorkbenchBatchInput,
+  UpdateWorkbenchBatchInput,
+} from "./repositories/workbench-batches.js";
+
+export { WorkbenchRunRepository } from "./repositories/workbench-runs.js";
+export type {
+  WorkbenchApprovalState,
+  WorkbenchRunRow,
+  WorkbenchRunStage,
+  WorkbenchRunStatus,
+  CreateWorkbenchRunInput,
+  UpdateWorkbenchRunInput,
+  ListWorkbenchRunsQuery,
+} from "./repositories/workbench-runs.js";
+
+export { WorkbenchArtifactRepository } from "./repositories/workbench-artifacts.js";
+export type {
+  WorkbenchArtifactRow,
+  CreateWorkbenchArtifactInput,
+} from "./repositories/workbench-artifacts.js";
+
+export { WorkbenchPolicyRepository } from "./repositories/workbench-policy.js";
+export type {
+  WorkbenchPolicyRow,
+  SetWorkbenchPolicyInput,
+} from "./repositories/workbench-policy.js";
 
 export { SchedulerJobRunRepository } from "./repositories/scheduler-job-runs.js";
 export type {

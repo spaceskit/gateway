@@ -17,6 +17,7 @@ import { ToolsUnsupportedError, UnsupportedProviderError } from "./provider-erro
 
 const DEFAULT_LMSTUDIO_BASE_URL = "ws://127.0.0.1:1234";
 const TOOL_CALL_ID_PREFIX = "lmstudio_tool_call";
+const LMSTUDIO_EXPECTED_CLOSE_MESSAGE = "websocket connection closed";
 
 interface ModelReference {
   providerId: "lmstudio";
@@ -78,6 +79,13 @@ export interface LmStudioProviderConfig {
   baseURL?: string;
   isLocal?: boolean;
   clientFactory?: LmStudioClientFactory;
+}
+
+export interface LmStudioSdkLoggerLike {
+  debug: (...messages: unknown[]) => void;
+  info: (...messages: unknown[]) => void;
+  warn: (...messages: unknown[]) => void;
+  error: (...messages: unknown[]) => void;
 }
 
 export class LmStudioModelProvider implements ModelProvider {
@@ -419,7 +427,51 @@ async function withLmStudioClient<T>(
 function createDefaultLmStudioClient(baseURL?: string): LmStudioClientLike {
   return new LMStudioClient({
     baseUrl: normalizeLmStudioBaseURL(baseURL) ?? DEFAULT_LMSTUDIO_BASE_URL,
+    logger: createLmStudioSdkLogger(),
   }) as unknown as LmStudioClientLike;
+}
+
+export function createLmStudioSdkLogger(
+  baseLogger: LmStudioSdkLoggerLike = console,
+): LmStudioSdkLoggerLike {
+  return {
+    debug: (...messages) => baseLogger.debug(...messages),
+    info: (...messages) => baseLogger.info(...messages),
+    warn: (...messages) => {
+      if (isExpectedLmStudioCloseWarning(messages)) {
+        return;
+      }
+      baseLogger.warn(...messages);
+    },
+    error: (...messages) => baseLogger.error(...messages),
+  };
+}
+
+function isExpectedLmStudioCloseWarning(messages: unknown[]): boolean {
+  const normalizedStringMessages = messages
+    .filter((message): message is string => typeof message === "string")
+    .map((message) => message.trim().toLowerCase());
+  const hasStringifiedCloseWarning = normalizedStringMessages.some((message) =>
+    message.includes("websocket error:")
+    && message.includes(LMSTUDIO_EXPECTED_CLOSE_MESSAGE),
+  );
+  if (hasStringifiedCloseWarning) {
+    return true;
+  }
+
+  const hasWebSocketErrorPrefix = normalizedStringMessages.some((message) => message.includes("websocket error:"));
+  if (!hasWebSocketErrorPrefix) {
+    return false;
+  }
+
+  return messages.some((message) => {
+    if (message instanceof Error) {
+      return message.message.trim().toLowerCase() === LMSTUDIO_EXPECTED_CLOSE_MESSAGE;
+    }
+    const record = asRecord(message);
+    return typeof record?.message === "string"
+      && record.message.trim().toLowerCase() === LMSTUDIO_EXPECTED_CLOSE_MESSAGE;
+  });
 }
 
 async function disposeLmStudioClient(client: LmStudioClientLike): Promise<void> {

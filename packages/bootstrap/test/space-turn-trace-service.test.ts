@@ -633,4 +633,61 @@ describe("SpaceTurnTraceService", () => {
       db.close();
     }
   });
+
+  test("persists activity-only provider-client text as replayable client_delta events", () => {
+    const db = initDatabase({
+      path: ":memory:",
+      runtimeGeneration: `test-client-delta-${crypto.randomUUID()}`,
+    });
+    try {
+      const spaces = new SpaceRepository(db.db);
+      spaces.create({
+        spaceId: "space-main",
+        resourceId: "resource-main",
+        spaceType: "space",
+        name: "Main",
+        goal: "",
+        turnModel: "sequential_all",
+      });
+
+      const service = new SpaceTurnTraceService({
+        eventLog: new EventLogRepository(db.db),
+      });
+
+      service.recordTurnEvent({
+        spaceId: "space-main",
+        turnId: "turn-client-1",
+        agentId: "agent-1",
+        eventType: "text_delta",
+        payload: {
+          type: "text_delta",
+          text: "Checking workspace guidance...",
+          transcriptVisibility: "activity_only",
+          streamKind: "provider_client",
+        },
+      });
+      service.recordTurnEvent({
+        spaceId: "space-main",
+        turnId: "turn-client-1",
+        agentId: "agent-1",
+        eventType: "turn_completed",
+        payload: {
+          type: "turn_completed",
+        },
+      });
+
+      const trace = service.getTurnTrace({
+        spaceId: "space-main",
+        turnId: "turn-client-1",
+      });
+
+      expect(trace.events.some((event) => event.eventType === "text_delta")).toBe(false);
+      const clientDelta = trace.events.find((event) => event.eventType === "client_delta");
+      expect(clientDelta?.payload["text"]).toBe("Checking workspace guidance...");
+      expect(clientDelta?.payload["streamKind"]).toBe("provider_client");
+      expect(trace.activities.some((activity) => activity.eventType === "client_delta")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
 });

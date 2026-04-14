@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "id": "jira.issue.link",
+  "displayName": "Jira Issue Link",
+  "description": "Link two Jira issues and return the refreshed source issue payload.",
+  "bundleId": "jira-cli",
+  "bundleDisplayName": "Jira CLI",
+  "bundleDescription": "Gateway-managed Jira CLI bundle for account discovery plus project, board, release, epic, sprint, and issue operations.",
+  "toolGroupId": "issues",
+  "toolGroupDisplayName": "Issues",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "argsTemplate": [
+    "--op",
+    "issue.link",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional Jira project key or id override for this call."
+          },
+          "inwardIssueKey": {
+            "type": "string",
+            "description": "Source issue key."
+          },
+          "outwardIssueKey": {
+            "type": "string",
+            "description": "Target issue key."
+          },
+          "linkType": {
+            "type": "string",
+            "description": "Jira issue link type, for example `Blocks`."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "inwardIssueKey",
+          "outwardIssueKey",
+          "linkType"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool to create a standard Jira issue link such as Blocks or Relates.",
+  "examples": [
+    {
+      "name": "Link two issues",
+      "description": "Adds a Blocks relationship between two issues.",
+      "arguments": {
+        "payload": {
+          "inwardIssueKey": "OPS-123",
+          "outwardIssueKey": "OPS-124",
+          "linkType": "Blocks"
+        }
+      },
+      "expectedOutput": "{\n  \"ok\": true,\n  \"operation\": \"issue.link\",\n  \"summary\": \"Linked Jira issues OPS-123 and OPS-124.\"\n}"
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:29.005Z",
+  "updatedAt": "2026-04-11T09:40:29.005Z"
+}

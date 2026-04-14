@@ -19,6 +19,16 @@ describe("resolveModelCapabilities", () => {
       supportsPublicReasoning: true,
       accessModeStrategy: "executor_cli",
     });
+    expect(resolveModelCapabilities("codex-app-server")).toMatchObject({
+      executionClass: "executor",
+      toolSupportMode: "mediated",
+      supportsStreaming: true,
+      supportsActivityStreaming: true,
+      supportsPublicReasoning: true,
+      supportsReasoningEffort: true,
+      isCliExecutor: false,
+      accessModeStrategy: "executor_cli",
+    });
     expect(resolveModelCapabilities("gemini")).toMatchObject({
       executionClass: "executor",
       supportsActivityStreaming: true,
@@ -47,6 +57,11 @@ describe("resolveModelCapabilities", () => {
     expect(resolveModelCapabilities("claude-agent-sdk")).toMatchObject({
       supportsThinking: true,
       supportsReasoningEffort: false,
+    });
+    // Codex App Server supports reasoning_effort, but not Anthropic-style thinking.
+    expect(resolveModelCapabilities("codex-app-server")).toMatchObject({
+      supportsThinking: false,
+      supportsReasoningEffort: true,
     });
     // Gemini CLI supports thinking (via --thinking-level)
     expect(resolveModelCapabilities("gemini")).toMatchObject({
@@ -98,6 +113,7 @@ describe("inferContextWindow", () => {
   test("returns provider-level defaults for static providers", () => {
     expect(inferContextWindow("claude")).toBe(200_000);
     expect(inferContextWindow("claude-agent-sdk")).toBe(200_000);
+    expect(inferContextWindow("codex-app-server")).toBe(200_000);
     expect(inferContextWindow("codex")).toBe(200_000);
     expect(inferContextWindow("gemini")).toBe(200_000);
     expect(inferContextWindow("apple")).toBe(4_096);

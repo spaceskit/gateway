@@ -48,6 +48,111 @@ function makeRouter(gatewayIdentityService?: Record<string, unknown>): MessageRo
 }
 
 describe("MessageRouter identity handlers", () => {
+  test("broadcasts space.agent_updated when a runtime-relevant agent definition update affects active spaces", async () => {
+    const broadcasts: Array<{ spaceUid: string; msg: GatewayMessage }> = [];
+    const invalidatedSpaces: string[] = [];
+    const calls: Array<[string, any]> = [];
+
+    const router = new MessageRouter({
+      spaceManager: {
+        executeTurn: async () => ({ turnId: "turn-1" }),
+        resumeFeedback: async () => {},
+        invalidateCache: (spaceId: string) => {
+          invalidatedSpaces.push(spaceId);
+        },
+      } as any,
+      gatewayIdentityService: {
+        getAgentDefinition: () => ({
+          agentDefinitionId: "main-profile",
+          personaId: "persona-default",
+          name: "Existing",
+          description: "",
+          instructions: "",
+          defaultSkillIds: [],
+          providerHint: "openai",
+          modelHint: "openai/gpt-4.1",
+          modelConfig: { preferredModels: ["openai/gpt-4.1"] },
+          isDefault: false,
+          status: "active",
+          activeRevision: 1,
+          source: "manual",
+          createdAt: "2026-03-15T08:00:00.000Z",
+          updatedAt: "2026-03-15T08:00:00.000Z",
+        }),
+        updateAgentDefinition: (payload: any) => {
+          calls.push(["update", payload]);
+          return {
+            agentDefinition: {
+              agentDefinitionId: payload.agentDefinitionId,
+              personaId: "persona-default",
+              name: "Existing",
+              description: "",
+              instructions: "",
+              defaultSkillIds: [],
+              providerHint: "anthropic",
+              modelHint: "anthropic/claude-sonnet-4-5",
+              modelConfig: { preferredModels: ["anthropic/claude-sonnet-4-5"] },
+              isDefault: false,
+              status: "active",
+              activeRevision: 2,
+              source: "manual",
+              createdAt: "2026-03-15T08:00:00.000Z",
+              updatedAt: "2026-03-15T08:05:00.000Z",
+            },
+            newRevision: 2,
+          };
+        },
+      } as any,
+      listAssignmentsByProfileId: (profileId: string) => {
+        expect(profileId).toBe("main-profile");
+        return [
+          { spaceId: "space-1", agentId: "assistant", profileId: "main-profile" },
+        ];
+      },
+      capabilities: {
+        invoke: async () => ({ ok: true }),
+        register: () => {},
+        deregister: () => {},
+      } as any,
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        child: () => ({
+          debug: () => {},
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+          child: () => undefined,
+        }),
+      } as any,
+      resolveSpaceUid: async (spaceId: string) => `uid-${spaceId}`,
+      broadcastToSpace: (spaceUid, msg) => {
+        broadcasts.push({ spaceUid, msg });
+      },
+    } as any);
+
+    const response = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.IDENTITY_UPDATE_AGENT_DEFINITION, {
+        agentDefinitionId: "main-profile",
+        providerHint: "anthropic",
+        modelHint: "anthropic/claude-sonnet-4-5",
+      }),
+    );
+
+    expect(response?.type).toBe(MessageTypes.IDENTITY_UPDATE_AGENT_DEFINITION);
+    expect(calls).toHaveLength(1);
+    expect(invalidatedSpaces).toEqual(["space-1"]);
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]?.spaceUid).toBe("uid-space-1");
+    expect((broadcasts[0]?.msg.payload as any)?.spaceId).toBe("space-1");
+    expect((broadcasts[0]?.msg.payload as any)?.agentId).toBe("assistant");
+    expect((broadcasts[0]?.msg.payload as any)?.oldProfileId).toBe("main-profile");
+    expect((broadcasts[0]?.msg.payload as any)?.newProfileId).toBe("main-profile");
+  });
+
   test("routes identity.list_personas and identity.archive_persona", async () => {
     const calls: Array<[string, any]> = [];
     const router = makeRouter({

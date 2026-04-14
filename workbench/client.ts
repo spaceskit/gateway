@@ -5,6 +5,12 @@ import {
   type AdapterCapabilityProvider,
   type AuthKeyPair,
   type GatewayClientOptions,
+  type SchedulerCreateJobPayload,
+  type SchedulerEvalDefinition,
+  type SchedulerEvalRun,
+  type SchedulerJob,
+  type SchedulerJobRun,
+  type SchedulerRunNowResult,
   type SpaceTurnTrace,
   type TurnEventPayload,
 } from "../../client-ts/src/gateway-client.ts";
@@ -15,6 +21,12 @@ export {
 };
 
 export type {
+  SchedulerCreateJobPayload,
+  SchedulerEvalDefinition,
+  SchedulerEvalRun,
+  SchedulerJob,
+  SchedulerJobRun,
+  SchedulerRunNowResult,
   SpaceTurnTrace,
   TurnEventPayload,
 };

@@ -5,6 +5,7 @@
  * Creates boilerplate spaces, profiles, and agent assignments.
  */
 
+import { randomUUID } from "node:crypto";
 import type { GatewayClient } from "./client.js";
 
 export interface SeededFixtures {
@@ -31,9 +32,11 @@ export async function seedFixtures(
 
   // Layer 1: Simple chat space (1 agent)
   const chatSpace = await client.createSpace({
+    idempotencyKey: `workbench:fixtures:chat:${randomUUID()}`,
     name: "bench-chat",
     resourceId: "resource:workbench",
     goal: "Simple chat round-trip testing",
+    capabilities: ["lists"],
     initialAgents: [
       {
         agentId: `bench-chat-agent`,
@@ -46,9 +49,11 @@ export async function seedFixtures(
 
   // Layer 2: MCP-enabled space
   const mcpSpace = await client.createSpace({
+    idempotencyKey: `workbench:fixtures:mcp:${randomUUID()}`,
     name: "bench-mcp",
     resourceId: "resource:workbench",
     goal: "MCP tool invocation testing",
+    capabilities: ["lists"],
     initialAgents: [
       {
         agentId: `bench-mcp-agent`,
@@ -61,10 +66,12 @@ export async function seedFixtures(
 
   // Layer 3: Multi-agent orchestrator space
   const orchestratorSpace = await client.createSpace({
+    idempotencyKey: `workbench:fixtures:orchestrator:${randomUUID()}`,
     name: "bench-orchestrator",
     resourceId: "resource:workbench",
     goal: "Multi-agent orchestration testing",
     turnModel: "sequential_all",
+    capabilities: ["lists"],
     initialAgents: [
       {
         agentId: `bench-orch-primary`,

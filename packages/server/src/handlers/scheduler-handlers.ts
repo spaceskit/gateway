@@ -10,6 +10,8 @@ import {
   type SchedulerCreateJobResponsePayload,
   type SchedulerDeleteJobPayload,
   type SchedulerDeleteJobResponsePayload,
+  type SchedulerListEvalDefinitionsPayload,
+  type SchedulerListEvalDefinitionsResponsePayload,
   type SchedulerGetJobPayload,
   type SchedulerGetJobResponsePayload,
   type SchedulerLinkSpacePayload,
@@ -114,6 +116,22 @@ export async function handleSchedulerListJobs(
   return context.response(msg.id, MessageTypes.SCHEDULER_LIST_JOBS, {
     jobs,
   } satisfies SchedulerListJobsResponsePayload);
+}
+
+export async function handleSchedulerListEvalDefinitions(
+  context: SchedulerHandlerContext,
+  _client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  if (!context.schedulerService) {
+    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Scheduler service unavailable");
+  }
+
+  const payload = (msg.payload ?? {}) as SchedulerListEvalDefinitionsPayload;
+  const definitions = await context.schedulerService.listEvalDefinitions(payload);
+  return context.response(msg.id, MessageTypes.SCHEDULER_LIST_EVAL_DEFINITIONS, {
+    definitions,
+  } satisfies SchedulerListEvalDefinitionsResponsePayload);
 }
 
 export async function handleSchedulerUpdateJob(

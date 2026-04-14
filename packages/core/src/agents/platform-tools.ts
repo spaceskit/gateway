@@ -11,7 +11,8 @@
 
 import type { ToolDefinition, ToolResult } from "./model-provider.js";
 import type { SpaceAdminService } from "../spaces/space-admin-service.js";
-import type { CapabilityRegistry } from "../capabilities/registry.js";
+import type { CapabilityExecutionOrigin, CapabilityRegistry } from "../capabilities/registry.js";
+import type { ExperienceStatus } from "../experiences/types.js";
 import type { ReflectionService } from "../reflection/reflection-service.js";
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ export interface PlatformToolExecutionContext {
   agentId: string;
   turnId: string;
   principalId?: string;
+  executionOrigin?: CapabilityExecutionOrigin;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +155,14 @@ export function createPlatformToolDefinitions(_config?: PlatformToolConfig): Too
         properties: {
           query: { type: "string" },
           limit: { type: "integer" },
+          status: {
+            type: "string",
+            description: 'Optional experience status filter. Defaults to "accepted".',
+          },
+          minScore: {
+            type: "number",
+            description: "Optional minimum relevance score between 0 and 1.",
+          },
         },
         required: ["query"],
       },
@@ -357,11 +367,29 @@ export function createPlatformToolExecutor(
     toolCallId: string,
   ): Promise<ToolResult> {
     if (!taskOrchestrationService) {
-      return { toolCallId, result: { error: "Task orchestration service not available" }, isError: true };
+      return {
+        toolCallId,
+        result: {
+          error: {
+            code: "task_orchestration_unavailable",
+            message: "Task orchestration requires a configured model provider. Set up a provider in gateway settings.",
+          },
+        },
+        isError: true,
+      };
     }
     const principalId = normalizeOptionalString(context.principalId);
     if (!principalId) {
       return { toolCallId, result: { error: "principalId is required" }, isError: true };
+    }
+    if (context.executionOrigin === "system") {
+      return {
+        toolCallId,
+        result: {
+          error: "Nested task orchestration is not permitted. Complete your assigned task directly.",
+        },
+        isError: true,
+      };
     }
     const taskDescription = normalizeOptionalString(args.taskDescription);
     if (!taskDescription) {
@@ -417,14 +445,17 @@ export function createPlatformToolExecutor(
     if (!query) {
       return { toolCallId, result: { error: "query is required" }, isError: true };
     }
-    if (gatewayProfile === "external" && !normalizeOptionalString(context.principalId)) {
+    const principalId = normalizeOptionalString(context.principalId);
+    if (gatewayProfile === "external" && !principalId) {
       return { toolCallId, result: { error: "principalId is required" }, isError: true };
     }
     const scope = gatewayProfile === "embedded"
       ? {}
-      : { principalId: normalizeOptionalString(context.principalId) };
+      : { userId: principalId };
     const result = await memoryProvider.search({
-      query,
+      text: query,
+      status: normalizeExperienceStatus(args.status) ?? "accepted",
+      minScore: normalizeOptionalNumber(args.minScore),
       limit: normalizeOptionalInteger(args.limit),
       scope,
     });
@@ -733,6 +764,24 @@ function normalizeOptionalString(value: unknown): string | undefined {
 function normalizeOptionalInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return Math.floor(value);
+}
+
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeExperienceStatus(value: unknown): ExperienceStatus | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "draft":
+    case "accepted":
+    case "rejected":
+    case "archived":
+      return normalized;
+    default:
+      return undefined;
+  }
 }
 
 function extractTextPreview(raw: string | null): string {

@@ -31,6 +31,7 @@ export async function initializeAdminServices(state: BootstrapState): Promise<vo
     accessGrantRepo,
     toolApprovalGrantRepo,
     providerConfigRepo,
+    gatewayRuntimeDefaultsRepo,
     integrationRequestRepo,
     spaceWorkspaceService,
   } = state;
@@ -141,6 +142,7 @@ export async function initializeAdminServices(state: BootstrapState): Promise<vo
     mainAgentAutoRepairEnabled: config.mainAgentAutoRepairEnabled,
     providerSecretRefService,
     providerConfigRepo: providerConfigRepo ?? undefined,
+    gatewayRuntimeDefaultsRepo: gatewayRuntimeDefaultsRepo ?? undefined,
     integrationRequestRepo: integrationRequestRepo ?? undefined,
     cliToolService: cliToolService ?? undefined,
     interconnectorCatalogService,

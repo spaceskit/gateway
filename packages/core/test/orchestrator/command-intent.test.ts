@@ -64,6 +64,31 @@ describe("parseCommandIntent", () => {
     expect(result.confidence).toBe(0.5);
   });
 
+  test("'research the regression' -> orchestrate_task, complex", () => {
+    const result = parseCommandIntent("research the regression");
+    expect(result.type).toBe("orchestrate_task");
+    expect(result.complexity).toBe("complex");
+  });
+
+  test("'check task progress' -> check_task_progress, simple", () => {
+    const result = parseCommandIntent("check task progress");
+    expect(result.type).toBe("check_task_progress");
+    expect(result.complexity).toBe("simple");
+  });
+
+  test("'what do we know about launch failures' -> search_knowledge, moderate", () => {
+    const result = parseCommandIntent("what do we know about launch failures");
+    expect(result.type).toBe("search_knowledge");
+    expect(result.complexity).toBe("moderate");
+  });
+
+  test("'open space \"Research\"' -> navigate_to_space, simple", () => {
+    const result = parseCommandIntent('open space "Research"');
+    expect(result.type).toBe("navigate_to_space");
+    expect(result.complexity).toBe("simple");
+    expect(result.params.name).toBe("Research");
+  });
+
   test("unrecognized text -> unknown", () => {
     const result = parseCommandIntent("do something random");
     expect(result.type).toBe("unknown");
@@ -165,6 +190,20 @@ describe("routeCommandIntent", () => {
     const result = routeCommandIntent(intent);
     expect(result.targetMessageType).toBe("space.share_create_invite");
     expect(result.requiresInference).toBe(true);
+  });
+
+  test("orchestrate_task remains inference-routed instead of inventing a message type", () => {
+    const intent: CommandIntent = {
+      type: "orchestrate_task",
+      complexity: "complex",
+      params: {},
+      rawText: "research the regression",
+      confidence: 0.8,
+    };
+    const result = routeCommandIntent(intent);
+    expect(result.targetMessageType).toBeUndefined();
+    expect(result.requiresInference).toBe(true);
+    expect(result.details).toContain("inference");
   });
 
   test("result includes intent reference", () => {

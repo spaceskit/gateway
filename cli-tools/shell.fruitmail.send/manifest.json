@@ -1,6 +1,6 @@
 {
+  "schemaVersion": 1,
   "id": "shell.fruitmail.send",
-  "toolName": "shell.fruitmail.send",
   "displayName": "Send Email",
   "description": "Send an email via the macOS mail command. No additional permissions required.",
   "bundleId": "fruitmail-cli",
@@ -8,45 +8,66 @@
   "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
   "toolGroupId": "send",
   "toolGroupDisplayName": "Send",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "argsTemplate": [
+    "send",
+    "{{payload}}"
+  ],
   "inputSchema": {
     "type": "object",
     "properties": {
-      "to": {
-        "type": "string",
-        "description": "Recipient email address."
-      },
-      "subject": {
-        "type": "string",
-        "description": "Email subject line."
-      },
-      "body": {
-        "type": "string",
-        "description": "Email body text."
-      },
-      "cc": {
-        "type": "string",
-        "description": "Optional CC recipient email address."
+      "payload": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Recipient email address."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Email subject line."
+          },
+          "body": {
+            "type": "string",
+            "description": "Email body text."
+          },
+          "cc": {
+            "type": "string",
+            "description": "Optional CC recipient email address."
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "description": "Structured FruitMail request payload."
       }
     },
-    "required": [
-      "to",
-      "subject",
-      "body"
-    ]
+    "additionalProperties": false
   },
-  "outputHint": "Returns send confirmation.",
-  "schemaVersion": 1,
-  "wrapperVersion": "0.1.0",
+  "instructions": "Use Send Email for Apple Mail operations only after the gateway host can run the fruitmail CLI successfully outside Spaces.",
+  "examples": [
+    {
+      "name": "Send an email",
+      "arguments": {
+        "payload": {
+          "to": "team@example.com",
+          "subject": "Status",
+          "body": "All green."
+        }
+      },
+      "expectedOutput": "{\"ok\":true,\"operation\":\"send\",\"data\":{\"to\":\"team@example.com\"}}"
+    }
+  ],
+  "timeoutMs": 30000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
   "enabled": true,
-  "runtime": {
-    "type": "shell",
-    "command": "node",
-    "args": [
-      "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
-      "send",
-      "{{payload}}"
-    ],
-    "cwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
-    "timeoutMs": 30000
-  }
+  "createdAt": "2026-04-13T07:21:25.235Z",
+  "updatedAt": "2026-04-13T07:21:25.235Z"
 }

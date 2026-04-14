@@ -92,6 +92,7 @@ export function initializeTransportServices(state: BootstrapState): void {
     spaceTemplateService: state.spaceTemplateService,
     orchestratorCommandService: state.orchestratorCommandService ?? undefined,
     schedulerService: state.schedulerService ?? undefined,
+    workbenchService: state.workbenchService ?? undefined,
     gatewaySyncService: state.gatewaySyncService ?? undefined,
     speechSessionService: state.speechSessionService ?? undefined,
     conciergeCallRuntimeService: state.conciergeCallRuntimeService ?? undefined,
@@ -122,6 +123,16 @@ export function initializeTransportServices(state: BootstrapState): void {
     broadcastToSpace: (spaceUid, msg) => {
       state.server?.broadcastToSpace(spaceUid, msg);
     },
+    listAssignmentsByProfileId: state.spaceAssignmentRepo
+      ? (profileId) =>
+        state.spaceAssignmentRepo
+          .listByProfile(profileId)
+          .map((row: any) => ({
+            spaceId: row.space_id,
+            agentId: row.agent_id,
+            profileId: row.profile_id,
+          }))
+      : undefined,
   });
 
   const a2aHandler = new A2AHandler({

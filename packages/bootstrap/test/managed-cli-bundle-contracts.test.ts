@@ -109,4 +109,27 @@ describe("managed cli bundle contract audit", () => {
     expect(readme).toContain("orderBy");
     expect(readme).toContain("reverse");
   });
+
+  test("keeps checked-in fruitmail manifests loadable by the CLI tool service", () => {
+    const manifestRoots = [
+      "../../../cli-tools",
+      "../../../workbench/cli-tools",
+    ];
+
+    for (const manifestRoot of manifestRoots) {
+      for (const tool of FRUITMAIL_TOOL_DEFINITIONS) {
+        const manifest = JSON.parse(
+          readFileSync(new URL(`${manifestRoot}/${tool.id}/manifest.json`, import.meta.url), "utf8"),
+        ) as Record<string, unknown>;
+
+        expect(manifest.outputMode, `${manifestRoot}/${tool.id} should declare an outputMode`).toBe("json");
+        expect(typeof manifest.executable, `${manifestRoot}/${tool.id} should declare an executable`).toBe("string");
+        expect(typeof manifest.resolvedExecutable, `${manifestRoot}/${tool.id} should declare a resolvedExecutable`)
+          .toBe("string");
+        expect(Array.isArray(manifest.argsTemplate), `${manifestRoot}/${tool.id} should declare argsTemplate`).toBe(true);
+        expect(manifest.cwdMode, `${manifestRoot}/${tool.id} should run from a fixed cwd`).toBe("fixed");
+        expect(typeof manifest.fixedCwd, `${manifestRoot}/${tool.id} should declare fixedCwd`).toBe("string");
+      }
+    }
+  });
 });

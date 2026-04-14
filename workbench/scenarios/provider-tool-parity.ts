@@ -7,9 +7,9 @@ import {
 } from "../client.js";
 import { ExecutionAdapterFactory } from "../../packages/bootstrap/src/execution/execution-adapter-factory.js";
 import type { ProviderParityRow } from "../report.js";
-import type { Layer, ScenarioContext } from "./index.js";
+import { skipScenario, type Layer, type ScenarioContext, type ScenarioOutcome } from "./index.js";
 
-type SupportedParityProviderId = "apple" | "lmstudio" | "claude" | "codex" | "gemini";
+type SupportedParityProviderId = "apple" | "lmstudio" | "claude" | "codex" | "codex-app-server" | "gemini";
 
 interface ProviderTarget {
   provider: SupportedParityProviderId;
@@ -17,15 +17,16 @@ interface ProviderTarget {
   transport: ProviderParityRow["transport"];
 }
 
-const SUPPORTED_PROVIDERS: SupportedParityProviderId[] = [
+export const SUPPORTED_PROVIDERS: SupportedParityProviderId[] = [
   "apple",
   "lmstudio",
   "claude",
   "codex",
+  "codex-app-server",
   "gemini",
 ];
 
-const CANONICAL_LIVE_MODELS: Record<Exclude<SupportedParityProviderId, "lmstudio">, string> = {
+const CANONICAL_LIVE_MODELS: Record<Exclude<SupportedParityProviderId, "lmstudio" | "codex-app-server">, string> = {
   apple: "apple/apple-on-device",
   claude: "claude/sonnet",
   codex: "codex/gpt-5.1-codex",
@@ -37,8 +38,11 @@ const PROVIDER_TRANSPORT: Record<SupportedParityProviderId, ProviderParityRow["t
   lmstudio: "native",
   claude: "bridge",
   codex: "bridge",
+  "codex-app-server": "mediated",
   gemini: "mediated_fallback",
 };
+
+const EXPECTED_PARITY_TOOL_NAME = "lists.echo";
 
 export const providerToolParityLayer: Layer = {
   name: "provider-tool-parity",
@@ -47,8 +51,6 @@ export const providerToolParityLayer: Layer = {
       name: "default-access-gateway-tools",
       run: async (ctx: ScenarioContext) => {
         const rows = await runProviderParityAudit(ctx);
-        ctx.providerParityRows.push(...rows);
-
         const failingRows = rows.filter((row) => row.status === "fail");
         if (failingRows.length > 0) {
           throw new Error(`Provider parity failures: ${failingRows.map((row) => `${row.provider}/${row.model}`).join(", ")}`);
@@ -63,15 +65,21 @@ export const providerToolParityLayer: Layer = {
         }
       },
     },
+    {
+      name: "codex-app-server-explicit-runtime-selection",
+      run: async (ctx: ScenarioContext) => await runCodexAppServerRuntimeSmoke(ctx),
+    },
   ],
 };
 
 async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderParityRow[]> {
-  const configMap = new Map(
-    ctx.gateway.gatewayAdminService.listProviderConfigs().map((config) => [config.providerId.toLowerCase(), config]),
-  );
   const executionFactory = new ExecutionAdapterFactory();
   const rows: ProviderParityRow[] = [];
+  const pushRow = (row: ProviderParityRow): void => {
+    rows.push(row);
+    ctx.providerParityRows.push(row);
+    ctx.recordProviderParityRow?.(row);
+  };
 
   for (const provider of SUPPORTED_PROVIDERS) {
     if (ctx.providerFilters && !ctx.providerFilters.has(provider)) {
@@ -79,10 +87,11 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
     }
 
     if (provider === "apple") {
-      const targetModel = CANONICAL_LIVE_MODELS.apple;
-      const health = await checkProviderAvailability(executionFactory, provider, targetModel, configMap.get(provider));
+      const runtimeConfig = resolveExactParityRuntimeConfig(ctx, provider, CANONICAL_LIVE_MODELS.apple);
+      const targetModel = runtimeConfig.model;
+      const health = await checkProviderAvailability(executionFactory, runtimeConfig);
       if (!health.available) {
-        rows.push(makeUnavailableRow({
+        pushRow(makeUnavailableRow({
           scope: "live",
           provider,
           model: targetModel,
@@ -90,22 +99,22 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
         }));
         continue;
       }
-      rows.push(await runLiveParityTurn(ctx, { provider, model: targetModel, transport: PROVIDER_TRANSPORT[provider] }));
+      pushRow(await runLiveParityTurn(ctx, { provider, model: targetModel, transport: PROVIDER_TRANSPORT[provider] }));
       continue;
     }
 
     if (provider === "lmstudio") {
-      const config = configMap.get(provider);
-      const providerModel = config?.model ?? "lmstudio/unknown";
-      const health = await checkProviderAvailability(executionFactory, provider, providerModel, config);
+      const runtimeConfig = resolveExactParityRuntimeConfig(ctx, provider);
+      const providerModel = runtimeConfig.model;
+      const health = await checkProviderAvailability(executionFactory, runtimeConfig);
       if (!health.available) {
-        rows.push(makeUnavailableRow({
+        pushRow(makeUnavailableRow({
           scope: "metadata",
           provider,
           model: providerModel,
           failureReason: health.failureReason,
         }));
-        rows.push(makeUnavailableRow({
+        pushRow(makeUnavailableRow({
           scope: "live",
           provider,
           model: providerModel,
@@ -115,17 +124,19 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
       }
 
       const modelProvider = executionFactory.createModelProvider({
-        providerId: provider,
-        model: providerModel,
-        baseURL: config?.baseURL,
-        isLocal: true,
+        providerId: runtimeConfig.providerId,
+        model: runtimeConfig.model,
+        apiKey: runtimeConfig.apiKey,
+        authMode: runtimeConfig.authMode,
+        baseURL: runtimeConfig.baseURL,
+        isLocal: runtimeConfig.isLocal,
       });
       const models = await modelProvider.listModels();
       const liveTargets: ProviderTarget[] = [];
 
       for (const model of models) {
         if (model.supportsTools) {
-          rows.push({
+          pushRow({
             scope: "metadata",
             provider,
             model: model.id,
@@ -138,7 +149,7 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
             transport: PROVIDER_TRANSPORT[provider],
           });
         } else {
-          rows.push({
+          pushRow({
             scope: "metadata",
             provider,
             model: model.id,
@@ -150,7 +161,7 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
       }
 
       if (liveTargets.length === 0) {
-        rows.push(makeUnavailableRow({
+        pushRow(makeUnavailableRow({
           scope: "live",
           provider,
           model: providerModel,
@@ -161,14 +172,14 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
           ctx.gateway.gatewayAdminService.setProviderConfig({
             providerId: provider,
             model: liveTargets[0].model,
-            baseURL: config?.baseURL,
+            baseURL: runtimeConfig.baseURL,
             allowedModels: liveTargets.map((target) => target.model),
             allowCustomModel: true,
           });
         } catch (error) {
           const failureReason = describeUnknownError(error);
           for (const target of liveTargets) {
-            rows.push(makeUnavailableRow({
+            pushRow(makeUnavailableRow({
               scope: "live",
               provider,
               model: target.model,
@@ -178,23 +189,29 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
           continue;
         }
         for (const target of liveTargets) {
-          rows.push(await runLiveParityTurn(ctx, target));
+          pushRow(await runLiveParityTurn(ctx, target));
         }
       }
       continue;
     }
 
-    const targetModel = CANONICAL_LIVE_MODELS[provider];
-    const health = await checkProviderAvailability(executionFactory, provider, targetModel, configMap.get(provider));
+    const runtimeConfig = provider === "codex-app-server"
+      ? resolveExactParityRuntimeConfig(ctx, provider)
+      : resolveExactParityRuntimeConfig(ctx, provider, CANONICAL_LIVE_MODELS[provider]);
+    const targetModel = runtimeConfig.model;
+    const health = await checkProviderAvailability(executionFactory, runtimeConfig);
     const modelProvider = executionFactory.createModelProvider({
-      providerId: provider,
-      model: targetModel,
-      isLocal: true,
+      providerId: runtimeConfig.providerId,
+      model: runtimeConfig.model,
+      apiKey: runtimeConfig.apiKey,
+      authMode: runtimeConfig.authMode,
+      baseURL: runtimeConfig.baseURL,
+      isLocal: runtimeConfig.isLocal,
     });
     const models = await modelProvider.listModels();
 
     for (const model of models) {
-      rows.push({
+      pushRow({
         scope: "metadata",
         provider,
         model: model.id,
@@ -213,7 +230,7 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
     }
 
     if (!health.available) {
-      rows.push(makeUnavailableRow({
+      pushRow(makeUnavailableRow({
         scope: "live",
         provider,
         model: targetModel,
@@ -222,7 +239,7 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
       continue;
     }
 
-    rows.push(await runLiveParityTurn(ctx, {
+    pushRow(await runLiveParityTurn(ctx, {
       provider,
       model: targetModel,
       transport: PROVIDER_TRANSPORT[provider],
@@ -234,16 +251,23 @@ async function runProviderParityAudit(ctx: ScenarioContext): Promise<ProviderPar
 
 async function checkProviderAvailability(
   factory: ExecutionAdapterFactory,
-  provider: SupportedParityProviderId,
-  model: string,
-  config: { baseURL?: string } | undefined,
+  runtimeConfig: {
+    providerId: string;
+    model: string;
+    apiKey?: string;
+    authMode?: "api_key" | "host_login";
+    baseURL?: string;
+    isLocal: boolean;
+  },
 ): Promise<{ available: boolean; failureReason?: string }> {
   try {
     const modelProvider = factory.createModelProvider({
-      providerId: provider,
-      model,
-      ...(config?.baseURL ? { baseURL: config.baseURL } : {}),
-      isLocal: true,
+      providerId: runtimeConfig.providerId,
+      model: runtimeConfig.model,
+      apiKey: runtimeConfig.apiKey,
+      authMode: runtimeConfig.authMode,
+      baseURL: runtimeConfig.baseURL,
+      isLocal: runtimeConfig.isLocal,
     });
     const health = await modelProvider.checkHealth();
     if (health.available) {
@@ -251,7 +275,7 @@ async function checkProviderAvailability(
     }
     return {
       available: false,
-      failureReason: `${provider} runtime is not reachable on this host.`,
+      failureReason: `${runtimeConfig.providerId} runtime is not reachable or authenticated on this host.`,
     };
   } catch (error) {
     return {
@@ -265,9 +289,45 @@ async function runLiveParityTurn(
   ctx: ScenarioContext,
   target: ProviderTarget,
 ): Promise<ProviderParityRow> {
+  const maxAttempts = maxLiveParityAttempts(target);
+  let lastResult: ProviderParityRow | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = await runLiveParityTurnAttempt(ctx, target);
+    if (result.status !== "fail") {
+      return result;
+    }
+
+    lastResult = result;
+    if (!shouldRetryLiveParityFailure({
+      provider: target.provider,
+      transport: target.transport,
+      failureReason: result.failureReason,
+      attempt,
+      maxAttempts,
+    })) {
+      return result;
+    }
+  }
+
+  return lastResult ?? {
+    scope: "live",
+    provider: target.provider,
+    model: target.model,
+    transport: target.transport,
+    status: "fail",
+    failureReason: "Live provider parity run failed without a recorded result.",
+  };
+}
+
+async function runLiveParityTurnAttempt(
+  ctx: ScenarioContext,
+  target: ProviderTarget,
+): Promise<ProviderParityRow> {
   const client = await makeClient(ctx.wsUrl, `bench-parity-${target.provider}`);
   const agentId = `bench-${target.provider}-${randomUUID().slice(0, 8)}`;
   const marker = `${target.provider}-${randomUUID().slice(0, 8)}`;
+  const timeoutMs = liveParityTimeoutMs(target.transport);
 
   try {
     const definition = await client.createAgentDefinition({
@@ -278,9 +338,11 @@ async function runLiveParityTurn(
     });
 
     const space = await client.createSpace({
+      idempotencyKey: `workbench:provider-tool-parity:${target.provider}:${randomUUID()}`,
       name: `bench-parity-${target.provider}-${randomUUID().slice(0, 6)}`,
       resourceId: `resource:workbench:parity:${target.provider}:${randomUUID().slice(0, 6)}`,
       goal: `Gateway tool parity check for ${target.provider}`,
+      capabilities: ["lists"],
       initialAgents: [{
         agentId,
         profileId: definition.agentDefinition.agentDefinitionId,
@@ -288,6 +350,7 @@ async function runLiveParityTurn(
         isPrimary: true,
       }],
     });
+    ctx.registerSpace?.(space.id);
 
     const spaceUid = space.spaceUid ?? space.id;
     await client.subscribe([spaceUid]);
@@ -304,13 +367,232 @@ async function runLiveParityTurn(
         input: buildParityPrompt(marker),
         accessMode: "default",
       });
-      const terminalEvent = await waitForTerminalTurnEvent(events, turnResult.turnId, 20_000);
-      const trace = await waitForTerminalTurnTrace(client, space.id, turnResult.turnId, 20_000);
+      ctx.registerTurn?.(space.id, turnResult.turnId);
+      const terminalEvent = await waitForTerminalTurnEvent(events, turnResult.turnId, timeoutMs);
+      const trace = await waitForTerminalTurnTrace(client, space.id, turnResult.turnId, timeoutMs);
 
       const turnEvents = events.filter((event) => event.turnId === turnResult.turnId);
       const observedToolCall = firstToolStarted(turnEvents) ?? firstToolStartedFromTrace(trace);
       const observedToolResult = firstToolCompleted(turnEvents) ?? firstToolCompletedFromTrace(trace);
       const finalAnswer = finalMessageFromEvents(turnEvents) ?? finalMessageFromTrace(trace) ?? turnResult.output ?? "";
+      const observedRuntime = extractObservedRuntimeSelection({
+        turnEvents,
+        trace,
+      });
+      const sawTurnFailure = turnEvents.some((event) => asRecord(event.typedPayload)?.kind === "turn.failed")
+        || traceHasFailure(trace);
+      const sawTurnCompletion = turnEvents.some((event) => asRecord(event.typedPayload)?.kind === "turn.completed")
+        || traceHasCompletion(trace);
+      const sawRateLimitedEvent = hasRateLimitedEvidence(turnEvents, trace);
+
+      if (sawTurnFailure) {
+        const failureReason = resolveTurnFailureReason(turnEvents, trace, turnResult.error);
+        return {
+          scope: "live",
+          provider: target.provider,
+          model: target.model,
+          transport: target.transport,
+          status: classifyLiveParityFailureStatus({
+            provider: target.provider,
+            transport: target.transport,
+            failureReason,
+            sawRateLimitedEvent,
+          }),
+          observedToolCall: observedToolCall?.summary,
+          observedToolResult: observedToolResult?.result,
+          ...toObservedRuntimeFields(observedRuntime),
+          failureReason,
+        };
+      }
+
+      if (!sawTurnCompletion && !finalAnswer.trim()) {
+        const failureReason = terminalEvent
+          ? "Turn ended without a final answer or completion event."
+          : "Timed out waiting for the turn to reach a terminal event.";
+        return {
+          scope: "live",
+          provider: target.provider,
+          model: target.model,
+          transport: target.transport,
+          status: classifyLiveParityFailureStatus({
+            provider: target.provider,
+            transport: target.transport,
+            failureReason,
+            sawRateLimitedEvent,
+          }),
+          observedToolCall: observedToolCall?.summary,
+          observedToolResult: observedToolResult?.result,
+          ...toObservedRuntimeFields(observedRuntime),
+          failureReason,
+        };
+      }
+
+      const validation = validateLiveParityObservation({
+        transport: target.transport,
+        observedToolCallName: observedToolCall?.name,
+        observedToolResultPresent: Boolean(observedToolResult),
+        finalAnswer,
+        marker,
+      });
+
+      if (!validation.ok) {
+        return {
+          scope: "live",
+          provider: target.provider,
+          model: target.model,
+          transport: target.transport,
+          status: "fail",
+          ...(observedToolCall ? { observedToolCall: observedToolCall.summary } : {}),
+          ...(observedToolResult ? { observedToolResult: observedToolResult.result } : {}),
+          ...toObservedRuntimeFields(observedRuntime),
+          failureReason: validation.failureReason,
+        };
+      }
+
+      const runtimeValidation = validateObservedRuntimeSelection({
+        requestedProviderId: target.provider,
+        requestedModelId: target.model,
+        observedProviderId: observedRuntime.providerId,
+        observedModelId: observedRuntime.modelId,
+        requireObservedRuntime: target.provider === "codex-app-server",
+      });
+      if (!runtimeValidation.ok) {
+        return {
+          scope: "live",
+          provider: target.provider,
+          model: target.model,
+          transport: target.transport,
+          status: "fail",
+          ...(observedToolCall ? { observedToolCall: observedToolCall.summary } : {}),
+          ...(observedToolResult ? { observedToolResult: observedToolResult.result } : {}),
+          ...toObservedRuntimeFields(observedRuntime),
+          failureReason: runtimeValidation.failureReason,
+        };
+      }
+
+      return {
+        scope: "live",
+        provider: target.provider,
+        model: target.model,
+        transport: target.transport,
+        status: "pass",
+        observedToolCall: observedToolCall.summary,
+        ...(observedToolResult ? { observedToolResult: observedToolResult.result } : {}),
+        ...toObservedRuntimeFields(observedRuntime),
+      };
+    } finally {
+      unsubscribe();
+    }
+  } catch (error) {
+    const failureReason = error instanceof Error ? error.message : String(error);
+    return {
+      scope: "live",
+      provider: target.provider,
+      model: target.model,
+      transport: target.transport,
+      status: classifyLiveParityFailureStatus({
+        provider: target.provider,
+        transport: target.transport,
+        failureReason,
+        sawRateLimitedEvent: false,
+      }),
+      failureReason,
+    };
+  } finally {
+    await client.disconnect();
+  }
+}
+
+async function runCodexAppServerRuntimeSmoke(ctx: ScenarioContext): Promise<ScenarioOutcome | void> {
+  if (ctx.providerFilters && !ctx.providerFilters.has("codex-app-server")) {
+    return;
+  }
+
+  const executionFactory = new ExecutionAdapterFactory();
+  const runtimeConfig = resolveExactParityRuntimeConfig(ctx, "codex-app-server");
+  const health = await checkProviderAvailability(executionFactory, runtimeConfig);
+  if (!health.available) {
+    skipScenario(
+      "Codex App Server is unavailable on this host.",
+      health.failureReason ? [{ label: "reason", detail: health.failureReason }] : undefined,
+    );
+  }
+
+  const result = await runCodexAppServerSmokeTurn(ctx, {
+    provider: "codex-app-server",
+    model: runtimeConfig.model,
+    transport: PROVIDER_TRANSPORT["codex-app-server"],
+  });
+  if (result.status !== "pass") {
+    throw new Error(result.failureReason ?? "Codex App Server runtime-selection smoke failed.");
+  }
+
+  return {
+    evidence: [
+      { label: "requested_runtime", status: "pass", detail: `${result.provider}/${result.model}` },
+      ...(result.observedModelId
+        ? [{ label: "observed_runtime", status: "pass" as const, detail: result.observedModelId }]
+        : []),
+    ],
+  };
+}
+
+async function runCodexAppServerSmokeTurn(
+  ctx: ScenarioContext,
+  target: ProviderTarget,
+): Promise<ProviderParityRow> {
+  const client = await makeClient(ctx.wsUrl, "bench-codex-app-server-smoke");
+  const agentId = `bench-codex-app-server-${randomUUID().slice(0, 8)}`;
+  const marker = `codex-app-server-${randomUUID().slice(0, 8)}`;
+  const timeoutMs = liveParityTimeoutMs(target.transport);
+
+  try {
+    const definition = await client.createAgentDefinition({
+      name: "Codex App Server Smoke",
+      instructions: "You are a workbench smoke-test agent. Answer concisely and do not call any tools unless asked.",
+      providerHint: target.provider,
+      modelHint: target.model,
+    });
+
+    const space = await client.createSpace({
+      idempotencyKey: `workbench:codex-app-server-smoke:${randomUUID()}`,
+      name: `bench-codex-app-server-smoke-${randomUUID().slice(0, 6)}`,
+      resourceId: `resource:workbench:codex-app-server-smoke:${randomUUID().slice(0, 6)}`,
+      goal: "Codex App Server runtime selection smoke",
+      capabilities: ["lists"],
+      initialAgents: [{
+        agentId,
+        profileId: definition.agentDefinition.agentDefinitionId,
+        role: "participant" as const,
+        isPrimary: true,
+      }],
+    });
+    ctx.registerSpace?.(space.id);
+
+    const spaceUid = space.spaceUid ?? space.id;
+    await client.subscribe([spaceUid]);
+    const events: TurnEventPayload[] = [];
+    const unsubscribe = client.onTurnEvent((event) => {
+      if (event.spaceId === space.id || event.spaceUid === spaceUid) {
+        events.push(event);
+      }
+    });
+
+    try {
+      const turnResult = await client.executeTurn({
+        spaceUid,
+        input: `Reply with exactly: CODEX_APP_SERVER_SMOKE_OK ${marker}`,
+        accessMode: "default",
+      });
+      ctx.registerTurn?.(space.id, turnResult.turnId);
+      const terminalEvent = await waitForTerminalTurnEvent(events, turnResult.turnId, timeoutMs);
+      const trace = await waitForTerminalTurnTrace(client, space.id, turnResult.turnId, timeoutMs);
+      const turnEvents = events.filter((event) => event.turnId === turnResult.turnId);
+      const finalAnswer = finalMessageFromEvents(turnEvents) ?? finalMessageFromTrace(trace) ?? turnResult.output ?? "";
+      const observedRuntime = extractObservedRuntimeSelection({
+        turnEvents,
+        trace,
+      });
       const sawTurnFailure = turnEvents.some((event) => asRecord(event.typedPayload)?.kind === "turn.failed")
         || traceHasFailure(trace);
       const sawTurnCompletion = turnEvents.some((event) => asRecord(event.typedPayload)?.kind === "turn.completed")
@@ -323,9 +605,8 @@ async function runLiveParityTurn(
           model: target.model,
           transport: target.transport,
           status: "fail",
-          observedToolCall: observedToolCall?.summary,
-          observedToolResult: observedToolResult?.result,
-          failureReason: turnErrorMessage(turnEvents) ?? turnErrorMessageFromTrace(trace) ?? turnResult.error ?? "Turn failed before completion.",
+          ...toObservedRuntimeFields(observedRuntime),
+          failureReason: resolveTurnFailureReason(turnEvents, trace, turnResult.error),
         };
       }
 
@@ -336,34 +617,10 @@ async function runLiveParityTurn(
           model: target.model,
           transport: target.transport,
           status: "fail",
-          observedToolCall: observedToolCall?.summary,
-          observedToolResult: observedToolResult?.result,
+          ...toObservedRuntimeFields(observedRuntime),
           failureReason: terminalEvent
             ? "Turn ended without a final answer or completion event."
             : "Timed out waiting for the turn to reach a terminal event.",
-        };
-      }
-
-      if (!observedToolCall || observedToolCall.name !== "lists.echo") {
-        return {
-          scope: "live",
-          provider: target.provider,
-          model: target.model,
-          transport: target.transport,
-          status: "fail",
-          failureReason: "Expected a lists.echo tool call during the turn.",
-        };
-      }
-
-      if (!observedToolResult) {
-        return {
-          scope: "live",
-          provider: target.provider,
-          model: target.model,
-          transport: target.transport,
-          status: "fail",
-          observedToolCall: observedToolCall.summary,
-          failureReason: "Expected a tool result event for the echoed marker.",
         };
       }
 
@@ -374,9 +631,27 @@ async function runLiveParityTurn(
           model: target.model,
           transport: target.transport,
           status: "fail",
-          observedToolCall: observedToolCall.summary,
-          observedToolResult: observedToolResult.result,
+          ...toObservedRuntimeFields(observedRuntime),
           failureReason: `Final answer did not include marker ${marker}.`,
+        };
+      }
+
+      const runtimeValidation = validateObservedRuntimeSelection({
+        requestedProviderId: target.provider,
+        requestedModelId: target.model,
+        observedProviderId: observedRuntime.providerId,
+        observedModelId: observedRuntime.modelId,
+        requireObservedRuntime: true,
+      });
+      if (!runtimeValidation.ok) {
+        return {
+          scope: "live",
+          provider: target.provider,
+          model: target.model,
+          transport: target.transport,
+          status: "fail",
+          ...toObservedRuntimeFields(observedRuntime),
+          failureReason: runtimeValidation.failureReason,
         };
       }
 
@@ -386,8 +661,7 @@ async function runLiveParityTurn(
         model: target.model,
         transport: target.transport,
         status: "pass",
-        observedToolCall: observedToolCall.summary,
-        observedToolResult: observedToolResult.result,
+        ...toObservedRuntimeFields(observedRuntime),
       };
     } finally {
       unsubscribe();
@@ -399,7 +673,7 @@ async function runLiveParityTurn(
       model: target.model,
       transport: target.transport,
       status: "fail",
-      failureReason: error instanceof Error ? error.message : String(error),
+      failureReason: describeUnknownError(error),
     };
   } finally {
     await client.disconnect();
@@ -491,6 +765,34 @@ function turnErrorMessage(events: TurnEventPayload[]): string | null {
   return null;
 }
 
+function resolveTurnFailureReason(
+  events: TurnEventPayload[],
+  trace: SpaceTurnTrace | null,
+  fallback?: string,
+): string {
+  const eventMessage = turnErrorMessage(events);
+  const traceMessage = turnErrorMessageFromTrace(trace);
+  if (!isGenericTurnFailureReason(traceMessage)) {
+    return traceMessage!;
+  }
+  if (!isGenericTurnFailureReason(eventMessage)) {
+    return eventMessage!;
+  }
+  if (!isGenericTurnFailureReason(fallback)) {
+    return fallback!;
+  }
+  return traceMessage ?? eventMessage ?? fallback ?? "Turn failed before completion.";
+}
+
+function isGenericTurnFailureReason(message: string | null | undefined): boolean {
+  const normalized = message?.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  return normalized === "unknown error"
+    || normalized === "turn failed before completion.";
+}
+
 function describeUnknownError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -513,6 +815,156 @@ function buildParityPrompt(marker: string): string {
   ].join(" ");
 }
 
+function resolveExactParityRuntimeConfig(
+  ctx: ScenarioContext,
+  providerId: SupportedParityProviderId,
+  model?: string,
+) {
+  return ctx.gateway.gatewayAdminService.resolveExactProviderRuntimeConfig({
+    providerId,
+    ...(model ? { model } : {}),
+  });
+}
+
+export function normalizeProviderParityToolName(name: string | null | undefined): string | null {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (!trimmed) return null;
+  if (trimmed === EXPECTED_PARITY_TOOL_NAME) {
+    return EXPECTED_PARITY_TOOL_NAME;
+  }
+  const mcpMatch = /^mcp__.+?__(.+)$/.exec(trimmed);
+  if (!mcpMatch) {
+    return trimmed;
+  }
+  return mcpMatch[1].replace(/_/g, ".");
+}
+
+export function validateLiveParityObservation(input: {
+  transport: ProviderParityRow["transport"];
+  observedToolCallName?: string | null;
+  observedToolResultPresent: boolean;
+  finalAnswer: string;
+  marker: string;
+}): { ok: true } | { ok: false; failureReason: string } {
+  if (normalizeProviderParityToolName(input.observedToolCallName) !== EXPECTED_PARITY_TOOL_NAME) {
+    return {
+      ok: false,
+      failureReason: `Expected a ${EXPECTED_PARITY_TOOL_NAME} tool call during the turn.`,
+    };
+  }
+
+  if (input.transport !== "bridge" && !input.observedToolResultPresent) {
+    return {
+      ok: false,
+      failureReason: "Expected a tool result event for the echoed marker.",
+    };
+  }
+
+  if (!input.finalAnswer.includes(input.marker)) {
+    return {
+      ok: false,
+      failureReason: `Final answer did not include marker ${input.marker}.`,
+    };
+  }
+
+  return { ok: true };
+}
+
+export function extractObservedRuntimeSelection(input: {
+  turnEvents: TurnEventPayload[];
+  trace: SpaceTurnTrace | null;
+}): { providerId?: string; modelId?: string } {
+  const eventSelection = extractCompletedEventRuntimeSelection(input.turnEvents);
+  if (eventSelection.providerId || eventSelection.modelId) {
+    return eventSelection;
+  }
+  return extractTraceRuntimeSelection(input.trace);
+}
+
+export function validateObservedRuntimeSelection(input: {
+  requestedProviderId: string;
+  requestedModelId: string;
+  observedProviderId?: string;
+  observedModelId?: string;
+  requireObservedRuntime?: boolean;
+}): { ok: true } | { ok: false; failureReason: string } {
+  const requestedRuntime = formatRuntimeSelection(input.requestedProviderId, input.requestedModelId);
+  const observedProviderId = normalizeObservedProviderId(input.observedProviderId)
+    ?? deriveProviderIdFromModelId(input.observedModelId);
+  const observedModelId = normalizeObservedModelId(observedProviderId, input.observedModelId);
+
+  if (input.requireObservedRuntime && (!observedProviderId || !observedModelId)) {
+    return {
+      ok: false,
+      failureReason: "Turn completed without provider/model execution metadata.",
+    };
+  }
+
+  if (!observedProviderId && !observedModelId) {
+    return { ok: true };
+  }
+
+  const normalizedRequestedModelId = normalizeObservedModelId(input.requestedProviderId, input.requestedModelId)
+    ?? input.requestedModelId.trim();
+  if (observedProviderId && observedProviderId !== input.requestedProviderId) {
+    return {
+      ok: false,
+      failureReason: `Observed runtime ${formatRuntimeSelection(observedProviderId, observedModelId)} did not match requested ${requestedRuntime}.`,
+    };
+  }
+
+  if (observedModelId && observedModelId !== normalizedRequestedModelId) {
+    return {
+      ok: false,
+      failureReason: `Observed runtime ${formatRuntimeSelection(observedProviderId ?? input.requestedProviderId, observedModelId)} did not match requested ${requestedRuntime}.`,
+    };
+  }
+
+  return { ok: true };
+}
+
+export function liveParityTimeoutMs(transport: ProviderParityRow["transport"]): number {
+  return transport === "bridge" || transport === "mediated" || transport === "mediated_fallback" ? 45_000 : 20_000;
+}
+
+export function shouldRetryLiveParityFailure(input: {
+  provider: SupportedParityProviderId;
+  transport: ProviderParityRow["transport"];
+  failureReason?: string;
+  attempt: number;
+  maxAttempts: number;
+}): boolean {
+  if (input.attempt >= input.maxAttempts) {
+    return false;
+  }
+
+  const isTransientParityFailure = input.failureReason === "Timed out waiting for the turn to reach a terminal event."
+    || input.failureReason === `Expected a ${EXPECTED_PARITY_TOOL_NAME} tool call during the turn.`;
+  if (!isTransientParityFailure) {
+    return false;
+  }
+
+  return input.transport === "bridge"
+    || (input.provider === "apple" && input.transport === "native");
+}
+
+export function classifyLiveParityFailureStatus(input: {
+  provider: SupportedParityProviderId;
+  transport: ProviderParityRow["transport"];
+  failureReason?: string;
+  sawRateLimitedEvent: boolean;
+}): ProviderParityRow["status"] {
+  if (input.provider !== "gemini" || input.transport !== "mediated_fallback") {
+    return "fail";
+  }
+
+  if (input.sawRateLimitedEvent || isGeminiTransientHostLimitMessage(input.failureReason)) {
+    return "unavailable";
+  }
+
+  return "fail";
+}
+
 function makeUnavailableRow(input: {
   scope: ProviderParityRow["scope"];
   provider: SupportedParityProviderId;
@@ -529,10 +981,135 @@ function makeUnavailableRow(input: {
   };
 }
 
+function maxLiveParityAttempts(target: ProviderTarget): number {
+  if (target.transport === "bridge") {
+    return 2;
+  }
+  if (target.provider === "apple" && target.transport === "native") {
+    return 2;
+  }
+  return 1;
+}
+
+function toObservedRuntimeFields(input: {
+  providerId?: string;
+  modelId?: string;
+}): Partial<Pick<ProviderParityRow, "observedProviderId" | "observedModelId">> {
+  return {
+    ...(input.providerId ? { observedProviderId: input.providerId } : {}),
+    ...(input.modelId ? { observedModelId: input.modelId } : {}),
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function extractCompletedEventRuntimeSelection(
+  events: TurnEventPayload[],
+): { providerId?: string; modelId?: string } {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const typedPayload = asRecord(event?.typedPayload);
+    if (typedPayload?.kind === "turn.completed") {
+      const metadata = asRecord(typedPayload.metadata);
+      const providerId = normalizeObservedProviderId(metadata?.providerId);
+      const modelId = normalizeObservedModelId(providerId, metadata?.modelId);
+      if (providerId || modelId) {
+        return { providerId, modelId };
+      }
+    }
+
+    const raw = asRecord(event?.data);
+    if (raw?.type !== "turn_completed") continue;
+    const result = asRecord(raw.result);
+    const metadata = asRecord(result?.metadata) ?? asRecord(raw.metadata);
+    const providerId = normalizeObservedProviderId(metadata?.providerId);
+    const modelId = normalizeObservedModelId(providerId, metadata?.modelId);
+    if (providerId || modelId) {
+      return { providerId, modelId };
+    }
+  }
+
+  return {};
+}
+
+function extractTraceRuntimeSelection(trace: SpaceTurnTrace | null): { providerId?: string; modelId?: string } {
+  const run = [...(trace?.executionRuns ?? [])]
+    .reverse()
+    .find((entry) => normalizeObservedProviderId(entry.providerId) || normalizeObservedModelId(entry.providerId, entry.modelId));
+  if (!run) {
+    return {};
+  }
+  const providerId = normalizeObservedProviderId(run.providerId)
+    ?? deriveProviderIdFromModelId(run.modelId);
+  const modelId = normalizeObservedModelId(providerId, run.modelId);
+  return {
+    ...(providerId ? { providerId } : {}),
+    ...(modelId ? { modelId } : {}),
+  };
+}
+
+function normalizeObservedProviderId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : undefined;
+}
+
+function normalizeObservedModelId(providerId: string | undefined, value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.includes("/")) {
+    return trimmed;
+  }
+  return providerId ? `${providerId}/${trimmed}` : trimmed;
+}
+
+function deriveProviderIdFromModelId(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  const delimiterIndex = trimmed.indexOf("/");
+  if (delimiterIndex <= 0) {
+    return undefined;
+  }
+  return trimmed.slice(0, delimiterIndex).toLowerCase();
+}
+
+function formatRuntimeSelection(providerId: string | undefined, modelId: string | undefined): string {
+  const normalizedProviderId = providerId?.trim().toLowerCase() || deriveProviderIdFromModelId(modelId) || "unknown";
+  const normalizedModelId = normalizeObservedModelId(normalizedProviderId, modelId);
+  if (!normalizedModelId) {
+    return normalizedProviderId;
+  }
+  return normalizedModelId.startsWith(`${normalizedProviderId}/`)
+    ? normalizedModelId
+    : `${normalizedProviderId}/${normalizedModelId}`;
+}
+
+function hasRateLimitedEvidence(
+  events: TurnEventPayload[],
+  trace: SpaceTurnTrace | null,
+): boolean {
+  return events.some((event) => {
+    const payload = asRecord(event.typedPayload);
+    const raw = asRecord(event.data);
+    return payload?.kind === "rate_limited" || raw?.type === "rate_limited";
+  }) || (trace?.events.some((event) => event.eventType === "rate_limited") ?? false);
+}
+
+function isGeminiTransientHostLimitMessage(message: string | undefined): boolean {
+  const normalized = message?.toLowerCase() ?? "";
+  if (!normalized) return false;
+  return normalized.includes("exhausted your capacity")
+    || normalized.includes("quota will reset")
+    || normalized.includes("rate limit")
+    || normalized.includes("rate-limit")
+    || normalized.includes("too many requests")
+    || normalized.includes("retrying after");
 }
 
 async function makeClient(wsUrl: string, devicePrefix: string): Promise<GatewayClient> {

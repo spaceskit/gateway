@@ -3,6 +3,39 @@ import { EventBus } from "../src/events/event-bus.js";
 import { DefaultNotificationService } from "../src/notifications/notification-service.js";
 
 describe("DefaultNotificationService task event mapping", () => {
+  test("late-bound push handler delivers notifications created after websocket setup", async () => {
+    const eventBus = new EventBus();
+    const pushes: Array<{ clientId: string; category: string; message: string }> = [];
+    const service = new DefaultNotificationService({ eventBus });
+
+    await service.subscribe("client-1", ["task.input-required"], [{ type: "space", spaceId: "space-1" }]);
+    service.setPushHandler(async (clientId, notification) => {
+      pushes.push({
+        clientId,
+        category: notification.category,
+        message: notification.message,
+      });
+    });
+
+    eventBus.emit({
+      type: "task.input-required",
+      timestamp: new Date(),
+      spaceId: "space-1",
+      data: {
+        taskId: "task-1",
+        message: "Need a decision before proceeding",
+      },
+    } as any);
+
+    expect(pushes).toEqual([
+      {
+        clientId: "client-1",
+        category: "task.input-required",
+        message: "Need a decision before proceeding",
+      },
+    ]);
+  });
+
   test("maps task.progress and task.input-required to user-facing notifications", async () => {
     const eventBus = new EventBus();
     const pushes: Array<{ clientId: string; notification: { category: string; severity: string; message: string } }> = [];

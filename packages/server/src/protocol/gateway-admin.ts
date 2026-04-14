@@ -9,6 +9,27 @@ export interface GatewayListProviderConfigsPayload {
   apiVersion?: string;
 }
 
+export interface GatewayRuntimeDefaultSelectionPayload {
+  providerId: string;
+  modelId: string;
+}
+
+export interface GatewayRuntimeDefaultsPayload {
+  main: GatewayRuntimeDefaultSelectionPayload;
+  concierge: GatewayRuntimeDefaultSelectionPayload;
+  updatedAt: string;
+}
+
+export interface GatewayGetRuntimeDefaultsPayload {
+  apiVersion?: string;
+}
+
+export interface GatewaySetRuntimeDefaultsPayload {
+  apiVersion?: string;
+  main?: GatewayRuntimeDefaultSelectionPayload;
+  concierge?: GatewayRuntimeDefaultSelectionPayload;
+}
+
 export type MainAgentSelectionMode = "provider_model" | "agent_definition";
 export type ConciergeAgentSelectionMode = MainAgentSelectionMode;
 
@@ -145,6 +166,7 @@ export interface GatewayGetProviderTelemetryPayload {
 export interface GatewayGetLocalUsageTelemetryPayload {
   apiVersion?: string;
   providerId?: string;
+  providerIds?: string[];
 }
 
 export interface GatewayGetProviderSettingsPayload {
@@ -306,6 +328,16 @@ export interface GatewayDiscoverLocalAgentsResponsePayload {
 
 export interface GatewayListProviderConfigsResponsePayload {
   configs: ProviderRuntimeConfigPayload[];
+}
+
+export interface GatewayGetRuntimeDefaultsResponsePayload {
+  defaults: GatewayRuntimeDefaultsPayload;
+}
+
+export interface GatewaySetRuntimeDefaultsResponsePayload {
+  defaults: GatewayRuntimeDefaultsPayload;
+  mainAgentState: GatewayMainAgentStatePayload;
+  conciergeAgentState: GatewayConciergeAgentStatePayload;
 }
 
 export interface GatewayGetMainAgentResponsePayload {

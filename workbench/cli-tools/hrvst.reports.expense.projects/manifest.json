@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "id": "hrvst.reports.expense.projects",
+  "displayName": "Harvest Projects Expense Report",
+  "description": "Return the Harvest projects expense report for a time window.",
+  "bundleId": "hrvst-cli",
+  "bundleDisplayName": "Harvest CLI",
+  "bundleDescription": "Gateway-managed Harvest CLI bundle for account, client, project, report, time-entry, and user operations.",
+  "toolGroupId": "reports",
+  "toolGroupDisplayName": "Reports",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/hrvst-cli-tools/spaces-hrvst.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/hrvst-cli-tools/spaces-hrvst.mjs",
+  "argsTemplate": [
+    "--op",
+    "reports.expense.projects",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "array",
+            "description": "Optional extra positional arguments to append after the subcommand.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flags": {
+            "type": "object",
+            "description": "Optional Harvest flags. Use raw CLI flag keys such as `project_id`, `page`, or `external_reference[id]`.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "presentFlags": {
+            "type": "array",
+            "description": "Optional flag names that should be rendered without values, for example `editor`.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool for Harvest CLI operations only after the gateway host is authenticated to Harvest.",
+  "examples": [
+    {
+      "name": "Run harvest projects expense report",
+      "arguments": {
+        "payload": {
+          "flags": {
+            "from": "2026-03-01",
+            "to": "2026-03-21",
+            "page": "all"
+          }
+        }
+      }
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 262144,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/hrvst-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:29.610Z",
+  "updatedAt": "2026-04-11T09:40:29.610Z"
+}

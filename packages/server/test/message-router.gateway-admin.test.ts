@@ -119,6 +119,100 @@ describe("MessageRouter gateway admin handlers", () => {
     expect((response?.payload as any).configs[0].providerId).toBe("openai");
   });
 
+  test("routes gateway.get_runtime_defaults", async () => {
+    const nowIso = new Date().toISOString();
+    const calls: any[] = [];
+    const router = makeRouter({
+      getRuntimeDefaults: async (input: any) => {
+        calls.push(input);
+        return {
+          main: {
+            providerId: "codex-app-server",
+            modelId: "codex-app-server/gpt-5.4",
+          },
+          concierge: {
+            providerId: "openai",
+            modelId: "openai/gpt-4.1",
+          },
+          updatedAt: nowIso,
+        };
+      },
+    });
+
+    const msg = makeMessage(MessageTypes.GATEWAY_GET_RUNTIME_DEFAULTS, {});
+    const response = await router.handle(makeClient(), msg);
+
+    expect(response?.type).toBe(MessageTypes.GATEWAY_GET_RUNTIME_DEFAULTS);
+    expect((response?.payload as any).defaults.main.providerId).toBe("codex-app-server");
+    expect((response?.payload as any).defaults.concierge.modelId).toBe("openai/gpt-4.1");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("routes gateway.set_runtime_defaults", async () => {
+    const nowIso = new Date().toISOString();
+    const calls: any[] = [];
+    const router = makeRouter({
+      setRuntimeDefaults: async (input: any) => {
+        calls.push(input);
+        return {
+          defaults: {
+            main: {
+              providerId: "codex-app-server",
+              modelId: "codex-app-server/gpt-5.4",
+            },
+            concierge: {
+              providerId: "openai",
+              modelId: "openai/gpt-4.1",
+            },
+            updatedAt: nowIso,
+          },
+          mainAgentState: {
+            spaceId: "main-space",
+            spaceUid: "11111111-2222-3333-4444-555555555555",
+            mainAgentId: "main-agent",
+            mainProfileId: "main-profile",
+            providerHint: "codex-app-server",
+            modelHint: "codex-app-server/gpt-5.4",
+            status: "healthy",
+            repaired: false,
+            fallbackApplied: false,
+            updatedAt: nowIso,
+          },
+          conciergeAgentState: {
+            spaceId: "concierge-space",
+            spaceUid: "aaaa1111-2222-3333-4444-555555555555",
+            conciergeAgentId: "concierge-agent",
+            conciergeProfileId: "concierge-profile",
+            providerHint: "openai",
+            modelHint: "openai/gpt-4.1",
+            status: "healthy",
+            repaired: false,
+            fallbackApplied: false,
+            updatedAt: nowIso,
+          },
+        };
+      },
+    });
+
+    const msg = makeMessage(MessageTypes.GATEWAY_SET_RUNTIME_DEFAULTS, {
+      main: {
+        providerId: "codex-app-server",
+        modelId: "codex-app-server/gpt-5.4",
+      },
+    });
+    const response = await router.handle(makeClient(), msg);
+
+    expect(response?.type).toBe(MessageTypes.GATEWAY_SET_RUNTIME_DEFAULTS);
+    expect((response?.payload as any).defaults.main.modelId).toBe("codex-app-server/gpt-5.4");
+    expect((response?.payload as any).mainAgentState.providerHint).toBe("codex-app-server");
+    expect(calls).toEqual([{
+      main: {
+        providerId: "codex-app-server",
+        modelId: "codex-app-server/gpt-5.4",
+      },
+    }]);
+  });
+
   test("acknowledges concierge.action_result", async () => {
     const resolved: any[] = [];
     const router = makeRouter(
@@ -703,6 +797,47 @@ describe("MessageRouter gateway admin handlers", () => {
     expect(received.providerId).toBe("codex");
     expect((response?.payload as any).telemetry.length).toBe(1);
     expect((response?.payload as any).telemetry[0].providerId).toBe("codex");
+  });
+
+  test("routes gateway.get_local_usage_telemetry with providerIds batch", async () => {
+    let received: any = null;
+    const router = makeRouter({
+      listProviderConfigs: () => [
+        {
+          providerId: "codex",
+          model: "codex/gpt-5.1-codex",
+          hasApiKey: false,
+          updatedAt: new Date().toISOString(),
+          source: "runtime",
+        },
+        {
+          providerId: "openai",
+          model: "openai/gpt-4.1",
+          hasApiKey: true,
+          updatedAt: new Date().toISOString(),
+          source: "runtime",
+        },
+        {
+          providerId: "claude",
+          model: "claude/sonnet",
+          hasApiKey: false,
+          updatedAt: new Date().toISOString(),
+          source: "runtime",
+        },
+      ],
+      getLocalUsageTelemetry: async (input: any) => {
+        received = input;
+        return [];
+      },
+    });
+
+    const msg = makeMessage(MessageTypes.GATEWAY_GET_LOCAL_USAGE_TELEMETRY, {
+      providerIds: ["codex", "openai"],
+    });
+    const response = await router.handle(makeClient(), msg);
+
+    expect(response?.type).toBe(MessageTypes.GATEWAY_GET_LOCAL_USAGE_TELEMETRY);
+    expect(received.providerIds).toEqual(["codex", "openai"]);
   });
 
   test("validates configured providerId for gateway.get_local_usage_telemetry", async () => {

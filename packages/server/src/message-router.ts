@@ -20,6 +20,7 @@ import type { SpaceResourceHandlerContext } from "./handlers/space-resource-hand
 import type { SpaceSharingHandlerContext } from "./handlers/space-sharing-handlers.js";
 import type { TransportHandlerContext } from "./handlers/transport-handlers.js";
 import type { TurnHandlerContext } from "./handlers/turn-handlers.js";
+import type { WorkbenchHandlerContext } from "./handlers/workbench-handlers.js";
 import {
   isGatewayErrorLike,
   normalizeString,
@@ -42,6 +43,7 @@ import {
   type GatewayWorkspaceDefaultsService,
   type OrchestratorCommandService,
   type SchedulerService,
+  type WorkbenchService,
   type SpeechSessionService,
   type ToolAccessPolicyService,
   type UsageSnapshotService,
@@ -85,6 +87,7 @@ export type {
   GatewayWorkspaceDefaultsService,
   OrchestratorCommandService,
   SchedulerService,
+  WorkbenchService,
   SpeechSessionService,
   ToolAccessPolicyService,
   UsageSnapshotService,
@@ -134,6 +137,7 @@ export class MessageRouter {
   private get spaceTemplateService(): SpaceTemplateService | null { return this.options.spaceTemplateService ?? null; }
   private get usageSnapshotService(): UsageSnapshotService | null { return this.options.usageSnapshotService ?? null; }
   private get schedulerService(): SchedulerService | null { return this.options.schedulerService ?? null; }
+  private get workbenchService(): WorkbenchService | null { return this.options.workbenchService ?? null; }
   private get spaceContextService(): SpaceContextService | null { return this.options.spaceContextService ?? null; }
   private get spaceSharingService(): SpaceSharingService | null { return this.options.spaceSharingService ?? null; }
   private get turnHistoryService(): TurnHistoryService | null { return this.options.turnHistoryService ?? null; }
@@ -273,13 +277,27 @@ export class MessageRouter {
     };
   }
   identityTemplateHandlerContext(): IdentityTemplateHandlerContext {
-    return { ...this.spaceDecorators(), gatewayAdminService: this.gatewayAdminService, gatewayIdentityService: this.gatewayIdentityService, spaceTemplateService: this.spaceTemplateService, spaceWorkspaceService: this.spaceWorkspaceService, response: this.response.bind(this), errorResponse: this.errorResponse.bind(this) };
+    return {
+      ...this.spaceDecorators(),
+      gatewayAdminService: this.gatewayAdminService,
+      gatewayIdentityService: this.gatewayIdentityService,
+      spaceTemplateService: this.spaceTemplateService,
+      spaceWorkspaceService: this.spaceWorkspaceService,
+      spaceManager: this.spaceManager,
+      broadcastToSpace: this.broadcastToSpace,
+      listAssignmentsByProfileId: this.options.listAssignmentsByProfileId,
+      response: this.response.bind(this),
+      errorResponse: this.errorResponse.bind(this),
+    };
   }
   gatewayGovernanceHandlerContext(): GatewayGovernanceHandlerContext {
     return { gatewayCapabilityAccessService: this.gatewayCapabilityAccessService, gatewayKnowledgeBaseService: this.gatewayKnowledgeBaseService, gatewayLibraryService: this.gatewayLibraryService, gatewayPolicyService: this.gatewayPolicyService, gatewaySkillCatalogService: this.gatewaySkillCatalogService, usageSnapshotService: this.usageSnapshotService, response: this.response.bind(this), errorResponse: this.errorResponse.bind(this) };
   }
   schedulerHandlerContext(): SchedulerHandlerContext {
     return { orchestratorCommandService: this.orchestratorCommandService, schedulerService: this.schedulerService, resolveSpaceUid: this.resolveSpaceUid.bind(this), response: this.response.bind(this), errorResponse: this.errorResponse.bind(this), broadcastToSpace: this.broadcastToSpace };
+  }
+  workbenchHandlerContext(): WorkbenchHandlerContext {
+    return { workbenchService: this.workbenchService, response: this.response.bind(this), errorResponse: this.errorResponse.bind(this) };
   }
   spaceSharingHandlerContext(): SpaceSharingHandlerContext {
     return { spaceContextService: this.spaceContextService, spaceSharingService: this.spaceSharingService, resolveSpaceUid: this.resolveSpaceUid.bind(this), response: this.response.bind(this), errorResponse: this.errorResponse.bind(this) };
@@ -404,6 +422,16 @@ export class MessageRouter {
     const cached = this.spaceUidBySpaceId.get(spaceId);
     if (cached) return cached;
     const fallback = deterministicUuid(spaceId, "spaceskit.space.uuid");
+    if (typeof this.options.resolveSpaceUid === "function") {
+      try {
+        const rawResolved = await this.options.resolveSpaceUid(spaceId);
+        const resolved = normalizeUuid(rawResolved) || normalizeString(rawResolved);
+        if (resolved) {
+          this.cacheSpaceIdentity(spaceId, resolved);
+          return resolved;
+        }
+      } catch {}
+    }
     if (!this.spaceAdminService || typeof this.spaceAdminService.getSpace !== "function") {
       this.cacheSpaceIdentity(spaceId, fallback);
       return fallback;

@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { ErrorPayload } from "../protocol.js";
 import {
   MessageTypes,
+  type AgentDefinitionSummaryPayload,
   type GatewayMessage,
   type IdentityArchiveAgentDefinitionPayload,
   type IdentityArchiveAgentDefinitionResponsePayload,
@@ -53,12 +55,24 @@ import type {
   SpaceWorkspaceService,
 } from "../message-router-space-services.js";
 import { normalizeString } from "../message-router-utils.js";
+import type { SpaceManager } from "@spaceskit/core";
 
 export interface IdentityTemplateHandlerContext extends RouterSpaceDecorators {
   gatewayAdminService: GatewayAdminService | null;
   gatewayIdentityService: GatewayIdentityService | null;
   spaceTemplateService: SpaceTemplateService | null;
   spaceWorkspaceService: SpaceWorkspaceService | null;
+  spaceManager: Pick<SpaceManager, "invalidateCache">;
+  broadcastToSpace: (spaceUid: string, msg: GatewayMessage) => void;
+  listAssignmentsByProfileId?: (profileId: string) => Array<{
+    spaceId: string;
+    agentId: string;
+    profileId: string;
+  }> | Promise<Array<{
+    spaceId: string;
+    agentId: string;
+    profileId: string;
+  }>>;
   response: (correlationId: string, type: string, payload?: unknown) => GatewayMessage;
   errorResponse: (
     correlationId: string,
@@ -143,14 +157,15 @@ export async function handleIdentityUpdateAgentDefinition(
     return context.errorResponse(msg.id, "INVALID_ARGUMENT", "agentDefinitionId is required");
   }
 
+  const existingAgentDefinition = context.gatewayIdentityService.getAgentDefinition(payload.agentDefinitionId);
+  if (!existingAgentDefinition) {
+    return context.errorResponse(msg.id, "NOT_FOUND", `Agent Definition not found: ${payload.agentDefinitionId}`);
+  }
+
   const hasProviderHint = Object.prototype.hasOwnProperty.call(payload, "providerHint");
   const hasModelHint = Object.prototype.hasOwnProperty.call(payload, "modelHint");
   const hasModelConfig = Object.prototype.hasOwnProperty.call(payload, "modelConfig");
   if (context.gatewayAdminService && (hasProviderHint || hasModelHint || hasModelConfig)) {
-    const existingAgentDefinition = context.gatewayIdentityService.getAgentDefinition(payload.agentDefinitionId);
-    if (!existingAgentDefinition) {
-      return context.errorResponse(msg.id, "NOT_FOUND", `Agent Definition not found: ${payload.agentDefinitionId}`);
-    }
     context.gatewayAdminService.validateProfileModelSelection({
       providerHint: hasProviderHint
         ? normalizeString(payload.providerHint)
@@ -163,6 +178,13 @@ export async function handleIdentityUpdateAgentDefinition(
   }
 
   const result = context.gatewayIdentityService.updateAgentDefinition(payload);
+  if (runtimeSelectionChanged(existingAgentDefinition, result.agentDefinition)) {
+    await notifyAffectedSpacesForRuntimeUpdate(
+      context,
+      payload.agentDefinitionId,
+      result.agentDefinition.updatedAt,
+    );
+  }
   return context.response(msg.id, MessageTypes.IDENTITY_UPDATE_AGENT_DEFINITION, result satisfies IdentityUpdateAgentDefinitionResponsePayload);
 }
 
@@ -181,6 +203,66 @@ export async function handleIdentityArchiveAgentDefinition(
 
   const result = context.gatewayIdentityService.archiveAgentDefinition(payload);
   return context.response(msg.id, MessageTypes.IDENTITY_ARCHIVE_AGENT_DEFINITION, result satisfies IdentityArchiveAgentDefinitionResponsePayload);
+}
+
+function runtimeSelectionChanged(
+  previous: AgentDefinitionSummaryPayload | null,
+  next: AgentDefinitionSummaryPayload,
+): boolean {
+  if (!previous) return false;
+
+  const previousProviderHint = normalizeString(previous.providerHint);
+  const nextProviderHint = normalizeString(next.providerHint);
+  if (previousProviderHint !== nextProviderHint) {
+    return true;
+  }
+
+  const previousModelHint = normalizeString(previous.modelHint);
+  const nextModelHint = normalizeString(next.modelHint);
+  if (previousModelHint !== nextModelHint) {
+    return true;
+  }
+
+  return JSON.stringify(previous.modelConfig ?? null) !== JSON.stringify(next.modelConfig ?? null);
+}
+
+async function notifyAffectedSpacesForRuntimeUpdate(
+  context: IdentityTemplateHandlerContext,
+  agentDefinitionId: string,
+  updatedAt: string,
+): Promise<void> {
+  const listAssignmentsByProfileId = context.listAssignmentsByProfileId;
+  if (!listAssignmentsByProfileId) {
+    return;
+  }
+
+  const assignments = await listAssignmentsByProfileId(agentDefinitionId);
+  if (assignments.length === 0) {
+    return;
+  }
+
+  const invalidatedSpaces = new Set<string>();
+  for (const assignment of assignments) {
+    if (!invalidatedSpaces.has(assignment.spaceId)) {
+      invalidatedSpaces.add(assignment.spaceId);
+      context.spaceManager.invalidateCache(assignment.spaceId);
+    }
+
+    const spaceUid = await context.resolveSpaceUid(assignment.spaceId);
+    context.broadcastToSpace(spaceUid, {
+      type: MessageTypes.SPACE_AGENT_UPDATED,
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      payload: {
+        spaceId: assignment.spaceId,
+        spaceUid,
+        agentId: assignment.agentId,
+        oldProfileId: assignment.profileId,
+        newProfileId: assignment.profileId,
+        updatedAt: normalizeString(updatedAt) ?? new Date().toISOString(),
+      },
+    });
+  }
 }
 
 export async function handleIdentityListPersonas(

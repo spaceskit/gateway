@@ -30,6 +30,8 @@ import type {
   GatewayGetProviderSettingsResponsePayload,
   GatewayGetProviderTelemetryPayload,
   GatewayGetProviderTelemetryResponsePayload,
+  GatewayGetRuntimeDefaultsPayload,
+  GatewayGetRuntimeDefaultsResponsePayload,
   GatewayGetToolPayload,
   GatewayGetToolResponsePayload,
   GatewayGetWorkspaceDefaultsResponsePayload,
@@ -89,6 +91,8 @@ import type {
   GatewaySetMainAgentResponsePayload,
   GatewaySetProviderConfigPayload,
   GatewaySetProviderConfigResponsePayload,
+  GatewaySetRuntimeDefaultsPayload,
+  GatewaySetRuntimeDefaultsResponsePayload,
   GatewaySetWorkspaceDefaultsPayload,
   GatewaySetWorkspaceDefaultsResponsePayload,
   GatewaySkillDeletePayload,
@@ -144,6 +148,8 @@ import type {
   SchedulerDeleteJobResponsePayload,
   SchedulerGetJobPayload,
   SchedulerGetJobResponsePayload,
+  SchedulerListEvalDefinitionsPayload,
+  SchedulerListEvalDefinitionsResponsePayload,
   SchedulerLinkSpacePayload,
   SchedulerLinkSpaceResponsePayload,
   SchedulerListJobsPayload,
@@ -156,6 +162,38 @@ import type {
   SchedulerUnlinkSpaceResponsePayload,
   SchedulerUpdateJobPayload,
   SchedulerUpdateJobResponsePayload,
+  WorkbenchApproveStagePayload,
+  WorkbenchApproveStageResponsePayload,
+  WorkbenchCancelRunPayload,
+  WorkbenchCancelRunResponsePayload,
+  WorkbenchCreateBatchPayload,
+  WorkbenchCreateBatchResponsePayload,
+  WorkbenchGetPolicyPayload,
+  WorkbenchGetPolicyResponsePayload,
+  WorkbenchGetQueueItemPayload,
+  WorkbenchGetQueueItemResponsePayload,
+  WorkbenchGetRunPayload,
+  WorkbenchGetRunResponsePayload,
+  WorkbenchListArtifactsPayload,
+  WorkbenchListArtifactsResponsePayload,
+  WorkbenchListBatchesPayload,
+  WorkbenchListBatchesResponsePayload,
+  WorkbenchListQueuePayload,
+  WorkbenchListQueueResponsePayload,
+  WorkbenchListRunsPayload,
+  WorkbenchListRunsResponsePayload,
+  WorkbenchRejectStagePayload,
+  WorkbenchRejectStageResponsePayload,
+  WorkbenchRetryRunPayload,
+  WorkbenchRetryRunResponsePayload,
+  WorkbenchSetModePayload,
+  WorkbenchSetModeResponsePayload,
+  WorkbenchStartRunPayload,
+  WorkbenchStartRunResponsePayload,
+  WorkbenchUpdateBatchPayload,
+  WorkbenchUpdateBatchResponsePayload,
+  WorkbenchUpdatePolicyPayload,
+  WorkbenchUpdatePolicyResponsePayload,
   ConciergeCallAnswerPayload,
   ConciergeCallAudioChunkPayload,
   ConciergeCallControlPayload,
@@ -200,6 +238,12 @@ export interface ConciergeEscalationService {
 export interface GatewayAdminService {
   discoverLocalAgents: () => Promise<GatewayDiscoverLocalAgentsResponsePayload["agents"]>;
   listProviderConfigs: () => GatewayListProviderConfigsResponsePayload["configs"];
+  getRuntimeDefaults: (
+    input?: GatewayGetRuntimeDefaultsPayload,
+  ) => Promise<GatewayGetRuntimeDefaultsResponsePayload["defaults"]>;
+  setRuntimeDefaults: (
+    input: GatewaySetRuntimeDefaultsPayload,
+  ) => Promise<GatewaySetRuntimeDefaultsResponsePayload>;
   resolveMainSpaceId?: () => string;
   resolveConciergeSpaceId?: () => string;
   getMainAgent: (
@@ -435,6 +479,9 @@ export interface SchedulerService {
   listJobs: (
     input?: SchedulerListJobsPayload & { principalId?: string },
   ) => Promise<SchedulerListJobsResponsePayload["jobs"]>;
+  listEvalDefinitions: (
+    input?: SchedulerListEvalDefinitionsPayload,
+  ) => Promise<SchedulerListEvalDefinitionsResponsePayload["definitions"]>;
   updateJob: (
     input: SchedulerUpdateJobPayload & { principalId: string },
   ) => Promise<SchedulerUpdateJobResponsePayload["job"]>;
@@ -453,6 +500,57 @@ export interface SchedulerService {
   runNow: (
     input: SchedulerRunNowPayload & { principalId: string },
   ) => Promise<SchedulerRunNowResponsePayload>;
+}
+
+export interface WorkbenchService {
+  listQueue: (
+    input?: WorkbenchListQueuePayload & { principalId?: string },
+  ) => Promise<WorkbenchListQueueResponsePayload["items"]>;
+  getQueueItem: (
+    input: WorkbenchGetQueueItemPayload & { principalId?: string },
+  ) => Promise<WorkbenchGetQueueItemResponsePayload["item"] | null>;
+  createBatch: (
+    input: WorkbenchCreateBatchPayload & { principalId: string },
+  ) => Promise<WorkbenchCreateBatchResponsePayload["batch"]>;
+  listBatches: (
+    input?: WorkbenchListBatchesPayload & { principalId?: string },
+  ) => Promise<WorkbenchListBatchesResponsePayload["batches"]>;
+  updateBatch: (
+    input: WorkbenchUpdateBatchPayload & { principalId: string },
+  ) => Promise<WorkbenchUpdateBatchResponsePayload["batch"]>;
+  startRun: (
+    input: WorkbenchStartRunPayload & { principalId: string },
+  ) => Promise<WorkbenchStartRunResponsePayload["run"]>;
+  retryRun: (
+    input: WorkbenchRetryRunPayload & { principalId: string },
+  ) => Promise<WorkbenchRetryRunResponsePayload["run"]>;
+  cancelRun: (
+    input: WorkbenchCancelRunPayload & { principalId: string },
+  ) => Promise<WorkbenchCancelRunResponsePayload["run"]>;
+  listRuns: (
+    input?: WorkbenchListRunsPayload & { principalId?: string },
+  ) => Promise<WorkbenchListRunsResponsePayload["runs"]>;
+  getRun: (
+    input: WorkbenchGetRunPayload & { principalId?: string },
+  ) => Promise<WorkbenchGetRunResponsePayload["run"] | null>;
+  approveStage: (
+    input: WorkbenchApproveStagePayload & { principalId: string },
+  ) => Promise<WorkbenchApproveStageResponsePayload["run"]>;
+  rejectStage: (
+    input: WorkbenchRejectStagePayload & { principalId: string },
+  ) => Promise<WorkbenchRejectStageResponsePayload["run"]>;
+  setMode: (
+    input: WorkbenchSetModePayload & { principalId: string },
+  ) => Promise<WorkbenchSetModeResponsePayload>;
+  listArtifacts: (
+    input: WorkbenchListArtifactsPayload & { principalId?: string },
+  ) => Promise<WorkbenchListArtifactsResponsePayload["artifacts"]>;
+  getPolicy: (
+    input?: WorkbenchGetPolicyPayload & { principalId?: string },
+  ) => Promise<WorkbenchGetPolicyResponsePayload["policy"]>;
+  updatePolicy: (
+    input: WorkbenchUpdatePolicyPayload & { principalId: string },
+  ) => Promise<WorkbenchUpdatePolicyResponsePayload["policy"]>;
 }
 
 export interface GatewayWorkspaceDefaultsService {

@@ -1511,11 +1511,31 @@ export class GatewayServer {
         typeof rawEvent.turnId === "string"
           ? (rawEvent.turnId as string)
           : "";
+      const rootTurnId = typeof rawEvent.rootTurnId === "string" ? rawEvent.rootTurnId : undefined;
+      const conversationTopology = typeof rawEvent.conversationTopology === "string"
+        ? rawEvent.conversationTopology
+        : undefined;
+      const transcriptVisibility = this.normalizeTranscriptVisibility(
+        typeof innerEvent.transcriptVisibility === "string"
+          ? innerEvent.transcriptVisibility
+          : typeof rawEvent.transcriptVisibility === "string"
+            ? rawEvent.transcriptVisibility
+            : undefined,
+      );
+      const summaryTurnId = typeof rawEvent.summaryTurnId === "string" ? rawEvent.summaryTurnId : undefined;
+      const streamKind = this.normalizeStreamKind(
+        typeof innerEvent.streamKind === "string" ? innerEvent.streamKind : undefined,
+      );
       const payload: TurnStreamPayload = {
         spaceId,
         spaceUid,
         turnId,
+        rootTurnId,
         agentId: this.resolveTurnAgentId(rawEvent, innerEvent),
+        ...(conversationTopology ? { conversationTopology } : {}),
+        ...(transcriptVisibility ? { transcriptVisibility } : {}),
+        ...(summaryTurnId ? { summaryTurnId } : {}),
+        ...(streamKind ? { streamKind } : {}),
         delta:
           typeof innerEvent.text === "string"
             ? (innerEvent.text as string)
@@ -1588,11 +1608,31 @@ export class GatewayServer {
     const isStreamingChunk = eventSubtype === "text_delta";
 
     if (isStreamingChunk) {
+      const rootTurnId = typeof eventRecord.rootTurnId === "string" ? eventRecord.rootTurnId : undefined;
+      const conversationTopology = typeof eventRecord.conversationTopology === "string"
+        ? eventRecord.conversationTopology
+        : undefined;
+      const transcriptVisibility = this.normalizeTranscriptVisibility(
+        typeof turnEvent?.transcriptVisibility === "string"
+          ? turnEvent.transcriptVisibility
+          : typeof eventRecord.transcriptVisibility === "string"
+            ? eventRecord.transcriptVisibility
+            : undefined,
+      );
+      const summaryTurnId = typeof eventRecord.summaryTurnId === "string" ? eventRecord.summaryTurnId : undefined;
+      const streamKind = this.normalizeStreamKind(
+        typeof turnEvent?.streamKind === "string" ? turnEvent.streamKind : undefined,
+      );
       const payload: TurnStreamPayload = {
         spaceId,
         spaceUid,
         turnId,
+        rootTurnId,
         agentId: this.resolveTurnAgentId(eventRecord, turnEvent),
+        ...(conversationTopology ? { conversationTopology } : {}),
+        ...(transcriptVisibility ? { transcriptVisibility } : {}),
+        ...(summaryTurnId ? { summaryTurnId } : {}),
+        ...(streamKind ? { streamKind } : {}),
         delta: typeof turnEvent?.text === "string" ? turnEvent.text : "",
         seq: this.coerceInteger(turnEvent?.seq ?? eventRecord.seq, 0),
         done: this.coerceBoolean(turnEvent?.done, false),
@@ -1668,6 +1708,34 @@ export class GatewayServer {
           return "started";
         }
         return "streaming";
+    }
+  }
+
+  private normalizeTranscriptVisibility(
+    value: string | undefined,
+  ): TurnStreamPayload["transcriptVisibility"] {
+    switch (value?.trim().toLowerCase()) {
+      case "visible":
+        return "visible";
+      case "activity_only":
+        return "activity_only";
+      case "summary":
+        return "summary";
+      default:
+        return undefined;
+    }
+  }
+
+  private normalizeStreamKind(
+    value: string | undefined,
+  ): TurnStreamPayload["streamKind"] {
+    switch (value?.trim().toLowerCase()) {
+      case "assistant_output":
+        return "assistant_output";
+      case "provider_client":
+        return "provider_client";
+      default:
+        return undefined;
     }
   }
 

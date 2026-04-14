@@ -129,6 +129,9 @@ export function initializeCollaborationServices(state: BootstrapState): void {
       changeSetFiles: state.spaceChangeSetFileRepo,
       usageAnalytics: state.usageRepo,
       agentUsageSessions: state.agentUsageSessionRepo,
+      onAgentUsageSessionReset: (spaceId, agentId) => {
+        state.spaceManager?.resetAgentSession(spaceId, agentId);
+      },
     })
     : null;
 

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@spaceskit/observability";
 import type {
+  GatewayRuntimeDefaultsRepository,
   IntegrationRequestRepository,
   ProfileModelConfig,
   ProfileRepository,
@@ -18,6 +20,7 @@ import type {
   GatewayConciergeAgentStatePayload,
   GatewayGetConciergeAgentPayload,
   GatewayGetMainAgentPayload,
+  GatewayGetRuntimeDefaultsPayload,
   GatewayCreateIntegrationRequestPayload,
   GatewayCreateIntegrationRequestResponsePayload,
   GatewayProviderAuthAccountPayload,
@@ -34,6 +37,8 @@ import type {
   GatewayListIntegrationRequestsPayload,
   GatewayListIntegrationRequestsResponsePayload,
   GatewayMainAgentStatePayload,
+  GatewayRuntimeDefaultSelectionPayload,
+  GatewayRuntimeDefaultsPayload,
   GatewaySetConciergeAgentPayload,
   GatewayRegisterToolPayload,
   GatewayRegisterToolResponsePayload,
@@ -44,6 +49,8 @@ import type {
   GatewayScaffoldToolPayload,
   GatewayScaffoldToolResponsePayload,
   GatewaySetMainAgentPayload,
+  GatewaySetRuntimeDefaultsPayload,
+  GatewaySetRuntimeDefaultsResponsePayload,
   GatewayModelCatalogEntryPayload,
   GatewayModelCatalogSourcePayload,
   GatewayModelDetectionStatusPayload,
@@ -63,6 +70,9 @@ import type {
 import {
   ClaudeAgentSdkModelProvider,
   type ClaudeAgentSdkAuthAccount,
+  CodexAppServerModelProvider,
+  type CodexAppServerAuthAccount,
+  type CodexAppServerProbeResult,
   type ClaudeAgentSdkProbeResult,
 } from "@spaceskit/provider-runtime";
 import type {
@@ -76,6 +86,29 @@ import type { LocalProviderUsageTelemetry } from "./services/local-usage-telemet
 import type { CliToolService } from "./services/cli-tool-service.js";
 import type { AccessGrantService } from "./services/access-grant-service.js";
 import type { ToolApprovalGrantService } from "./services/tool-approval-grant-service.js";
+import {
+  API_KEY_ENV_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
+  inferDefaultProviderAuthStatus,
+  isCliExecutorProvider,
+  isLikelyLocalBaseURL,
+  isLocalProvider,
+  isOpenAICompatibleProvider,
+  keyFromEnvironment,
+  LMSTUDIO_BASE_URL_ENV,
+  LOCAL_PROVIDER_IDS,
+  LOCAL_PROVIDER_MODEL_MANIFEST,
+  normalizeProviderAuthMode,
+  OLLAMA_BASE_URL_ENV,
+  OPENAI_BASE_URL_ENV,
+  providerDisplayName,
+  providerInstallHint,
+  providerRecommended,
+  providerRequiresApiKey,
+  providerSupportedAuthModes,
+  resolveProviderAuthMode,
+  resolveRequestedProviderAuthMode,
+} from "./services/provider-catalog-support.js";
 import { classifyExecutionAdapter, mapExecutionClassToCatalogGroup } from "./execution/execution-adapter-factory.js";
 import { LocalExecutableResolver } from "./execution/local-executable-resolver.js";
 
@@ -104,6 +137,7 @@ export type GatewayProviderAuthStatus = GatewayProviderAuthStatusPayload;
 export type GatewayProviderAuthAccount = GatewayProviderAuthAccountPayload;
 export type GatewayModelCatalogEntry = GatewayModelCatalogEntryPayload;
 export type GatewayModelProviderCatalog = GatewayModelProviderCatalogPayload;
+export type GatewayRuntimeDefaults = GatewayRuntimeDefaultsPayload;
 
 interface OpenAICompatibleDetectedModel {
   id: string;
@@ -128,6 +162,17 @@ export type PublicProviderRuntimeConfig = ProviderRuntimeConfigPayload;
 export type ProviderTelemetry = ProviderTelemetryPayload;
 export type ProviderTelemetrySource = ProviderTelemetrySourcePayload;
 export type ProviderTelemetryWindow = ProviderTelemetryWindowPayload;
+
+export interface ExactProviderRuntimeSelection {
+  providerId: string;
+  model: string;
+  apiKey?: string;
+  apiKeySecretRef?: string;
+  authMode?: GatewayProviderAuthMode;
+  baseURL?: string;
+  isLocal: boolean;
+  nativeCliToolsEnabled: boolean;
+}
 
 export interface PutSecretRefInput {
   secretRef?: string;
@@ -194,6 +239,7 @@ export interface GatewayAdminServiceOptions {
   mainAgentAutoRepairEnabled?: boolean;
   providerSecretRefService?: ProviderSecretRefService;
   providerConfigRepo?: ProviderConfigRepository;
+  gatewayRuntimeDefaultsRepo?: GatewayRuntimeDefaultsRepository;
   gatewayProfile?: GatewayCoreProfileId;
   defaultProviderId?: string;
   defaultModelId?: string;
@@ -216,6 +262,12 @@ export interface GatewayAdminServiceOptions {
     authMode: GatewayProviderAuthMode;
     apiKey?: string;
   }) => Promise<ClaudeAgentSdkCatalogProbe>;
+  codexAppServerMetadataProbe?: (input: {
+    providerId: string;
+    model: string;
+    authMode: GatewayProviderAuthMode;
+    apiKey?: string;
+  }) => Promise<CodexAppServerCatalogProbe>;
 }
 
 export interface AppleFoundationAvailabilitySnapshot {
@@ -236,18 +288,20 @@ interface LocalClientTemplate {
   notes?: string;
 }
 
-interface ResolvedProviderSelection {
-  providerId: string;
-  model: string;
-  apiKey?: string;
-  apiKeySecretRef?: string;
-  authMode?: GatewayProviderAuthMode;
-  baseURL?: string;
-  isLocal: boolean;
-  nativeCliToolsEnabled: boolean;
-}
+interface ResolvedProviderSelection extends ExactProviderRuntimeSelection {}
 
 interface ClaudeAgentSdkCatalogProbe {
+  authStatus: GatewayProviderAuthStatus;
+  authAccount?: GatewayProviderAuthAccount;
+  models: Array<{
+    id: string;
+    displayName: string;
+    contextWindow?: number;
+  }>;
+  detectionError?: string;
+}
+
+interface CodexAppServerCatalogProbe {
   authStatus: GatewayProviderAuthStatus;
   authAccount?: GatewayProviderAuthAccount;
   models: Array<{
@@ -279,6 +333,18 @@ interface LocalProviderTelemetryProbeResult {
   message?: string;
   accountLabel?: string;
   windows?: ProviderTelemetryWindow[];
+}
+
+interface ClaudeOAuthAccessTokenResult {
+  accessToken?: string;
+  source?: "keychain" | "credentials_file";
+  message?: string;
+}
+
+interface ClaudeOAuthUsageResult {
+  windows: ProviderTelemetryWindow[];
+  accountLabel?: string;
+  message?: string;
 }
 
 const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
@@ -313,6 +379,17 @@ const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
     defaultPersonalityPrompt: "You are a coding-focused assistant optimized for implementation tasks.",
   },
   {
+    id: "codex-app-server",
+    name: "Codex App Server",
+    commands: ["codex"],
+    recommendedProviderId: "codex-app-server",
+    recommendedModel: "codex-app-server/gpt-5.4",
+    requiresApiKey: false,
+    defaultProfileName: "Codex App Server Agent",
+    defaultPersonalityPrompt: "You are a coding-focused assistant running through Codex App Server with mediated gateway tools.",
+    notes: "Uses the local codex app-server transport and can authenticate with ChatGPT or OPENAI_API_KEY.",
+  },
+  {
     id: "lmstudio",
     name: "LM Studio",
     commands: ["lms", "lmstudio"],
@@ -326,98 +403,14 @@ const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
   },
 ];
 
-const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
-  apple: "apple/apple-on-device",
-  anthropic: "anthropic/claude-sonnet-4-5",
-  "claude-agent-sdk": "claude-agent-sdk/claude-sonnet-4-5",
-  claude: "claude/sonnet",
-  codex: "codex/gpt-5.1-codex",
-  gemini: "gemini/gemini-2.5-flash",
-  lmstudio: "lmstudio/qwen2.5-coder",
-  ollama: "ollama/qwen2.5-coder",
-  openrouter: "openrouter/openai/gpt-4.1-mini",
-  groq: "groq/llama-3.3-70b-versatile",
-  together: "together/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-  mistral: "mistral/mistral-large-latest",
-  openai: "openai/gpt-4.1",
-};
-
-const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
-  apple: [
-    "apple/apple-on-device",
-  ],
-  anthropic: [
-    "anthropic/claude-sonnet-4-5",
-    "anthropic/claude-opus-4-5",
-    "anthropic/claude-haiku-4-5",
-  ],
-  "claude-agent-sdk": [
-    "claude-agent-sdk/claude-sonnet-4-6",
-    "claude-agent-sdk/claude-opus-4-6",
-    "claude-agent-sdk/claude-haiku-4-5",
-    "claude-agent-sdk/claude-sonnet-4-5",
-  ],
-  claude: [
-    "claude/sonnet",
-    "claude/opus",
-    "claude/haiku",
-  ],
-  codex: [
-    "codex/gpt-5.2-codex",
-    "codex/gpt-5.2-codex-max",
-    "codex/gpt-5.2-codex-mini",
-    "codex/gpt-5.1-codex",
-    "codex/gpt-5.1-codex-max",
-    "codex/gpt-5.1-codex-mini",
-    "codex/gpt-5.2",
-    "codex/gpt-5.1",
-    "codex/gpt-5-codex",
-    "codex/gpt-5",
-  ],
-  gemini: [
-    "gemini/gemini-3-pro-preview",
-    "gemini/gemini-3-flash-preview",
-    "gemini/gemini-2.5-pro",
-    "gemini/gemini-2.5-flash",
-  ],
-  lmstudio: [],
-  ollama: [],
-};
-
-const API_KEY_ENV_BY_PROVIDER: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  "claude-agent-sdk": "ANTHROPIC_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  groq: "GROQ_API_KEY",
-  together: "TOGETHER_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  openai: "OPENAI_API_KEY",
-};
-
-const OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL";
-const LMSTUDIO_BASE_URL_ENV = "LMSTUDIO_BASE_URL";
-const OLLAMA_BASE_URL_ENV = "OLLAMA_BASE_URL";
-const LOCAL_PROVIDER_IDS = new Set(["apple", "claude", "codex", "gemini", "lmstudio", "ollama"]);
-const OPENAI_COMPATIBLE_PROVIDER_IDS = new Set([
-  "openai",
-  "lmstudio",
-  "ollama",
-  "openrouter",
-  "groq",
-  "together",
-  "mistral",
-]);
 const OPENAI_COMPATIBLE_DETECTION_CACHE_TTL_MS = 30_000;
 const CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS = 30_000;
-const PROVIDER_AUTH_MODES: Partial<Record<string, GatewayProviderAuthMode[]>> = {
-  anthropic: ["api_key"],
-  "claude-agent-sdk": ["api_key", "host_login"],
-  openai: ["api_key"],
-  openrouter: ["api_key"],
-  groq: ["api_key"],
-  together: ["api_key"],
-  mistral: ["api_key"],
-};
+const LOCAL_AGENT_SNAPSHOT_CACHE_TTL_MS = 10_000;
+const PROVIDER_CATALOG_SNAPSHOT_CACHE_TTL_MS = 10_000;
+const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
+const CLAUDE_OAUTH_KEYCHAIN_SERVICE = "Claude Code-credentials";
+const CLAUDE_OAUTH_TIMEOUT_MS = 10_000;
 
 export class DefaultGatewayAdminService {
   private readonly logger: Logger;
@@ -440,6 +433,7 @@ export class DefaultGatewayAdminService {
   private readonly mainAgentAutoRepairEnabled: boolean;
   private readonly providerSecretRefService?: ProviderSecretRefService;
   private readonly providerConfigRepo?: ProviderConfigRepository;
+  private readonly gatewayRuntimeDefaultsRepo?: GatewayRuntimeDefaultsRepository;
   private readonly integrationRequestRepo?: IntegrationRequestRepository;
   private readonly cliToolService?: CliToolService;
   private readonly interconnectorCatalogService?: InterconnectorCatalogService;
@@ -456,6 +450,7 @@ export class DefaultGatewayAdminService {
   private usageSnapshotService?: UsageSnapshotService;
   private localUsageTelemetryService?: LocalUsageTelemetryService;
   private readonly claudeAgentSdkMetadataProbe?: GatewayAdminServiceOptions["claudeAgentSdkMetadataProbe"];
+  private readonly codexAppServerMetadataProbe?: GatewayAdminServiceOptions["codexAppServerMetadataProbe"];
   private readonly providerConfigs = new Map<string, ProviderRuntimeConfig>();
   private readonly openAICompatibleDetectionCache = new Map<string, {
     expiresAt: number;
@@ -475,6 +470,21 @@ export class DefaultGatewayAdminService {
     value: ClaudeAgentSdkCatalogProbe;
   }>();
   private readonly claudeAgentSdkDetectionInFlight = new Map<string, Promise<ClaudeAgentSdkCatalogProbe>>();
+  private readonly codexAppServerDetectionCache = new Map<string, {
+    expiresAt: number;
+    value: CodexAppServerCatalogProbe;
+  }>();
+  private readonly codexAppServerDetectionInFlight = new Map<string, Promise<CodexAppServerCatalogProbe>>();
+  private localAgentSnapshotCache?: {
+    expiresAt: number;
+    value: DiscoveredLocalAgent[];
+  };
+  private localAgentSnapshotInFlight?: Promise<DiscoveredLocalAgent[]>;
+  private readonly providerCatalogSnapshotCache = new Map<string, {
+    expiresAt: number;
+    value: GatewayModelProviderCatalog[];
+  }>();
+  private readonly providerCatalogSnapshotInFlight = new Map<string, Promise<GatewayModelProviderCatalog[]>>();
 
   constructor(options: GatewayAdminServiceOptions) {
     this.logger = options.logger;
@@ -503,6 +513,7 @@ export class DefaultGatewayAdminService {
     this.mainAgentAutoRepairEnabled = options.mainAgentAutoRepairEnabled ?? true;
     this.providerSecretRefService = options.providerSecretRefService;
     this.providerConfigRepo = options.providerConfigRepo;
+    this.gatewayRuntimeDefaultsRepo = options.gatewayRuntimeDefaultsRepo;
     this.integrationRequestRepo = options.integrationRequestRepo;
     this.cliToolService = options.cliToolService;
     this.interconnectorCatalogService = options.interconnectorCatalogService;
@@ -517,6 +528,7 @@ export class DefaultGatewayAdminService {
     this.executableResolver = options.executableResolver ?? new LocalExecutableResolver();
     this.appleFoundationAvailability = options.appleFoundationAvailability;
     this.claudeAgentSdkMetadataProbe = options.claudeAgentSdkMetadataProbe;
+    this.codexAppServerMetadataProbe = options.codexAppServerMetadataProbe;
     this.usageSnapshotService = options.usageSnapshotService;
     this.localUsageTelemetryService = options.localUsageTelemetryService;
 
@@ -639,58 +651,100 @@ export class DefaultGatewayAdminService {
   }
 
   async discoverLocalAgents(): Promise<DiscoveredLocalAgent[]> {
-    const lmStudioPolicyReason = this.providerPolicyRestrictionReason("lmstudio");
-    const lmStudioDetection = lmStudioPolicyReason
-      ? {
-        serviceReachable: false,
-        models: [] as OpenAICompatibleDetectedModel[],
-        detectionError: lmStudioPolicyReason,
+    return this.loadLocalAgentSnapshot(false);
+  }
+
+  private async loadLocalAgentSnapshot(forceRefresh: boolean): Promise<DiscoveredLocalAgent[]> {
+    const now = Date.now();
+    if (!forceRefresh) {
+      const cached = this.localAgentSnapshotCache;
+      if (cached) {
+        if (cached.expiresAt > now) {
+          return cached.value.map(cloneDiscoveredLocalAgent);
+        }
+        if (!this.localAgentSnapshotInFlight) {
+          this.localAgentSnapshotInFlight = this.computeLocalAgentSnapshot();
+        }
+        return cached.value.map(cloneDiscoveredLocalAgent);
       }
-      : await this.detectOpenAICompatibleModels(
-        this.resolveProviderBaseURL(
-          "lmstudio",
-          this.providerConfigs.get("lmstudio")?.baseURL,
-        ),
+      if (this.localAgentSnapshotInFlight) {
+        return (await this.localAgentSnapshotInFlight).map(cloneDiscoveredLocalAgent);
+      }
+    }
+
+    if (!this.localAgentSnapshotInFlight) {
+      this.localAgentSnapshotInFlight = this.computeLocalAgentSnapshot();
+    }
+    return (await this.localAgentSnapshotInFlight).map(cloneDiscoveredLocalAgent);
+  }
+
+  private async computeLocalAgentSnapshot(): Promise<DiscoveredLocalAgent[]> {
+    const lmStudioPolicyReason = this.providerPolicyRestrictionReason("lmstudio");
+    try {
+      const lmStudioDetection = lmStudioPolicyReason
+        ? {
+          serviceReachable: false,
+          models: [] as OpenAICompatibleDetectedModel[],
+          detectionError: lmStudioPolicyReason,
+        }
+        : await this.detectOpenAICompatibleModels(
+          this.resolveProviderBaseURL(
+            "lmstudio",
+            this.providerConfigs.get("lmstudio")?.baseURL,
+          ),
+        );
+      const codexDetectedModels = this.detectCodexCliModels();
+      const codexAppServerDetectedModels = codexDetectedModels.map((modelId) =>
+        modelId.replace(/^codex\//, "codex-app-server/"),
       );
-    const codexDetectedModels = this.detectCodexCliModels();
 
-    return LOCAL_CLIENT_TEMPLATES.map((template) => {
-      const executablePath = this.findExecutable(template.commands);
-      const appPath = template.appPath && existsSync(template.appPath) ? template.appPath : undefined;
-      const providerId = template.recommendedProviderId;
-      const policyReason = this.providerPolicyRestrictionReason(providerId);
-      const policyAllowed = !policyReason;
-      const detected = policyAllowed && Boolean(executablePath || appPath);
-      const localManifestModels = LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? [];
-      const availableModels = !policyAllowed
-        ? []
-        : template.id === "lmstudio"
-          ? lmStudioDetection.models.map((model) => withProviderPrefix("lmstudio", model.id))
-          : uniqueModelIds([
-          ...(template.id === "codex" ? codexDetectedModels : []),
-          ...localManifestModels,
-        ]);
-      const recommendedModel = availableModels?.[0] ?? template.recommendedModel;
-      const detectionError = policyReason
-        || (template.id === "lmstudio" ? lmStudioDetection.detectionError : undefined);
+      const value = LOCAL_CLIENT_TEMPLATES.map((template) => {
+        const executablePath = this.findExecutable(template.commands);
+        const appPath = template.appPath && existsSync(template.appPath) ? template.appPath : undefined;
+        const providerId = template.recommendedProviderId;
+        const policyReason = this.providerPolicyRestrictionReason(providerId);
+        const policyAllowed = !policyReason;
+        const detected = policyAllowed && Boolean(executablePath || appPath);
+        const localManifestModels = LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? [];
+        const availableModels = !policyAllowed
+          ? []
+          : template.id === "lmstudio"
+            ? lmStudioDetection.models.map((model) => withProviderPrefix("lmstudio", model.id))
+            : uniqueModelIds([
+            ...(template.id === "codex" ? codexDetectedModels : []),
+            ...(template.id === "codex-app-server" ? codexAppServerDetectedModels : []),
+            ...localManifestModels,
+          ]);
+        const recommendedModel = availableModels?.[0] ?? template.recommendedModel;
+        const detectionError = policyReason
+          || (template.id === "lmstudio" ? lmStudioDetection.detectionError : undefined);
 
-      return {
-        id: template.id,
-        name: template.name,
-        detected,
-        executablePath: executablePath ?? undefined,
-        appPath,
-        serviceReachable: template.id === "lmstudio"
-          ? (policyAllowed ? lmStudioDetection.serviceReachable : false)
-          : undefined,
-        recommendedProviderId: template.recommendedProviderId,
-        recommendedModel,
-        requiresApiKey: template.requiresApiKey,
-        ...(availableModels && availableModels.length > 0 ? { availableModels } : {}),
-        ...(detectionError ? { detectionError } : {}),
-        notes: template.notes,
+        return {
+          id: template.id,
+          name: template.name,
+          detected,
+          executablePath: executablePath ?? undefined,
+          appPath,
+          serviceReachable: template.id === "lmstudio"
+            ? (policyAllowed ? lmStudioDetection.serviceReachable : false)
+            : undefined,
+          recommendedProviderId: template.recommendedProviderId,
+          recommendedModel,
+          requiresApiKey: template.requiresApiKey,
+          ...(availableModels && availableModels.length > 0 ? { availableModels } : {}),
+          ...(detectionError ? { detectionError } : {}),
+          notes: template.notes,
+        };
+      });
+
+      this.localAgentSnapshotCache = {
+        expiresAt: Date.now() + LOCAL_AGENT_SNAPSHOT_CACHE_TTL_MS,
+        value,
       };
-    });
+      return value;
+    } finally {
+      this.localAgentSnapshotInFlight = undefined;
+    }
   }
 
   listProviderConfigs(): PublicProviderRuntimeConfig[] {
@@ -710,6 +764,70 @@ export class DefaultGatewayAdminService {
         updatedAt: config.updatedAt,
         source: config.source,
       }));
+  }
+
+  async getRuntimeDefaults(
+    _input: GatewayGetRuntimeDefaultsPayload = {},
+  ): Promise<GatewayRuntimeDefaultsPayload> {
+    return this.resolveRuntimeDefaults();
+  }
+
+  async setRuntimeDefaults(
+    input: GatewaySetRuntimeDefaultsPayload,
+  ): Promise<GatewaySetRuntimeDefaultsResponsePayload> {
+    if (!input.main && !input.concierge) {
+      throwGatewayError(
+        "INVALID_ARGUMENT",
+        "At least one runtime-default branch must be provided.",
+      );
+    }
+
+    const current = await this.resolveRuntimeDefaults();
+    const main = input.main
+      ? await this.validateRuntimeDefaultSelection(input.main, "main")
+      : current.main;
+    const concierge = input.concierge
+      ? await this.validateRuntimeDefaultSelection(input.concierge, "concierge")
+      : current.concierge;
+
+    const persisted = this.gatewayRuntimeDefaultsRepo?.set({
+      mainProviderId: main.providerId,
+      mainModelId: main.modelId,
+      conciergeProviderId: concierge.providerId,
+      conciergeModelId: concierge.modelId,
+    });
+
+    const mainSpaceId = this.resolveMainTargetSpaceId(undefined);
+    const conciergeSpaceId = this.resolveConciergeTargetSpaceId(undefined);
+    await this.ensureMainProfileActive(true);
+    await this.ensureConciergeProfileActive(true);
+    await this.ensureMainSpace(true);
+    await this.ensureConciergeSpace(true);
+
+    this.updateManagedRuntimeProfile(this.mainProfileId, main, true, "gateway_runtime_defaults");
+    this.updateManagedRuntimeProfile(this.conciergeProfileId, concierge, false, "gateway_runtime_defaults");
+
+    await this.normalizeMainAssignment(mainSpaceId);
+    await this.normalizeConciergeAssignment(conciergeSpaceId);
+
+    const mainAgentState = await this.resolveMainAgentState({
+      spaceId: mainSpaceId,
+      repairIfMissing: true,
+    });
+    const conciergeAgentState = await this.resolveConciergeAgentState({
+      spaceId: conciergeSpaceId,
+      repairIfMissing: true,
+    });
+
+    return {
+      defaults: {
+        main,
+        concierge,
+        updatedAt: persisted?.updated_at ?? new Date().toISOString(),
+      },
+      mainAgentState,
+      conciergeAgentState,
+    };
   }
 
   resolveMainSpaceId(): string {
@@ -2107,13 +2225,51 @@ export class DefaultGatewayAdminService {
     providerId?: string;
     refresh?: boolean;
   }): Promise<GatewayModelProviderCatalog[]> {
-    await this.ensureAppleFoundationAvailability();
     const requestedProvider = normalizeProviderId(input?.providerId);
     if (input?.providerId && !requestedProvider) {
       throw new Error(`Unknown providerId: ${input.providerId}`);
     }
+    const forceRefresh = input?.refresh === true;
+    const cacheKey = requestedProvider ?? "__all__";
+
+    if (!forceRefresh) {
+      const cached = this.providerCatalogSnapshotCache.get(cacheKey);
+      if (cached) {
+        if (cached.expiresAt > Date.now()) {
+          return cached.value.map(cloneGatewayModelProviderCatalog);
+        }
+        if (!this.providerCatalogSnapshotInFlight.has(cacheKey)) {
+          this.providerCatalogSnapshotInFlight.set(
+            cacheKey,
+            this.computeProviderCatalogSnapshot(requestedProvider, false),
+          );
+        }
+        return cached.value.map(cloneGatewayModelProviderCatalog);
+      }
+
+      const inFlight = this.providerCatalogSnapshotInFlight.get(cacheKey);
+      if (inFlight) {
+        return (await inFlight).map(cloneGatewayModelProviderCatalog);
+      }
+    }
+
+    if (!this.providerCatalogSnapshotInFlight.has(cacheKey)) {
+      this.providerCatalogSnapshotInFlight.set(
+        cacheKey,
+        this.computeProviderCatalogSnapshot(requestedProvider, forceRefresh),
+      );
+    }
+    return (await this.providerCatalogSnapshotInFlight.get(cacheKey)!)
+      .map(cloneGatewayModelProviderCatalog);
+  }
+
+  private async computeProviderCatalogSnapshot(
+    requestedProvider: string | undefined,
+    forceRefresh: boolean,
+  ): Promise<GatewayModelProviderCatalog[]> {
+    await this.ensureAppleFoundationAvailability();
     if (requestedProvider === "apple" && !this.providerVisibleInCatalog("apple")) {
-      throw new Error(`Unknown providerId: ${input?.providerId ?? requestedProvider}`);
+      throw new Error(`Unknown providerId: ${requestedProvider}`);
     }
 
     const providerIds = requestedProvider
@@ -2125,7 +2281,7 @@ export class DefaultGatewayAdminService {
         .filter((providerId) => this.providerVisibleInCatalog(providerId))
         .sort();
 
-    const localAgents = await this.discoverLocalAgents();
+    const localAgents = await this.loadLocalAgentSnapshot(forceRefresh);
     const localAgentsByProvider = new Map<string, DiscoveredLocalAgent>();
     for (const agent of localAgents) {
       localAgentsByProvider.set(agent.recommendedProviderId, agent);
@@ -2137,6 +2293,7 @@ export class DefaultGatewayAdminService {
       detectionError?: string;
     }>();
     const claudeAgentSdkDetections = new Map<string, ClaudeAgentSdkCatalogProbe>();
+    const codexAppServerDetections = new Map<string, CodexAppServerCatalogProbe>();
 
     await Promise.all(
       providerIds
@@ -2145,7 +2302,7 @@ export class DefaultGatewayAdminService {
           const config = this.providerConfigs.get(providerId);
           const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
           const detection = await this.detectOpenAICompatibleModels(baseURL, {
-            forceRefresh: input?.refresh === true,
+            forceRefresh,
           });
           openAIDetections.set(providerId, detection);
         }),
@@ -2156,13 +2313,24 @@ export class DefaultGatewayAdminService {
         .filter((providerId) => providerId === "claude-agent-sdk" && this.isProviderConfigAllowed(providerId))
         .map(async (providerId) => {
           const config = this.providerConfigs.get(providerId);
-          const detection = await this.detectClaudeAgentSdkCatalog(config, input?.refresh === true);
+          const detection = await this.detectClaudeAgentSdkCatalog(config, forceRefresh);
           claudeAgentSdkDetections.set(providerId, detection);
         }),
     );
 
-    return providerIds.map((providerId) => {
-      const config = this.providerConfigs.get(providerId);
+    await Promise.all(
+      providerIds
+        .filter((providerId) => providerId === "codex-app-server" && this.isProviderConfigAllowed(providerId))
+        .map(async (providerId) => {
+          const config = this.providerConfigs.get(providerId);
+          const detection = await this.detectCodexAppServerCatalog(config, forceRefresh);
+          codexAppServerDetections.set(providerId, detection);
+        }),
+    );
+
+    try {
+      const value = providerIds.map((providerId) => {
+        const config = this.providerConfigs.get(providerId);
       const policyRestrictionReason = this.providerPolicyRestrictionReason(providerId);
       const configAllowed = this.isProviderConfigAllowed(providerId);
       const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
@@ -2277,12 +2445,30 @@ export class DefaultGatewayAdminService {
         }
       }
 
+      const codexAppServerDetection = codexAppServerDetections.get(providerId);
+      if (codexAppServerDetection && configAllowed) {
+        authStatus = codexAppServerDetection.authStatus;
+        authAccount = codexAppServerDetection.authAccount;
+        if (codexAppServerDetection.models.length > 0) {
+          for (const model of codexAppServerDetection.models) {
+            addModel(model.id, "detected", authStatus === "authenticated", model.contextWindow);
+          }
+          detectionStatus = "available";
+          detectionError = undefined;
+        } else if (codexAppServerDetection.detectionError) {
+          detectionError = codexAppServerDetection.detectionError;
+          detectionStatus = authStatus === "error" ? "error" : models.length > 0 ? "available" : "unavailable";
+        }
+      }
+
       for (const modelId of config?.allowedModels ?? []) {
         addModel(modelId, "allowlist", runtimeAvailable);
       }
       addModel(config?.model, "configured", runtimeAvailable);
-      const shouldUseFallbackManifest = providerId !== "claude-agent-sdk"
-        || !models.some((entry) => entry.source === "detected");
+      const shouldUseFallbackManifest = (
+        providerId !== "claude-agent-sdk"
+        && providerId !== "codex-app-server"
+      ) || !models.some((entry) => entry.source === "detected");
       if (shouldUseFallbackManifest) {
         for (const modelId of LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []) {
           addModel(modelId, "fallback", runtimeAvailable);
@@ -2295,10 +2481,11 @@ export class DefaultGatewayAdminService {
       if (
         (isOpenAICompatibleProvider(providerId) && !isCliExecutorProvider(providerId))
         || providerId === "claude-agent-sdk"
+        || providerId === "codex-app-server"
       ) {
         models.sort((a, b) => {
           const sourcePriority = (s: GatewayModelCatalogSource): number => {
-            if (providerId === "claude-agent-sdk") {
+            if (providerId === "claude-agent-sdk" || providerId === "codex-app-server") {
               switch (s) {
                 case "detected": return 0;
                 case "configured": return 1;
@@ -2341,28 +2528,37 @@ export class DefaultGatewayAdminService {
         integrationStatus = "no_models_loaded";
       }
 
-      return {
-        providerId,
-        displayName: providerDisplayName(providerId),
-        group: providerCatalogGroup(providerId),
-        integrationClass: providerIntegrationClass(providerId),
-        status: integrationStatus,
-        hasApiKey,
-        requiresApiKey,
-        ...(supportedAuthModes.length > 0 ? { supportedAuthModes } : {}),
-        ...(authMode ? { authMode } : {}),
-        ...(authStatus ? { authStatus } : {}),
-        ...(authAccount ? { authAccount } : {}),
-        baseURL,
-        detectionStatus,
-        ...(detectionError ? { detectionError } : {}),
-        models,
-        installHint: providerInstallHint(providerId),
-        recommended: providerRecommended(providerId),
-        supportsHostedBilling: providerIntegrationClass(providerId) === "cloud",
-        configAllowed,
-      };
-    });
+        return {
+          providerId,
+          displayName: providerDisplayName(providerId),
+          group: providerCatalogGroup(providerId),
+          integrationClass: providerIntegrationClass(providerId),
+          status: integrationStatus,
+          hasApiKey,
+          requiresApiKey,
+          ...(supportedAuthModes.length > 0 ? { supportedAuthModes } : {}),
+          ...(authMode ? { authMode } : {}),
+          ...(authStatus ? { authStatus } : {}),
+          ...(authAccount ? { authAccount } : {}),
+          baseURL,
+          detectionStatus,
+          ...(detectionError ? { detectionError } : {}),
+          models,
+          installHint: providerInstallHint(providerId),
+          recommended: providerRecommended(providerId),
+          supportsHostedBilling: providerIntegrationClass(providerId) === "cloud",
+          configAllowed,
+        };
+      });
+
+      this.providerCatalogSnapshotCache.set(requestedProvider ?? "__all__", {
+        expiresAt: Date.now() + PROVIDER_CATALOG_SNAPSHOT_CACHE_TTL_MS,
+        value,
+      });
+      return value;
+    } finally {
+      this.providerCatalogSnapshotInFlight.delete(requestedProvider ?? "__all__");
+    }
   }
 
   async listAvailableModels(input?: {
@@ -2370,6 +2566,178 @@ export class DefaultGatewayAdminService {
     refresh?: boolean;
   }): Promise<GatewayModelProviderCatalog[]> {
     return this.listProviderCatalogs(input);
+  }
+
+  private async resolveRuntimeDefaults(): Promise<GatewayRuntimeDefaultsPayload> {
+    const stored = this.gatewayRuntimeDefaultsRepo?.get();
+    const mainProfileSelection = this.runtimeDefaultSelectionFromProfile(this.mainProfileId);
+    const conciergeProfileSelection = this.runtimeDefaultSelectionFromProfile(this.conciergeProfileId);
+    const recommended = await this.recommendRuntimeDefaultSelection();
+    const fallback = this.fallbackRuntimeDefaultSelection();
+
+    const main = normalizeRuntimeDefaultSelection(
+      stored?.main_provider_id,
+      stored?.main_model_id,
+    ) ?? mainProfileSelection ?? recommended ?? fallback;
+    const concierge = normalizeRuntimeDefaultSelection(
+      stored?.concierge_provider_id,
+      stored?.concierge_model_id,
+    ) ?? conciergeProfileSelection ?? recommended ?? main;
+
+    return {
+      main,
+      concierge,
+      updatedAt: stored?.updated_at ?? new Date().toISOString(),
+    };
+  }
+
+  private fallbackRuntimeDefaultSelection(): GatewayRuntimeDefaultSelectionPayload {
+    const configuredProvider = this.listProviderConfigs().find((entry) =>
+      this.isProviderConfigAllowed(entry.providerId)
+    );
+    if (configuredProvider) {
+      return {
+        providerId: configuredProvider.providerId,
+        modelId: configuredProvider.model,
+      };
+    }
+
+    const providerId = this.defaultProviderId
+      || deriveProviderFromModel(this.defaultModelId)
+      || "openai";
+    const modelId = withProviderPrefix(
+      providerId,
+      this.defaultModelId ?? DEFAULT_MODEL_BY_PROVIDER[providerId] ?? `${providerId}/default`,
+    );
+    return { providerId, modelId };
+  }
+
+  private runtimeDefaultSelectionFromProfile(
+    profileId: string,
+  ): GatewayRuntimeDefaultSelectionPayload | null {
+    const profileRepo = this.profileRepo;
+    if (!profileRepo) {
+      return null;
+    }
+
+    const revision = profileRepo.getActiveRevision(profileId);
+    return normalizeRuntimeDefaultSelection(
+      revision?.provider_hint ?? undefined,
+      revision?.model_hint ?? undefined,
+    );
+  }
+
+  private async recommendRuntimeDefaultSelection(): Promise<GatewayRuntimeDefaultSelectionPayload | null> {
+    const catalogs = await this.listProviderCatalogs({ refresh: false });
+    const candidates = catalogs
+      .filter((catalog) => catalog.configAllowed !== false)
+      .filter((catalog) => catalog.models.length > 0)
+      .sort((lhs, rhs) => {
+        const lhsRank = runtimeDefaultPriority(lhs.providerId);
+        const rhsRank = runtimeDefaultPriority(rhs.providerId);
+        if (lhsRank !== rhsRank) {
+          return lhsRank - rhsRank;
+        }
+        if (Boolean(lhs.recommended) !== Boolean(rhs.recommended)) {
+          return lhs.recommended ? -1 : 1;
+        }
+        return lhs.displayName.localeCompare(rhs.displayName);
+      });
+
+    const selected = candidates[0];
+    const modelId = selected?.models[0]?.id?.trim();
+    if (!selected || !modelId) {
+      return null;
+    }
+
+    return {
+      providerId: selected.providerId,
+      modelId,
+    };
+  }
+
+  private async validateRuntimeDefaultSelection(
+    selection: GatewayRuntimeDefaultSelectionPayload,
+    branch: "main" | "concierge",
+  ): Promise<GatewayRuntimeDefaultSelectionPayload> {
+    const providerId = normalizeProviderId(selection.providerId);
+    const modelIdRaw = selection.modelId?.trim();
+    if (!providerId || !modelIdRaw) {
+      throwGatewayError(
+        "INVALID_ARGUMENT",
+        `${branch} runtime defaults require both providerId and modelId.`,
+      );
+    }
+
+    const modelProviderPrefix = deriveProviderFromModel(modelIdRaw);
+    if (modelProviderPrefix && modelProviderPrefix !== providerId) {
+      throwGatewayError(
+        "INVALID_ARGUMENT",
+        `modelId provider prefix ${modelProviderPrefix} does not match providerId ${providerId}`,
+      );
+    }
+
+    const providerConfig = this.listProviderConfigs()
+      .find((entry) => entry.providerId.trim().toLowerCase() === providerId);
+    if (!providerConfig) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Provider is not configured: ${providerId}`,
+      );
+    }
+
+    const modelId = withProviderPrefix(providerId, modelIdRaw);
+    const allowedModels = this.mergeAllowedModels(
+      providerId,
+      providerConfig.model,
+      providerConfig.allowedModels,
+    );
+    if (!providerConfig.allowCustomModel && !allowedModels.includes(modelId)) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        `Model ${modelId} is not allowed for provider ${providerId}.`,
+      );
+    }
+
+    const runtimeValidation = await this.validateProviderRuntimeSelection(providerId, modelId);
+    if (!runtimeValidation.valid) {
+      throwGatewayError(
+        "FAILED_PRECONDITION",
+        runtimeValidation.reason
+          || `Provider runtime rejected model ${modelId} for ${providerId}.`,
+      );
+    }
+
+    return {
+      providerId,
+      modelId,
+    };
+  }
+
+  private updateManagedRuntimeProfile(
+    profileId: string,
+    selection: GatewayRuntimeDefaultSelectionPayload,
+    isDefault: boolean,
+    source: string,
+  ): void {
+    const profileRepo = this.requireProfileRepo();
+    const activeRevision = profileRepo.getActiveRevision(profileId);
+
+    profileRepo.update({
+      profileId,
+      providerHint: selection.providerId,
+      modelHint: selection.modelId,
+      defaultSkillIds: mergeSkillIds(
+        parseStringArray(activeRevision?.default_skill_set_ids_json),
+        [USER_ESCALATION_SKILL_ID],
+      ),
+      modelConfig: {
+        preferredModels: [selection.modelId],
+        fallbackModels: [],
+      },
+      isDefault,
+      source,
+    });
   }
 
   listTools(_input: GatewayListToolsPayload = {}): GatewayListToolsResponsePayload["tools"] {
@@ -2571,10 +2939,19 @@ export class DefaultGatewayAdminService {
 
   async getLocalUsageTelemetry(input?: {
     providerId?: string;
+    providerIds?: string[];
   }): Promise<LocalProviderUsageTelemetry[]> {
     const requestedProvider = normalizeProviderId(input?.providerId);
     if (input?.providerId && !requestedProvider) {
       throw new Error(`Unknown providerId: ${input.providerId}`);
+    }
+    const hasProviderIdsBatch = input?.providerIds !== undefined;
+    const requestedProviderIds = normalizeProviderIds(input?.providerIds);
+    if (hasProviderIdsBatch && input.providerIds?.some((providerId) => !normalizeProviderId(providerId))) {
+      throw new Error("providerIds must contain non-empty provider IDs");
+    }
+    if (requestedProvider && hasProviderIdsBatch) {
+      throw new Error("providerId and providerIds are mutually exclusive");
     }
 
     const configured = this.listProviderConfigs();
@@ -2585,10 +2962,17 @@ export class DefaultGatewayAdminService {
     if (requestedProvider && !configuredById.has(requestedProvider)) {
       throw new Error(`Unknown providerId: ${requestedProvider}`);
     }
+    for (const providerId of requestedProviderIds) {
+      if (!configuredById.has(providerId)) {
+        throw new Error(`Unknown providerId: ${providerId}`);
+      }
+    }
 
-    const targetConfigs = requestedProvider
-      ? [configuredById.get(requestedProvider)!]
-      : configured;
+    const targetConfigs = hasProviderIdsBatch
+      ? requestedProviderIds.map((providerId) => configuredById.get(providerId)!)
+      : requestedProvider
+        ? [configuredById.get(requestedProvider)!]
+        : configured;
     const targetProviderIds = targetConfigs
       .map((entry) => entry.providerId.trim().toLowerCase())
       .filter((providerId) => providerId.length > 0);
@@ -2763,7 +3147,10 @@ export class DefaultGatewayAdminService {
 
     const requestedApiKey = input.apiKey?.trim();
     const requestedSecretRef = input.apiKeySecretRef?.trim();
-    const authMode = resolveRequestedProviderAuthMode(providerId, input.authMode, existing?.authMode);
+    const implicitAuthMode = (!input.authMode && !existing?.authMode && (requestedApiKey || requestedSecretRef))
+      ? "api_key"
+      : existing?.authMode;
+    const authMode = resolveRequestedProviderAuthMode(providerId, input.authMode, implicitAuthMode);
     if (requestedSecretRef) {
       if (!this.providerSecretRefService) {
         throw new Error("Provider secret ref service unavailable");
@@ -3111,6 +3498,50 @@ export class DefaultGatewayAdminService {
     };
   }
 
+  resolveExactProviderRuntimeConfig(input: {
+    providerId: string;
+    model?: string;
+  }): ExactProviderRuntimeSelection {
+    const providerId = normalizeProviderId(input.providerId);
+    if (!providerId) {
+      throw new Error("providerId is required");
+    }
+    if (providerId === "apple") {
+      this.ensureAppleProviderEnabledSync("resolveExactProviderRuntimeConfig");
+    }
+
+    const requestedModel = input.model?.trim();
+    const requestedProviderFromModel = deriveProviderFromModel(requestedModel);
+    if (requestedProviderFromModel && requestedProviderFromModel !== providerId) {
+      throw new Error(
+        `Model ${requestedModel} belongs to provider ${requestedProviderFromModel} but providerId is ${providerId}.`,
+      );
+    }
+
+    const config = this.providerConfigs.get(providerId);
+    const modelRaw = requestedModel
+      || config?.model
+      || DEFAULT_MODEL_BY_PROVIDER[providerId]
+      || `${providerId}/default`;
+    const model = withProviderPrefix(providerId, modelRaw);
+    const authMode = resolveProviderAuthMode(providerId, config?.authMode);
+    const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
+
+    return {
+      providerId,
+      model,
+      apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+      apiKeySecretRef: config?.apiKeySecretRef,
+      authMode,
+      baseURL,
+      isLocal: isLocalProvider(providerId)
+        || (providerId === "openai" && isLikelyLocalBaseURL(baseURL)),
+      nativeCliToolsEnabled: isCliExecutorProvider(providerId)
+        ? (config?.nativeCliToolsEnabled ?? false)
+        : false,
+    };
+  }
+
   validateProfileModelSelection(input: {
     providerHint?: string;
     modelHint?: string;
@@ -3189,6 +3620,7 @@ export class DefaultGatewayAdminService {
 
     switch (providerId) {
       case "codex":
+      case "codex-app-server":
         return this.probeCodexRateLimits(usage);
 
       case "claude":
@@ -3372,7 +3804,7 @@ export class DefaultGatewayAdminService {
           initialized = true;
           send({ jsonrpc: "2.0", method: "initialized" });
           send({ jsonrpc: "2.0", id: 2, method: "account/rateLimits/read", params: {} });
-          send({ jsonrpc: "2.0", id: 3, method: "account/read", params: {} });
+          send({ jsonrpc: "2.0", id: 3, method: "account/read", params: { refreshToken: false } });
           return;
         }
 
@@ -3461,9 +3893,9 @@ export class DefaultGatewayAdminService {
     });
   }
 
-  private probeClaudeCliStatus(
+  private async probeClaudeCliStatus(
     usage?: ProviderUsageSnapshotPayload,
-  ): LocalProviderTelemetryProbeResult {
+  ): Promise<LocalProviderTelemetryProbeResult> {
     if (!this.findExecutable(["claude"])) {
       return {
         source: "claude_cli",
@@ -3472,6 +3904,42 @@ export class DefaultGatewayAdminService {
       };
     }
 
+    const credentials = await this.readClaudeOAuthAccessToken();
+    if (credentials.accessToken) {
+      try {
+        const usageResult = await this.fetchClaudeOAuthUsage(credentials.accessToken);
+        if (usageResult.windows.length > 0) {
+          return {
+            source: "claude_cli",
+            status: "available",
+            accountLabel: usageResult.accountLabel,
+            windows: usageResult.windows,
+            message: usageResult.message
+              ?? `Claude OAuth quota windows loaded from ${credentials.source ?? "OAuth credentials"}.`,
+          };
+        }
+      } catch (err) {
+        return this.claudeCliFallbackStatus(
+          usage,
+          `Claude OAuth quota probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (credentials.message) {
+      return this.claudeCliFallbackStatus(usage, credentials.message);
+    }
+
+    return this.claudeCliFallbackStatus(
+      usage,
+      "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
+    );
+  }
+
+  private claudeCliFallbackStatus(
+    usage: ProviderUsageSnapshotPayload | undefined,
+    quotaMessage: string,
+  ): LocalProviderTelemetryProbeResult {
     const status = usage?.status ?? "available";
     const hasRecentUsage = Boolean(
       usage && (usage.totalTokens > 0 || usage.spentUsd > 0 || usage.status === "available"),
@@ -3481,9 +3949,92 @@ export class DefaultGatewayAdminService {
       source: "claude_cli",
       status,
       message: hasRecentUsage
-        ? "Claude CLI is installed; background auth status is not probed. Recent usage indicates the runtime is active."
-        : "Claude CLI is installed; background auth status is not probed during telemetry refresh.",
+        ? `Claude CLI is installed; ${quotaMessage} Recent usage indicates the runtime is active.`
+        : `Claude CLI is installed; ${quotaMessage}`,
     };
+  }
+
+  private async readClaudeOAuthAccessToken(): Promise<ClaudeOAuthAccessTokenResult> {
+    const fromKeychain = this.readClaudeOAuthAccessTokenFromKeychain();
+    if (fromKeychain.accessToken) {
+      return fromKeychain;
+    }
+
+    const fromFile = this.readClaudeOAuthAccessTokenFromCredentialsFile();
+    if (fromFile.accessToken) {
+      return fromFile;
+    }
+
+    return {
+      message: "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
+    };
+  }
+
+  private readClaudeOAuthAccessTokenFromKeychain(): ClaudeOAuthAccessTokenResult {
+    if (process.platform !== "darwin") {
+      return {};
+    }
+    const user = process.env.USER?.trim();
+    if (!user) {
+      return {};
+    }
+
+    const result = spawnSync(
+      "security",
+      ["find-generic-password", "-s", CLAUDE_OAUTH_KEYCHAIN_SERVICE, "-a", user, "-w"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3_000,
+      },
+    );
+    if (result.status !== 0 || !result.stdout?.trim()) {
+      return {};
+    }
+
+    const accessToken = extractClaudeOAuthAccessToken(result.stdout);
+    return accessToken
+      ? { accessToken, source: "keychain" }
+      : {};
+  }
+
+  private readClaudeOAuthAccessTokenFromCredentialsFile(): ClaudeOAuthAccessTokenResult {
+    const credentialsPath = join(homedir(), ".claude", ".credentials.json");
+    try {
+      const accessToken = extractClaudeOAuthAccessToken(readFileSync(credentialsPath, "utf8"));
+      return accessToken
+        ? { accessToken, source: "credentials_file" }
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private async fetchClaudeOAuthUsage(accessToken: string): Promise<ClaudeOAuthUsageResult> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), CLAUDE_OAUTH_TIMEOUT_MS);
+    try {
+      const response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Claude OAuth usage endpoint returned HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      const windows = mapClaudeOAuthUsageWindows(payload);
+      return {
+        windows,
+        message: windows.length > 0
+          ? "Claude OAuth quota windows loaded from provider usage endpoint."
+          : "Claude OAuth usage endpoint returned no quota windows.",
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private probeGeminiCliStatus(): LocalProviderTelemetryProbeResult {
@@ -3632,6 +4183,8 @@ export class DefaultGatewayAdminService {
       const apiKey = keyFromEnvironment(providerId);
       const existing = this.providerConfigs.get(providerId);
       if (!apiKey && !existing) continue;
+      const preferredAuthMode = existing?.authMode ?? (apiKey ? "api_key" : undefined);
+      const resolvedAuthMode = resolveProviderAuthMode(providerId, preferredAuthMode);
 
       this.providerConfigs.set(providerId, {
         providerId,
@@ -3639,11 +4192,11 @@ export class DefaultGatewayAdminService {
           providerId,
           existing?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || this.defaultModelId || "",
         ),
-        apiKey: resolveProviderAuthMode(providerId, existing?.authMode) === "api_key"
+        apiKey: resolvedAuthMode === "api_key"
           ? (apiKey || existing?.apiKey)
           : undefined,
         apiKeySecretRef: existing?.apiKeySecretRef,
-        authMode: resolveProviderAuthMode(providerId, existing?.authMode),
+        authMode: resolvedAuthMode,
         baseURL: this.resolveProviderBaseURL(
           providerId,
           providerId === "openai" ? (process.env[OPENAI_BASE_URL_ENV] || existing?.baseURL) : existing?.baseURL,
@@ -3708,6 +4261,31 @@ export class DefaultGatewayAdminService {
         source: "env",
       });
     }
+
+    if (!this.providerConfigs.has("codex-app-server") && this.providerVisibleInCatalog("codex-app-server")) {
+      const executablePath = this.findExecutable(["codex"]);
+      const defaultModel = DEFAULT_MODEL_BY_PROVIDER["codex-app-server"];
+      if (executablePath && defaultModel) {
+        const model = withProviderPrefix("codex-app-server", defaultModel);
+        const manifest = LOCAL_PROVIDER_MODEL_MANIFEST["codex-app-server"] ?? [];
+        this.providerConfigs.set("codex-app-server", {
+          providerId: "codex-app-server",
+          model,
+          apiKey: undefined,
+          apiKeySecretRef: undefined,
+          authMode: "host_login",
+          baseURL: undefined,
+          allowedModels: normalizeProviderModelList(
+            "codex-app-server",
+            manifest.length > 0 ? manifest : [model],
+          ),
+          allowCustomModel: false,
+          nativeCliToolsEnabled: false,
+          updatedAt: now,
+          source: "env",
+        });
+      }
+    }
   }
 
   private mergeAllowedModels(providerId: string, model: string, modelIds: string[]): string[] {
@@ -3721,15 +4299,22 @@ export class DefaultGatewayAdminService {
   }
 
   private detectedLocalModelHints(providerId: string): string[] {
-    if (!isLocalProvider(providerId)) {
-      return [];
-    }
-
     if (providerId === "codex") {
       return uniqueModelIds([
         ...this.detectCodexCliModels(),
         ...(LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []),
       ]);
+    }
+
+    if (providerId === "codex-app-server") {
+      return uniqueModelIds([
+        ...this.detectCodexCliModels().map((modelId) => modelId.replace(/^codex\//, "codex-app-server/")),
+        ...(LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []),
+      ]);
+    }
+
+    if (!isLocalProvider(providerId)) {
+      return [];
     }
 
     return uniqueModelIds(LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []);
@@ -4028,6 +4613,64 @@ export class DefaultGatewayAdminService {
     return cloneClaudeAgentSdkCatalogProbe(value);
   }
 
+  private async detectCodexAppServerCatalog(
+    config?: ProviderRuntimeConfig,
+    forceRefresh = false,
+  ): Promise<CodexAppServerCatalogProbe> {
+    const providerId = "codex-app-server";
+    const cacheKey = providerId;
+    const now = Date.now();
+    if (forceRefresh) {
+      this.codexAppServerDetectionCache.delete(cacheKey);
+      this.codexAppServerDetectionInFlight.delete(cacheKey);
+    }
+
+    const cached = this.codexAppServerDetectionCache.get(cacheKey);
+    if (!forceRefresh && cached && cached.expiresAt > now) {
+      return cloneCodexAppServerCatalogProbe(cached.value);
+    }
+
+    const inFlight = forceRefresh ? undefined : this.codexAppServerDetectionInFlight.get(cacheKey);
+    if (inFlight) {
+      return cloneCodexAppServerCatalogProbe(await inFlight);
+    }
+
+    const requestPromise = (async () => {
+      const model = withProviderPrefix(
+        providerId,
+        config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
+      );
+      const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "host_login";
+      if (this.codexAppServerMetadataProbe) {
+        return await this.codexAppServerMetadataProbe({
+          providerId,
+          model,
+          authMode,
+          apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+        });
+      }
+
+      const provider = new CodexAppServerModelProvider({
+        id: providerId,
+        name: providerDisplayName(providerId),
+        model,
+        apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+        authMode: authMode as "api_key" | "host_login",
+      });
+      const probe = await provider.probeMetadata();
+      return mapCodexAppServerProbeResult(probe);
+    })();
+
+    this.codexAppServerDetectionInFlight.set(cacheKey, requestPromise);
+    const value = await requestPromise;
+    this.codexAppServerDetectionInFlight.delete(cacheKey);
+    this.codexAppServerDetectionCache.set(cacheKey, {
+      expiresAt: Date.now() + CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
+      value,
+    });
+    return cloneCodexAppServerCatalogProbe(value);
+  }
+
   private resolveConfiguredProviderApiKey(
     providerId: string,
     config?: ProviderRuntimeConfig,
@@ -4047,9 +4690,18 @@ export class DefaultGatewayAdminService {
   }
 
   private invalidateProviderRuntimeCaches(providerId: string): void {
+    this.localAgentSnapshotCache = undefined;
+    this.localAgentSnapshotInFlight = undefined;
+    this.providerCatalogSnapshotCache.clear();
+    this.providerCatalogSnapshotInFlight.clear();
     if (providerId === "claude-agent-sdk") {
       this.claudeAgentSdkDetectionCache.delete(providerId);
       this.claudeAgentSdkDetectionInFlight.delete(providerId);
+      return;
+    }
+    if (providerId === "codex-app-server") {
+      this.codexAppServerDetectionCache.delete(providerId);
+      this.codexAppServerDetectionInFlight.delete(providerId);
     }
   }
 
@@ -4128,6 +4780,19 @@ function asString(value: unknown): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function asNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
 function asInteger(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.trunc(value);
@@ -4162,6 +4827,92 @@ function asIsoFromEpochSeconds(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function extractClaudeOAuthAccessToken(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    const token = extractClaudeOAuthAccessTokenFromRecord(parsed);
+    if (token) {
+      return token;
+    }
+  } catch {
+    // Keychain output is expected to be JSON, but keep the file parser tolerant.
+  }
+
+  return undefined;
+}
+
+function extractClaudeOAuthAccessTokenFromRecord(value: unknown): string | undefined {
+  if (!isObjectRecord(value)) {
+    return undefined;
+  }
+
+  const oauth = value.claudeAiOauth;
+  if (isObjectRecord(oauth)) {
+    const expiresAt = asNumber(oauth.expiresAt);
+    if (expiresAt !== undefined && expiresAt < Date.now()) {
+      return undefined;
+    }
+    const token = asString(oauth.accessToken)
+      ?? asString(oauth.access_token);
+    if (token) {
+      return token;
+    }
+  }
+
+  return asString(value.accessToken)
+    ?? asString(value.access_token);
+}
+
+function mapClaudeOAuthUsageWindows(payload: unknown): ProviderTelemetryWindow[] {
+  if (!isObjectRecord(payload)) {
+    return [];
+  }
+
+  return [
+    mapClaudeOAuthUsageWindow(payload.five_hour, "primary", 300),
+    mapClaudeOAuthUsageWindow(payload.seven_day, "secondary", 10080),
+  ].filter((window): window is ProviderTelemetryWindow => Boolean(window));
+}
+
+function mapClaudeOAuthUsageWindow(
+  payload: unknown,
+  window: "primary" | "secondary",
+  windowDurationMins: number,
+): ProviderTelemetryWindow | null {
+  if (!isObjectRecord(payload)) {
+    return null;
+  }
+  const usedPercentRaw = asNumber(payload.utilization);
+  if (usedPercentRaw === undefined) {
+    return null;
+  }
+  const usedPercent = Math.max(0, Math.min(100, usedPercentRaw));
+  const resetsAt = parseIsoString(payload.resets_at);
+  return {
+    scopeId: "claude",
+    scopeName: "Claude",
+    window,
+    usedPercent,
+    remainingPercent: Math.max(0, Math.min(100, 100 - usedPercent)),
+    resetsAt,
+    windowDurationMins,
+  };
+}
+
+function parseIsoString(value: unknown): string | undefined {
+  const raw = asString(value);
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
 function joinNonEmpty(values: Array<string | undefined>, separator: string): string {
@@ -4221,6 +4972,103 @@ function mapClaudeAgentSdkProbeResult(
   };
 }
 
+function cloneCodexAppServerCatalogProbe(
+  probe: CodexAppServerCatalogProbe,
+): CodexAppServerCatalogProbe {
+  return {
+    authStatus: probe.authStatus,
+    authAccount: probe.authAccount ? { ...probe.authAccount } : undefined,
+    models: (probe.models ?? []).map((model) => ({ ...model })),
+    detectionError: probe.detectionError,
+  };
+}
+
+function cloneDiscoveredLocalAgent(agent: DiscoveredLocalAgent): DiscoveredLocalAgent {
+  return {
+    ...agent,
+    availableModels: agent.availableModels ? [...agent.availableModels] : undefined,
+  };
+}
+
+function cloneGatewayModelCatalogEntry(
+  entry: GatewayModelCatalogEntry,
+): GatewayModelCatalogEntry {
+  return {
+    ...entry,
+  };
+}
+
+function cloneGatewayModelProviderCatalog(
+  catalog: GatewayModelProviderCatalog,
+): GatewayModelProviderCatalog {
+  return {
+    ...catalog,
+    supportedAuthModes: [...(catalog.supportedAuthModes ?? [])],
+    authAccount: catalog.authAccount ? { ...catalog.authAccount } : undefined,
+    models: (catalog.models ?? []).map(cloneGatewayModelCatalogEntry),
+  };
+}
+
+function normalizeRuntimeDefaultSelection(
+  providerIdRaw?: string,
+  modelIdRaw?: string,
+): GatewayRuntimeDefaultSelectionPayload | null {
+  const providerId = normalizeProviderId(providerIdRaw);
+  const modelId = modelIdRaw?.trim();
+  if (!providerId || !modelId) {
+    return null;
+  }
+  return {
+    providerId,
+    modelId: withProviderPrefix(providerId, modelId),
+  };
+}
+
+function runtimeDefaultPriority(providerIdRaw: string): number {
+  const providerId = providerIdRaw.trim().toLowerCase();
+  switch (providerId) {
+    case "codex-app-server":
+      return 0;
+    case "apple":
+      return 1;
+    case "openai":
+      return 2;
+    case "openrouter":
+      return 3;
+    case "codex":
+      return 4;
+    case "gemini":
+      return 5;
+    case "lmstudio":
+      return 6;
+    case "ollama":
+      return 7;
+    case "anthropic":
+      return 8;
+    case "claude-agent-sdk":
+      return 9;
+    case "claude":
+      return 10;
+    default:
+      return 50;
+  }
+}
+
+function mapCodexAppServerProbeResult(
+  probe: CodexAppServerProbeResult,
+): CodexAppServerCatalogProbe {
+  return {
+    authStatus: probe.authStatus,
+    authAccount: mapCodexAppServerAuthAccount(probe.authAccount),
+    models: probe.models.map((model) => ({
+      id: model.id,
+      displayName: model.displayName,
+      contextWindow: model.contextWindow,
+    })),
+    detectionError: probe.detectionError,
+  };
+}
+
 function mapClaudeAgentSdkAuthAccount(
   account?: ClaudeAgentSdkAuthAccount,
 ): GatewayProviderAuthAccount | undefined {
@@ -4237,11 +5085,37 @@ function mapClaudeAgentSdkAuthAccount(
   return Object.values(normalized).some(Boolean) ? normalized : undefined;
 }
 
+function mapCodexAppServerAuthAccount(
+  account?: CodexAppServerAuthAccount,
+): GatewayProviderAuthAccount | undefined {
+  if (!account) {
+    return undefined;
+  }
+  const normalized: GatewayProviderAuthAccount = {
+    email: account.email?.trim() || undefined,
+    subscriptionType: account.subscriptionType?.trim() || undefined,
+    apiProvider: account.apiProvider?.trim() || undefined,
+    tokenSource: account.tokenSource?.trim() || undefined,
+  };
+  return Object.values(normalized).some(Boolean) ? normalized : undefined;
+}
+
 function normalizeProviderId(providerId?: string): string | undefined {
   if (!providerId) return undefined;
   const normalized = providerId.trim().toLowerCase();
   if (!normalized) return undefined;
   return normalized;
+}
+
+function normalizeProviderIds(providerIds?: string[]): string[] {
+  if (!providerIds) return [];
+  return Array.from(
+    new Set(
+      providerIds
+        .map((providerId) => normalizeProviderId(providerId))
+        .filter((providerId): providerId is string => Boolean(providerId)),
+    ),
+  );
 }
 
 function parseStringArray(value: string | null | undefined): string[] {
@@ -4467,193 +5341,6 @@ function providerCatalogGroup(providerId: string): GatewayProviderCatalogGroup {
 
 function providerIntegrationClass(providerId: string): GatewayIntegrationClass {
   return classifyExecutionAdapter(providerId);
-}
-
-function providerDisplayName(providerId: string): string {
-  switch (providerId) {
-    case "apple":
-      return "Apple Foundation";
-    case "anthropic":
-      return "Anthropic";
-    case "claude-agent-sdk":
-      return "Claude Agent SDK";
-    case "openai":
-      return "OpenAI";
-    case "openrouter":
-      return "OpenRouter";
-    case "groq":
-      return "Groq";
-    case "together":
-      return "Together";
-    case "mistral":
-      return "Mistral";
-    case "claude":
-      return "Claude Code";
-    case "codex":
-      return "Codex CLI";
-    case "gemini":
-      return "Gemini CLI";
-    case "lmstudio":
-      return "LM Studio";
-    case "ollama":
-      return "Ollama";
-    default:
-      return providerId;
-  }
-}
-
-function providerRequiresApiKey(
-  providerId: string,
-  baseURL?: string,
-  authMode?: GatewayProviderAuthMode,
-): boolean {
-  if (isLocalProvider(providerId)) {
-    return false;
-  }
-  if (providerId === "claude-agent-sdk") {
-    return authMode !== "host_login";
-  }
-  if (providerId === "openai") {
-    return !isLikelyLocalBaseURL(baseURL);
-  }
-  return true;
-}
-
-function providerInstallHint(providerId: string): string | undefined {
-  switch (providerId) {
-    case "apple":
-      return "Runs on-device on Apple Silicon Macs with Apple Intelligence enabled.";
-    case "anthropic":
-      return "Add ANTHROPIC_API_KEY or configure a runtime key for direct Anthropic API access.";
-    case "claude-agent-sdk":
-      return "Use ANTHROPIC_API_KEY for direct SDK API access, or sign in with Claude on this gateway host to use a local subscription session.";
-    case "claude":
-      return "Install Claude Code and sign in locally.";
-    case "codex":
-      return "Install Codex CLI and sign in locally.";
-    case "gemini":
-      return "Install Gemini CLI and sign in locally.";
-    case "lmstudio":
-      return "Install LM Studio, start the local server, and load at least one model.";
-    case "ollama":
-      return "Install Ollama, start the daemon, and pull at least one model.";
-    case "openrouter":
-      return "Add OPENROUTER_API_KEY or configure a runtime key.";
-    case "groq":
-      return "Add GROQ_API_KEY or configure a runtime key.";
-    case "together":
-      return "Add TOGETHER_API_KEY or configure a runtime key.";
-    case "mistral":
-      return "Add MISTRAL_API_KEY or configure a runtime key.";
-    case "openai":
-      return "Add OPENAI_API_KEY or configure a runtime key.";
-    default:
-      return undefined;
-  }
-}
-
-function providerSupportedAuthModes(providerId: string): GatewayProviderAuthMode[] {
-  return [...(PROVIDER_AUTH_MODES[providerId] ?? [])];
-}
-
-function resolveProviderAuthMode(
-  providerId: string,
-  preferred?: GatewayProviderAuthMode,
-): GatewayProviderAuthMode | undefined {
-  const supported = providerSupportedAuthModes(providerId);
-  if (supported.length === 0) {
-    return undefined;
-  }
-  if (preferred && supported.includes(preferred)) {
-    return preferred;
-  }
-  return supported[0];
-}
-
-function resolveRequestedProviderAuthMode(
-  providerId: string,
-  requested?: GatewayProviderAuthMode,
-  existing?: GatewayProviderAuthMode,
-): GatewayProviderAuthMode | undefined {
-  const supported = providerSupportedAuthModes(providerId);
-  if (supported.length === 0) {
-    if (requested) {
-      throw new Error(`Provider ${providerId} does not support configurable authentication modes.`);
-    }
-    return undefined;
-  }
-  if (!requested) {
-    return resolveProviderAuthMode(providerId, existing);
-  }
-  if (!supported.includes(requested)) {
-    throw new Error(`Provider ${providerId} does not support auth mode ${requested}.`);
-  }
-  return requested;
-}
-
-function normalizeProviderAuthMode(value?: string | null): GatewayProviderAuthMode | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "api_key" || normalized === "host_login") {
-    return normalized;
-  }
-  return undefined;
-}
-
-function inferDefaultProviderAuthStatus(
-  providerId: string,
-  authMode: GatewayProviderAuthMode | undefined,
-  hasApiKey: boolean,
-): GatewayProviderAuthStatus | undefined {
-  if (authMode === "host_login" && providerId === "claude-agent-sdk") {
-    return "needs_auth";
-  }
-  if (authMode === "api_key") {
-    return hasApiKey ? "authenticated" : "needs_key";
-  }
-  return undefined;
-}
-
-function providerRecommended(providerId: string): boolean {
-  if (providerId === "apple") {
-    return true;
-  }
-  return providerId === "openrouter"
-    || providerId === "codex"
-    || providerId === "claude"
-    || providerId === "lmstudio";
-}
-
-function isCliExecutorProvider(providerId: string): boolean {
-  return providerId === "claude" || providerId === "codex" || providerId === "gemini";
-}
-
-function isLocalProvider(providerId: string): boolean {
-  return LOCAL_PROVIDER_IDS.has(providerId);
-}
-
-function isOpenAICompatibleProvider(providerId: string): boolean {
-  return OPENAI_COMPATIBLE_PROVIDER_IDS.has(providerId);
-}
-
-function isLikelyLocalBaseURL(baseURL?: string): boolean {
-  if (!baseURL) return false;
-  try {
-    const url = new URL(baseURL);
-    const host = url.hostname.toLowerCase();
-    return host === "127.0.0.1" || host === "localhost" || host === "::1";
-  } catch {
-    return false;
-  }
-}
-
-function keyFromEnvironment(providerId: string): string | undefined {
-  const envName = API_KEY_ENV_BY_PROVIDER[providerId];
-  if (!envName) return undefined;
-  const value = process.env[envName]?.trim();
-  return value || undefined;
 }
 
 function mapFallbackTelemetrySource(source: ProviderTelemetrySourcePayload): string {

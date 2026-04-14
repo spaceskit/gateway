@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "id": "jira.issue.clone",
+  "displayName": "Jira Issue Clone",
+  "description": "Clone a Jira issue and return the refreshed cloned issue payload when the new key can be derived.",
+  "bundleId": "jira-cli",
+  "bundleDisplayName": "Jira CLI",
+  "bundleDescription": "Gateway-managed Jira CLI bundle for account discovery plus project, board, release, epic, sprint, and issue operations.",
+  "toolGroupId": "issues",
+  "toolGroupDisplayName": "Issues",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "argsTemplate": [
+    "--op",
+    "issue.clone",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional Jira project key or id override for this call."
+          },
+          "issueKey": {
+            "type": "string",
+            "description": "Jira issue key, for example `OPS-123`."
+          },
+          "parent": {
+            "type": "string",
+            "description": "Optional parent issue key for the clone."
+          },
+          "summary": {
+            "type": "string",
+            "description": "Optional summary override for the clone."
+          },
+          "priority": {
+            "type": "string",
+            "description": "Optional priority override."
+          },
+          "assignee": {
+            "type": "string",
+            "description": "Optional assignee email or display name."
+          },
+          "labels": {
+            "type": "array",
+            "description": "Optional issue labels.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "components": {
+            "type": "array",
+            "description": "Optional component names.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "replacements": {
+            "type": "array",
+            "description": "Optional summary/body replacements for clone. Each entry maps `find` to `replace`.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "description": "Text to find."
+                },
+                "replace": {
+                  "type": "string",
+                  "description": "Replacement text."
+                }
+              },
+              "required": [
+                "find",
+                "replace"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "issueKey"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool to duplicate an existing issue, optionally overriding summary, assignee, or metadata.",
+  "examples": [
+    {
+      "name": "Clone an issue for a new sprint",
+      "description": "Clones one issue and updates the summary text.",
+      "arguments": {
+        "payload": {
+          "issueKey": "OPS-123",
+          "summary": "OPS-123 follow-up",
+          "replacements": [
+            {
+              "find": "Sprint 1",
+              "replace": "Sprint 2"
+            }
+          ]
+        }
+      },
+      "expectedOutput": "{\n  \"ok\": true,\n  \"operation\": \"issue.clone\",\n  \"summary\": \"Cloned Jira issue OPS-123.\"\n}"
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:29.002Z",
+  "updatedAt": "2026-04-11T09:40:29.002Z"
+}

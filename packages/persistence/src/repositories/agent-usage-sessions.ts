@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
 
 export type AgentUsageSessionStatus = "active" | "closed";
 
@@ -13,6 +13,8 @@ export interface AgentUsageSessionRow {
   ended_at: string | null;
   last_activity_at: string;
   reset_by: string;
+  display_title: string;
+  provider_session_handle_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +37,14 @@ export interface ResetAgentUsageSessionInput {
 export interface AgentUsageSessionResetResult {
   closedSession?: AgentUsageSessionRow;
   activeSession: AgentUsageSessionRow;
+}
+
+export interface UpdateAgentUsageSessionRuntimeMetadataInput {
+  spaceId: string;
+  agentId: string;
+  displayTitle?: string;
+  providerSessionHandleJson?: string;
+  nowIso?: string;
 }
 
 export class AgentUsageSessionRepository {
@@ -89,9 +99,11 @@ export class AgentUsageSessionRepository {
         ended_at,
         last_activity_at,
         reset_by,
+        display_title,
+        provider_session_handle_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, '', ?, ?)
+      ) VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, '', '', '', ?, ?)
     `).run(
       sessionId,
       spaceId,
@@ -103,6 +115,37 @@ export class AgentUsageSessionRepository {
       now,
     );
     return this.get(sessionId)!;
+  }
+
+  updateRuntimeMetadata(input: UpdateAgentUsageSessionRuntimeMetadataInput): AgentUsageSessionRow {
+    const spaceId = input.spaceId.trim();
+    const agentId = input.agentId.trim();
+    const now = input.nowIso ?? new Date().toISOString();
+    const active = this.getActive(spaceId, agentId) ?? this.ensureActive({
+      spaceId,
+      agentId,
+      nowIso: now,
+    });
+
+    const assignments: string[] = ["updated_at = ?"];
+    const values: SQLQueryBindings[] = [now];
+    if (input.displayTitle !== undefined) {
+      assignments.push("display_title = ?");
+      values.push(input.displayTitle.trim());
+    }
+    if (input.providerSessionHandleJson !== undefined) {
+      assignments.push("provider_session_handle_json = ?");
+      values.push(input.providerSessionHandleJson.trim());
+    }
+
+    values.push(active.session_id);
+    this.db.query(`
+      UPDATE agent_usage_sessions
+      SET ${assignments.join(", ")}
+      WHERE session_id = ?
+    `).run(...values);
+
+    return this.get(active.session_id)!;
   }
 
   touch(spaceIdRaw: string, agentIdRaw: string, lastActivityAtIso?: string): AgentUsageSessionRow {

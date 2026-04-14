@@ -96,6 +96,7 @@ export interface AgentUsageSessionSnapshot {
   spaceId: string;
   agentId: string;
   agentRole: string;
+  displayTitle?: string;
   status: "active" | "closed";
   startedAt: string;
   endedAt?: string;
@@ -144,6 +145,7 @@ export interface SpaceQuotaServiceOptions {
   now?: () => Date;
   inputPricePer1k?: number;
   outputPricePer1k?: number;
+  onAgentUsageSessionReset?: (spaceId: string, agentId: string) => void;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -245,6 +247,7 @@ export class SpaceQuotaService {
       agentId,
       resetBy: principalId,
     });
+    this.options.onAgentUsageSessionReset?.(spaceId, agentId);
 
     return {
       closedSessionId: reset.closedSession?.session_id,
@@ -458,24 +461,46 @@ export class SpaceQuotaService {
 
   private listAgentSessions(spaceId: string): AgentUsageSessionSnapshot[] {
     const agentAggregates = this.options.usageAnalytics.listAgentAggregatesBySpace(spaceId);
+    const activeRowsByAgent = new Map(
+      this.options.agentUsageSessions
+        .listBySpace(spaceId, { status: "active", limit: 5000 })
+        .map((row) => [row.agent_id, row]),
+    );
     const sessions: AgentUsageSessionSnapshot[] = [];
+    const processedAgentIds = new Set<string>();
 
     for (const aggregate of agentAggregates) {
-      const sessionRow = this.options.agentUsageSessions.ensureActive({
+      const existingRow = activeRowsByAgent.get(aggregate.agentId);
+      const sessionRow = existingRow ?? this.options.agentUsageSessions.ensureActive({
         spaceId,
         agentId: aggregate.agentId,
         agentRole: resolveAgentRole(undefined, aggregate.agentId),
+        nowIso: aggregate.earliestActivityAt ?? aggregate.lastActivityAt,
       });
-      const touched = this.options.agentUsageSessions.touch(
-        spaceId,
-        aggregate.agentId,
-        aggregate.lastActivityAt ?? sessionRow.last_activity_at,
+      activeRowsByAgent.set(aggregate.agentId, sessionRow);
+
+      const sessionUsage = this.options.usageAnalytics.aggregateAgentTokensBySpaceAndAgent(
+        sessionRow.space_id,
+        sessionRow.agent_id,
+        sessionRow.started_at,
       );
-      sessions.push(this.toAgentSessionSnapshot(touched, aggregate));
+      const row = sessionUsage.runCount > 0 && sessionUsage.lastActivityAt
+        ? this.options.agentUsageSessions.touch(
+          spaceId,
+          aggregate.agentId,
+          sessionUsage.lastActivityAt,
+        )
+        : sessionRow;
+      activeRowsByAgent.set(aggregate.agentId, row);
+      processedAgentIds.add(aggregate.agentId);
+      sessions.push(this.toAgentSessionSnapshot(row, sessionUsage));
     }
 
-    if (agentAggregates.length === 0) {
-      return [];
+    for (const [agentId, row] of activeRowsByAgent.entries()) {
+      if (processedAgentIds.has(agentId)) {
+        continue;
+      }
+      sessions.push(this.emptyAgentSessionSnapshot(row));
     }
 
     return sessions.sort((lhs, rhs) => rhs.lastActivityAt.localeCompare(lhs.lastActivityAt));
@@ -485,17 +510,6 @@ export class SpaceQuotaService {
     row: AgentUsageSessionRow,
     aggregate: AgentTokenAggregate,
   ): AgentUsageSessionSnapshot {
-    const sinceBoundary = aggregate.earliestActivityAt && aggregate.earliestActivityAt < row.started_at
-      ? aggregate.earliestActivityAt
-      : row.started_at;
-    const usage = sinceBoundary === row.started_at
-      ? aggregate
-      : this.options.usageAnalytics.aggregateTokensBySpaceAndAgent(
-        row.space_id,
-        row.agent_id,
-        sinceBoundary,
-      );
-    const turnCount = aggregate.runCount;
     const lastActivity = aggregate.lastActivityAt ?? row.last_activity_at;
 
     return {
@@ -503,17 +517,18 @@ export class SpaceQuotaService {
       spaceId: row.space_id,
       agentId: row.agent_id,
       agentRole: row.agent_role,
+      displayTitle: row.display_title || undefined,
       status: row.status,
       startedAt: row.started_at,
       endedAt: row.ended_at ?? undefined,
       lastActivityAt: lastActivity,
-      turnCount,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      totalTokens: usage.totalTokens,
-      spentUsd: roundMoney(this.estimateCostUsd(usage)),
-      tokenAccuracy: usage.tokenAccuracy,
-      usageSource: usage.usageSource,
+      turnCount: aggregate.runCount,
+      inputTokens: aggregate.inputTokens,
+      outputTokens: aggregate.outputTokens,
+      totalTokens: aggregate.totalTokens,
+      spentUsd: roundMoney(this.estimateCostUsd(aggregate)),
+      tokenAccuracy: aggregate.tokenAccuracy,
+      usageSource: aggregate.usageSource,
     };
   }
 
@@ -523,6 +538,7 @@ export class SpaceQuotaService {
       spaceId: row.space_id,
       agentId: row.agent_id,
       agentRole: row.agent_role,
+      displayTitle: row.display_title || undefined,
       status: row.status,
       startedAt: row.started_at,
       endedAt: row.ended_at ?? undefined,

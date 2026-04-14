@@ -7,11 +7,12 @@ import { handleExecuteTurn, handleCancelTurn, handleResumeFeedback, handleCapabi
 import { handleSpaceAddAgent, handleSpaceArchive, handleSpaceCreate, handleSpaceDelete, handleSpaceEndIncognitoSession, handleSpaceGet, handleSpaceGetMemoryPolicy, handleSpaceList, handleSpaceListAgentAssignments, handleSpaceRemoveAgent, handleSpaceSetMemoryPolicy, handleSpaceSetOrchestrator, handleSpaceSetThinkingCapturePolicy, handleSpaceUpdateAgentAssignment } from "./space-admin-handlers.js";
 import { handleSpaceAddResource, handleSpaceAddSkill, handleSpaceApproveMcpAgent, handleSpaceClearMcpEndpoint, handleSpaceDiscoverMcpAgents, handleSpaceGetMcpEndpoint, handleSpaceGetWorkspace, handleSpaceListOrchestrationJournal, handleSpaceListResources, handleSpaceListSkills, handleSpaceListTurns, handleSpaceRemoveResource, handleSpaceRemoveSkill, handleSpaceSetMcpEndpoint, handleSpaceSetWorkspace } from "./space-resource-handlers.js";
 import { handleGatewayDiscoverLocalAgents, handleGatewayGetConciergeAgent, handleGatewayGetMainAgent, handleGatewayListAvailableModels, handleGatewayListProviderCatalogs, handleGatewayListProviderConfigs, handleGatewaySetConciergeAgent, handleGatewaySetMainAgent } from "./gateway-agent-handlers.js";
-import { handleGatewayCreateIntegrationRequest, handleGatewayDeleteSecretRef, handleGatewayFactoryReset, handleGatewayGetLocalUsageTelemetry, handleGatewayGetProviderSettings, handleGatewayGetProviderTelemetry, handleGatewayListIntegrationRequests, handleGatewayListInterconnectors, handleGatewayListSecretRefs, handleGatewayProvisionLocalProfile, handleGatewayPutSecretRef, handleGatewayRemoveProviderConfig, handleGatewayRescanInterconnectors, handleGatewaySetProviderConfig, handleGatewayUpdateProviderSettings, handleToolGet, handleToolList, handleToolListGrants, handleToolRegister, handleToolRemove, handleToolRevokeGrant, handleToolScaffold, handleToolSetEnabled } from "./gateway-control-handlers.js";
+import { handleGatewayCreateIntegrationRequest, handleGatewayDeleteSecretRef, handleGatewayFactoryReset, handleGatewayGetLocalUsageTelemetry, handleGatewayGetProviderSettings, handleGatewayGetProviderTelemetry, handleGatewayGetRuntimeDefaults, handleGatewayListIntegrationRequests, handleGatewayListInterconnectors, handleGatewayListSecretRefs, handleGatewayProvisionLocalProfile, handleGatewayPutSecretRef, handleGatewayRemoveProviderConfig, handleGatewayRescanInterconnectors, handleGatewaySetProviderConfig, handleGatewaySetRuntimeDefaults, handleGatewayUpdateProviderSettings, handleToolGet, handleToolList, handleToolListGrants, handleToolRegister, handleToolRemove, handleToolRevokeGrant, handleToolScaffold, handleToolSetEnabled } from "./gateway-control-handlers.js";
 import { handleConnectorSubmitInboundEvent, handleGatewayGetConnectorPolicy, handleGatewayListConnectorBindings, handleGatewayListConnectorFamilies, handleGatewayListConnectors, handleGatewayRemoveConnector, handleGatewayRemoveConnectorBinding, handleGatewayTestConnector, handleGatewayUpdateConnectorPolicy, handleGatewayUpsertConnector, handleGatewayUpsertConnectorBinding } from "./gateway-connector-handlers.js";
 import { handleIdentityArchiveAgentDefinition, handleIdentityArchivePersona, handleIdentityCreateAgentDefinition, handleIdentityCreatePersona, handleIdentityGetAgentDefinition, handleIdentityGetPersona, handleIdentityListAgentDefinitions, handleIdentityListPersonas, handleIdentityPreviewCompiledInstructions, handleIdentityPreviewRuntimeSystemPrompt, handleIdentityPreviewSystemPromptMatrix, handleIdentityUpdateAgentDefinition, handleIdentityUpdatePersona, handleSpaceArchiveTemplate, handleSpaceCreateFromTemplate, handleSpaceGetTemplate, handleSpaceListTemplates, handleSpacePreviewTemplate, handleSpaceSaveTemplate } from "./identity-template-handlers.js";
 import { handleGatewayGetPolicy, handleGatewayGrantCapability, handleGatewayKnowledgeBaseDeleteEntry, handleGatewayKnowledgeBaseListEntries, handleGatewayKnowledgeBaseUpsertEntry, handleGatewayListCapabilityGrants, handleGatewayRevokeCapability, handleGatewaySkillDelete, handleGatewaySkillGet, handleGatewaySkillList, handleGatewaySkillUpsert, handleGatewayUpdatePolicy, handleUsageGetSnapshot, handleLibraryListEntries, handleLibraryGetEntry, handleLibrarySaveSkill, handleLibraryImportEntry, handleLibraryArchiveEntry, handleLibrarySetEntryEnabled, handleLibraryDeleteEntry, handleLibraryScanEntries, handleLibraryListSkillDrafts, handleLibraryGetSkillDraft, handleLibraryCreateSkillDraft, handleLibraryDeleteSkillDraft } from "./gateway-governance-handlers.js";
-import { handleOrchestratorCommand, handleOrchestratorGetCommand, handleSchedulerCreateJob, handleSchedulerDeleteJob, handleSchedulerGetJob, handleSchedulerLinkSpace, handleSchedulerListJobs, handleSchedulerListRuns, handleSchedulerRunNow, handleSchedulerUnlinkSpace, handleSchedulerUpdateJob } from "./scheduler-handlers.js";
+import { handleOrchestratorCommand, handleOrchestratorGetCommand, handleSchedulerCreateJob, handleSchedulerDeleteJob, handleSchedulerGetJob, handleSchedulerLinkSpace, handleSchedulerListEvalDefinitions, handleSchedulerListJobs, handleSchedulerListRuns, handleSchedulerRunNow, handleSchedulerUnlinkSpace, handleSchedulerUpdateJob } from "./scheduler-handlers.js";
+import { handleWorkbenchApproveStage, handleWorkbenchCancelRun, handleWorkbenchCreateBatch, handleWorkbenchGetPolicy, handleWorkbenchGetQueueItem, handleWorkbenchGetRun, handleWorkbenchListArtifacts, handleWorkbenchListBatches, handleWorkbenchListQueue, handleWorkbenchListRuns, handleWorkbenchRejectStage, handleWorkbenchRetryRun, handleWorkbenchSetMode, handleWorkbenchStartRun, handleWorkbenchUpdateBatch, handleWorkbenchUpdatePolicy } from "./workbench-handlers.js";
 import { handleSpaceLink, handleSpacePullSharedContext, handleSpaceShareContext, handleSpaceShareCreateInvite, handleSpaceShareJoin, handleSpaceShareListParticipants, handleSpaceShareRevoke, handleSpaceUnlink } from "./space-sharing-handlers.js";
 import {
   handleSpaceAcceptInsight,
@@ -187,6 +188,8 @@ export async function routeMessage(
       return handleGatewayListProviderCatalogs(router.gatewayAgentHandlerContext(), client, msg);
     case MessageTypes.GATEWAY_LIST_INTERCONNECTORS:
       return handleGatewayListInterconnectors(router.gatewayControlHandlerContext(), client, msg);
+    case MessageTypes.GATEWAY_GET_RUNTIME_DEFAULTS:
+      return handleGatewayGetRuntimeDefaults(router.gatewayControlHandlerContext(), client, msg);
     case MessageTypes.TOOL_LIST:
       return handleToolList(router.gatewayControlHandlerContext(), client, msg);
     case MessageTypes.TOOL_GET:
@@ -205,6 +208,8 @@ export async function routeMessage(
       return handleToolRevokeGrant(router.gatewayControlHandlerContext(), client, msg);
     case MessageTypes.GATEWAY_RESCAN_INTERCONNECTORS:
       return handleGatewayRescanInterconnectors(router.gatewayControlHandlerContext(), client, msg);
+    case MessageTypes.GATEWAY_SET_RUNTIME_DEFAULTS:
+      return handleGatewaySetRuntimeDefaults(router.gatewayControlHandlerContext(), client, msg);
     case MessageTypes.GATEWAY_CREATE_INTEGRATION_REQUEST:
       return handleGatewayCreateIntegrationRequest(router.gatewayControlHandlerContext(), client, msg);
     case MessageTypes.GATEWAY_LIST_INTEGRATION_REQUESTS:
@@ -285,6 +290,8 @@ export async function routeMessage(
       return handleSchedulerGetJob(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.SCHEDULER_LIST_JOBS:
       return handleSchedulerListJobs(router.schedulerHandlerContext(), client, msg);
+    case MessageTypes.SCHEDULER_LIST_EVAL_DEFINITIONS:
+      return handleSchedulerListEvalDefinitions(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.SCHEDULER_UPDATE_JOB:
       return handleSchedulerUpdateJob(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.SCHEDULER_DELETE_JOB:
@@ -297,6 +304,38 @@ export async function routeMessage(
       return handleSchedulerListRuns(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.SCHEDULER_RUN_NOW:
       return handleSchedulerRunNow(router.schedulerHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_LIST_QUEUE:
+      return handleWorkbenchListQueue(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_GET_QUEUE_ITEM:
+      return handleWorkbenchGetQueueItem(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_CREATE_BATCH:
+      return handleWorkbenchCreateBatch(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_LIST_BATCHES:
+      return handleWorkbenchListBatches(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_UPDATE_BATCH:
+      return handleWorkbenchUpdateBatch(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_START_RUN:
+      return handleWorkbenchStartRun(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_RETRY_RUN:
+      return handleWorkbenchRetryRun(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_CANCEL_RUN:
+      return handleWorkbenchCancelRun(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_LIST_RUNS:
+      return handleWorkbenchListRuns(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_GET_RUN:
+      return handleWorkbenchGetRun(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_APPROVE_STAGE:
+      return handleWorkbenchApproveStage(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_REJECT_STAGE:
+      return handleWorkbenchRejectStage(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_SET_MODE:
+      return handleWorkbenchSetMode(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_LIST_ARTIFACTS:
+      return handleWorkbenchListArtifacts(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_GET_POLICY:
+      return handleWorkbenchGetPolicy(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_UPDATE_POLICY:
+      return handleWorkbenchUpdatePolicy(router.workbenchHandlerContext(), client, msg);
     case MessageTypes.ORCHESTRATOR_COMMAND:
       return handleOrchestratorCommand(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.ORCHESTRATOR_GET_COMMAND:

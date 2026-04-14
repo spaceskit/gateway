@@ -59,6 +59,9 @@ export async function handleExecuteTurn(
   const spaceUid = normalizeUuid(payload?.spaceUid) || normalizeString(payload?.spaceUid);
   const input = typeof payload?.input === "string" ? payload.input : "";
   const targetAgentId = normalizeString(payload?.targetAgentId);
+  const targetAgentIds = normalizeTargetAgentIds(payload?.targetAgentIds);
+  const replyToTurnId = normalizeString(payload?.replyToTurnId);
+  const conversationTopology = normalizeConversationTopology(payload?.conversationTopology);
   const requestedAccessMode = payload?.accessMode === "full_access" ? "full_access" : "default";
   const mode = normalizeTurnMode(payload?.mode);
   const effort = normalizeTurnEffort(payload?.effort);
@@ -109,6 +112,9 @@ export async function handleExecuteTurn(
       accessMode,
       mode,
       effort,
+      ...(targetAgentIds.length > 0 ? { targetAgentIds } : {}),
+      ...(replyToTurnId ? { replyToTurnId } : {}),
+      ...(conversationTopology ? { conversationTopology } : {}),
     },
   );
   const canonicalSpaceUid = await context.resolveSpaceUid(spaceId);
@@ -131,6 +137,28 @@ function normalizeTurnMode(value: ExecuteTurnPayload["mode"]): ExecuteTurnPayloa
 
 function normalizeTurnEffort(value: ExecuteTurnPayload["effort"]): ExecuteTurnPayload["effort"] | undefined {
   if (value === "low" || value === "medium" || value === "high" || value === "max") {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeTargetAgentIds(value: ExecuteTurnPayload["targetAgentIds"]): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const agentId = normalizeString(item);
+    if (!agentId || seen.has(agentId)) continue;
+    seen.add(agentId);
+    normalized.push(agentId);
+  }
+  return normalized;
+}
+
+function normalizeConversationTopology(
+  value: ExecuteTurnPayload["conversationTopology"],
+): ExecuteTurnPayload["conversationTopology"] | undefined {
+  if (value === "direct" || value === "shared_team_chat" || value === "broadcast_team") {
     return value;
   }
   return undefined;

@@ -113,8 +113,17 @@ interface BufferedReasoningEntry {
   lastCreatedAt: string;
 }
 
+interface BufferedClientEntry {
+  spaceId: string;
+  turnId: string;
+  agentId?: string;
+  textParts: string[];
+  lastCreatedAt: string;
+}
+
 export class SpaceTurnTraceService {
   private readonly bufferedReasoning = new Map<string, BufferedReasoningEntry>();
+  private readonly bufferedClientDeltas = new Map<string, BufferedClientEntry>();
 
   constructor(private readonly options: SpaceTurnTraceServiceOptions) {}
 
@@ -132,6 +141,9 @@ export class SpaceTurnTraceService {
     const subtype = typeof sanitizedPayload.type === "string" ? sanitizedPayload.type : undefined;
     const normalizedEventType = (subtype ?? input.eventType).trim().toLowerCase();
     if (normalizedEventType === "text_delta") {
+      if (shouldBufferClientDelta(sanitizedPayload)) {
+        this.bufferClientDelta(input.spaceId, input.turnId, input.agentId, sanitizedPayload, createdAt);
+      }
       return;
     }
     if (normalizedEventType === "reasoning_delta") {
@@ -147,6 +159,7 @@ export class SpaceTurnTraceService {
     }
     if (isReasoningFlushEvent(normalizedEventType)) {
       this.flushBufferedReasoning(input.spaceId, input.turnId, input.agentId, createdAt);
+      this.flushBufferedClientDelta(input.spaceId, input.turnId, input.agentId, createdAt);
     }
     this.persistTurnEvent({
       spaceId: input.spaceId,
@@ -244,6 +257,61 @@ export class SpaceTurnTraceService {
       if (!entry || entry.spaceId !== spaceId || entry.turnId !== turnId) continue;
       if (agentId && entry.agentId && entry.agentId !== agentId) continue;
       this.bufferedReasoning.delete(key);
+    }
+  }
+
+  private bufferClientDelta(
+    spaceId: string,
+    turnId: string,
+    agentId: string | undefined,
+    payload: Record<string, unknown>,
+    createdAt: string,
+  ): void {
+    const text = readString(payload.text);
+    if (!text) return;
+    const key = clientBufferKey(spaceId, turnId, agentId);
+    const existing = this.bufferedClientDeltas.get(key);
+    if (existing) {
+      existing.textParts.push(text);
+      existing.lastCreatedAt = createdAt;
+      return;
+    }
+    this.bufferedClientDeltas.set(key, {
+      spaceId,
+      turnId,
+      agentId,
+      textParts: [text],
+      lastCreatedAt: createdAt,
+    });
+  }
+
+  private flushBufferedClientDelta(
+    spaceId: string,
+    turnId: string,
+    agentId: string | undefined,
+    createdAt: string,
+  ): void {
+    for (const [key, entry] of this.bufferedClientDeltas.entries()) {
+      if (entry.spaceId !== spaceId || entry.turnId !== turnId) continue;
+      if (agentId && entry.agentId && entry.agentId !== agentId) continue;
+
+      const text = entry.textParts.join("");
+      this.bufferedClientDeltas.delete(key);
+      if (!text.trim()) continue;
+
+      this.persistTurnEvent({
+        spaceId,
+        turnId,
+        agentId: entry.agentId,
+        eventType: "client_delta",
+        payload: {
+          type: "client_delta",
+          text,
+          transcriptVisibility: "activity_only",
+          streamKind: "provider_client",
+        },
+        createdAt: createdAt || entry.lastCreatedAt,
+      });
     }
   }
 
@@ -428,9 +496,12 @@ function mapEventRowToActivityEntry(row: EventLogRow): SpaceActivityLogEntry {
     ?? turnId;
   const summaryTurnId = readString(payload.summaryTurnId)
     ?? readString(payload.summary_turn_id);
+  const clientEntryId = eventType === "client_delta"
+    ? buildClientActivityId(turnId, agentId)
+    : undefined;
 
   return {
-    entryId: row.event_id,
+    entryId: clientEntryId ?? row.event_id,
     source: "event_log",
     category: categorizeEventType(eventType, visibilityForEventType(eventType)),
     turnId,
@@ -719,6 +790,21 @@ function reasoningBufferKey(spaceId: string, turnId: string, agentId: string | u
   return `${spaceId}::${turnId}::${agentId ?? ""}`;
 }
 
+function clientBufferKey(spaceId: string, turnId: string, agentId: string | undefined): string {
+  return `${spaceId}::${turnId}::${agentId ?? ""}`;
+}
+
+function shouldBufferClientDelta(payload: Record<string, unknown>): boolean {
+  return readString(payload.transcriptVisibility) === "activity_only"
+    && readString(payload.streamKind) === "provider_client";
+}
+
+function buildClientActivityId(turnId: string | undefined, agentId: string | undefined): string | undefined {
+  const normalizedTurnId = turnId?.trim();
+  if (!normalizedTurnId) return undefined;
+  return `client:${normalizedTurnId}:${agentId?.trim() || "agent"}`;
+}
+
 function normalizeLimit(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return 200;
@@ -810,6 +896,8 @@ function titleForEventType(
       return "Context summarized";
     case "reasoning_delta":
       return readBoolean(payload.summarized) ? "Working summary" : "Working";
+    case "client_delta":
+      return latestClientTitle(readString(payload.text)) ?? "Client";
     case "error":
       return "Error";
     case "rate_limited":
@@ -859,6 +947,8 @@ function detailForEventType(eventType: string, payload: Record<string, unknown>)
       ]);
     case "reasoning_delta":
       return readString(payload.text) ?? readString(payload.reasoning);
+    case "client_delta":
+      return readString(payload.text);
     case "error":
       return readString(asRecord(payload.error)?.message) ?? readString(payload.message);
     default:
@@ -889,6 +979,8 @@ function statusForEventType(eventType: string, payload: Record<string, unknown>)
       return "cancelled";
     case "reasoning_delta":
       return readBoolean(payload.summarized) ? "completed" : "running";
+    case "client_delta":
+      return "completed";
     case "tool_result": {
       const result = asRecord(payload.result);
       const isError = payload.isError === true || result?.isError === true || result?.error != null;
@@ -902,6 +994,15 @@ function statusForEventType(eventType: string, payload: Record<string, unknown>)
       if (eventType.includes("result") || eventType.includes("completed")) return "completed";
       return "info";
   }
+}
+
+function latestClientTitle(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const lines = text
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.at(-1);
 }
 
 function statusForJournalEventType(eventType: string): string {

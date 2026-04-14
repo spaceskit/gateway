@@ -112,7 +112,10 @@ export class LocalUsageTelemetryService {
       const sessionRecords = scanner
         ? await scanner.scan(windowStartMs)
         : [];
-      const summary = summarizeSessions(sessionRecords, this.windowDays);
+      const summary = resolveUsageSummary(
+        summarizeSessions(sessionRecords, this.windowDays),
+        fallback,
+      );
       const sessions = toSessionPayloads(sessionRecords, this.maxSessions);
       const quota = this.resolveQuota(providerId, fallback, fetchedAtIso);
       const status = resolveProviderStatus(summary, quota, fallback);
@@ -189,16 +192,21 @@ export class LocalUsageTelemetryService {
     }
 
     const useCodexBarWindows = codexBarQuota.windows.length > 0;
+    const fallbackHasUsage = Boolean(fallback?.usage);
+    const useFallbackTelemetry = !useCodexBarWindows
+      && (fallbackWindows.length > 0 || fallbackHasUsage);
     const windows = useCodexBarWindows ? codexBarQuota.windows : fallbackWindows;
     const sourceLabel = useCodexBarWindows
-      ? codexBarQuota.sourceLabel
+      ? (codexBarQuota.sourceLabel ?? fallbackSourceLabel)
       : (fallbackSourceLabel ?? codexBarQuota.sourceLabel);
     const accountLabel = codexBarQuota.accountLabel ?? fallback?.accountLabel;
     const available = codexBarQuota.available || windows.length > 0;
-    const message = firstDefined(
-      codexBarQuota.message,
-      fallback?.message,
-    );
+    const message = useFallbackTelemetry
+      ? fallback?.message
+      : firstDefined(
+        codexBarQuota.message,
+        fallback?.message,
+      );
 
     return {
       available,
@@ -230,6 +238,31 @@ function resolveProviderStatus(
   return "unknown";
 }
 
+function resolveUsageSummary(
+  localSummary: LocalUsageSummary,
+  fallback: ProviderTelemetryPayload | undefined,
+): LocalUsageSummary {
+  if (localSummary.sessionCount > 0 || localSummary.totalTokens > 0) {
+    return localSummary;
+  }
+
+  const fallbackUsage = fallback?.usage;
+  if (!fallbackUsage) {
+    return localSummary;
+  }
+
+  return {
+    windowDays: localSummary.windowDays,
+    sessionCount: 0,
+    inputTokens: fallbackUsage.inputTokens,
+    outputTokens: fallbackUsage.outputTokens,
+    totalTokens: fallbackUsage.totalTokens,
+    ...(fallbackUsage.spentUsd > 0 ? { estimatedCostUsd: fallbackUsage.spentUsd } : {}),
+    tokenAccuracy: fallbackUsage.tokenAccuracy,
+    usageSource: fallbackUsage.usageSource,
+  };
+}
+
 function summarizeSessions(
   sessions: LocalUsageSessionRecord[],
   windowDays: number,
@@ -244,7 +277,10 @@ function summarizeSessions(
     outputTokens += session.outputTokens;
   }
 
-  const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+  const totalTokens = sessions.reduce(
+    (sum, session) => sum + resolveSessionTotalTokens(session),
+    0,
+  );
   const estimatedCostUsd = estimateCostUsd(inputTokens, outputTokens);
   return {
     windowDays,
@@ -266,7 +302,7 @@ function toSessionPayloads(
   return sessions
     .slice(0, maxSessions)
     .map((session) => {
-      const totalTokens = session.inputTokens + session.cachedInputTokens + session.outputTokens;
+      const totalTokens = resolveSessionTotalTokens(session);
       const estimatedCostUsd = estimateCostUsd(session.inputTokens, session.outputTokens);
       return {
         sessionId: session.sessionId,
@@ -282,6 +318,10 @@ function toSessionPayloads(
         usageSource: "local_scanner",
       };
     });
+}
+
+function resolveSessionTotalTokens(session: LocalUsageSessionRecord): number {
+  return session.totalTokens ?? (session.inputTokens + session.cachedInputTokens + session.outputTokens);
 }
 
 function mapFallbackWindows(

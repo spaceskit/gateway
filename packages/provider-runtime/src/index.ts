@@ -2,6 +2,7 @@ export * from "./anthropic-sdk-provider.js";
 export * from "./apple-foundation-provider.js";
 export * from "./claude-agent-sdk-provider.js";
 export * from "./cli-executor-provider.js";
+export * from "./codex-app-server-provider.js";
 export * from "./lmstudio-provider.js";
 export * from "./openai-compatible-provider.js";
 export * from "./openai-responses-provider.js";

@@ -5,10 +5,12 @@ import { OrchestratorCommandService } from "./services/orchestrator-command-serv
 import { SchedulerService } from "./services/scheduler-service.js";
 import { SpeechSessionService } from "./services/speech-session-service.js";
 import { ConciergeCallRuntimeService } from "./services/concierge-call-runtime-service.js";
+import { WorkbenchService } from "./services/workbench-service.js";
 
 export async function initializeOrchestrationServices(state: BootstrapState): Promise<void> {
   const { config, logger, db } = state;
   const selfCheckTurnBySpace = new Map<string, string>();
+  const workbenchAgentLoopEnabled = Bun.env.SPACESKIT_WORKBENCH_AGENT_LOOP !== "false";
 
   const orchestratorCommandService = (
     state.orchestratorCommandRepo
@@ -66,6 +68,30 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
       });
     }
   }
+
+  const workbenchService = (
+    config.gatewayProfile === "external"
+    && state.workbenchBatchRepo
+    && state.workbenchRunRepo
+    && state.workbenchArtifactRepo
+    && state.workbenchPolicyRepo
+  )
+    ? new WorkbenchService({
+      batches: state.workbenchBatchRepo,
+      runs: state.workbenchRunRepo,
+      artifacts: state.workbenchArtifactRepo,
+      policy: state.workbenchPolicyRepo,
+      repoRoot: Bun.env.SPACESKIT_WORKBENCH_REPO_ROOT ?? process.cwd(),
+      logger: logger.child({ module: "workbench" }),
+      ...(workbenchAgentLoopEnabled
+        ? {
+          spaceAdminService: state.spaceAdminService,
+          spaceManager: state.spaceManager,
+          eventBus: state.eventBus,
+        }
+        : {}),
+    })
+    : null;
 
   const gatewayResetService = db
     ? new GatewayResetService({
@@ -284,6 +310,7 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
     gatewayResetService,
     orchestratorCommandService,
     schedulerService,
+    workbenchService,
     speechSessionService,
     conciergeCallRuntimeService,
   });

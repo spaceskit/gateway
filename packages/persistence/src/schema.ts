@@ -993,6 +993,10 @@ export const migrations: Migration[] = [
         action_type TEXT NOT NULL DEFAULT 'space_prompt',
         prompt_text TEXT NOT NULL DEFAULT '',
         target_agent_id TEXT NOT NULL DEFAULT '',
+        execution_target_json TEXT NOT NULL DEFAULT '{"mode":"existing_space"}',
+        calendar_binding_json TEXT,
+        eval_config_json TEXT,
+        eval_self_improve_state_json TEXT,
         primary_space_id TEXT REFERENCES spaces(space_id) ON DELETE SET NULL,
         invalid_reason TEXT NOT NULL DEFAULT '',
         next_run_at TEXT,
@@ -1031,6 +1035,7 @@ export const migrations: Migration[] = [
         error_code TEXT NOT NULL DEFAULT '',
         error_message TEXT NOT NULL DEFAULT '',
         result_json TEXT,
+        eval_run_json TEXT,
         created_at TEXT NOT NULL
       )`,
       `CREATE INDEX IF NOT EXISTS idx_scheduler_job_runs_job
@@ -1445,6 +1450,19 @@ export const migrations: Migration[] = [
     ],
   },
   {
+    version: "v2_gateway_runtime_defaults",
+    up: [
+      `CREATE TABLE IF NOT EXISTS gateway_runtime_defaults (
+        singleton_id INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton_id = 1),
+        main_provider_id TEXT NOT NULL DEFAULT '',
+        main_model_id TEXT NOT NULL DEFAULT '',
+        concierge_provider_id TEXT NOT NULL DEFAULT '',
+        concierge_model_id TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+    ],
+  },
+  {
     version: "v2_gateway_external_connectivity",
     up: [
       `CREATE TABLE IF NOT EXISTS gateway_external_connectivity (
@@ -1575,6 +1593,82 @@ export const migrations: Migration[] = [
         ON concierge_escalation_requests(status, expires_at)`,
       `CREATE INDEX IF NOT EXISTS idx_concierge_escalation_principal
         ON concierge_escalation_requests(principal_id, created_at DESC)`,
+    ],
+  },
+  {
+    version: "v8_workbench",
+    up: [
+      `CREATE TABLE IF NOT EXISTS workbench_batches (
+        batch_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        execution_mode TEXT NOT NULL DEFAULT 'supervised',
+        queue_item_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_by_principal_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workbench_batches_status
+        ON workbench_batches(status, updated_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS workbench_runs (
+        run_id TEXT PRIMARY KEY,
+        batch_id TEXT REFERENCES workbench_batches(batch_id) ON DELETE SET NULL,
+        queue_item_id TEXT NOT NULL,
+        queue_item_path TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        current_stage TEXT NOT NULL DEFAULT 'intake',
+        execution_mode TEXT NOT NULL DEFAULT 'supervised',
+        approval_state TEXT NOT NULL DEFAULT 'not_required',
+        worktree_json TEXT,
+        touched_repos_json TEXT NOT NULL DEFAULT '[]',
+        verification_suites_json TEXT NOT NULL DEFAULT '[]',
+        verification_result_json TEXT,
+        landing_result_json TEXT,
+        last_error_code TEXT NOT NULL DEFAULT '',
+        last_error_message TEXT NOT NULL DEFAULT '',
+        created_by_principal_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workbench_runs_status
+        ON workbench_runs(status, updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_workbench_runs_queue_item
+        ON workbench_runs(queue_item_id, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS workbench_artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES workbench_runs(run_id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content_type TEXT NOT NULL DEFAULT 'text/plain',
+        content_text TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workbench_artifacts_run
+        ON workbench_artifacts(run_id, created_at ASC)`,
+      `CREATE TABLE IF NOT EXISTS workbench_policy (
+        singleton_id INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton_id = 1),
+        default_execution_mode TEXT NOT NULL DEFAULT 'supervised',
+        autonomous_enabled INTEGER NOT NULL DEFAULT 1,
+        max_parallel_runs INTEGER NOT NULL DEFAULT 2,
+        require_explicit_autonomous_opt_in INTEGER NOT NULL DEFAULT 1,
+        require_ai_shippable_for_autonomous INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      )`,
+    ],
+  },
+  {
+    version: "v9_agent_usage_session_runtime_metadata",
+    up: [
+      `ALTER TABLE agent_usage_sessions ADD COLUMN display_title TEXT NOT NULL DEFAULT ''`,
+      `ALTER TABLE agent_usage_sessions ADD COLUMN provider_session_handle_json TEXT NOT NULL DEFAULT ''`,
+    ],
+  },
+  {
+    version: "v10_workbench_execution_context",
+    up: [
+      `ALTER TABLE workbench_runs ADD COLUMN execution_context_json TEXT`,
     ],
   },
 ];

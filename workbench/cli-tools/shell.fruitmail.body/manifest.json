@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "shell.fruitmail.body",
+  "displayName": "Read Email Body",
+  "description": "Read the full body content of an email by its message ID. Returns plain text content.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "messages",
+  "toolGroupDisplayName": "Messages",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "argsTemplate": [
+    "body",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "description": "The message ID (ROWID) from a previous search result."
+          }
+        },
+        "required": [
+          "messageId"
+        ],
+        "description": "Structured FruitMail request payload."
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use Read Email Body for Apple Mail operations only after the gateway host can run the fruitmail CLI successfully outside Spaces.",
+  "examples": [
+    {
+      "name": "Read one message body",
+      "arguments": {
+        "payload": {
+          "messageId": "12345"
+        }
+      },
+      "expectedOutput": "{\"ok\":true,\"operation\":\"body\",\"data\":\"Email body text\"}"
+    }
+  ],
+  "timeoutMs": 30000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:31.859Z",
+  "updatedAt": "2026-04-11T09:40:31.859Z"
+}

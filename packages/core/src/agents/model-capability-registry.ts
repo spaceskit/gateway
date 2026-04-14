@@ -67,6 +67,7 @@ const PROVIDER_DEFAULTS: Record<string, ProviderDefaults> = {
   lmstudio: { contextWindow: 32_768, toolSupportMode: "native", supportsStreaming: true, supportsActivityStreaming: false, supportsPublicReasoning: false, supportsThinking: false, supportsReasoningEffort: false, executionClass: "local_runtime", accessModeStrategy: "gateway_owned", isCliExecutor: false },
   apple: { contextWindow: 4_096, toolSupportMode: "native", supportsStreaming: true, supportsActivityStreaming: false, supportsPublicReasoning: false, supportsThinking: false, supportsReasoningEffort: false, executionClass: "local_runtime", accessModeStrategy: "gateway_owned", isCliExecutor: false },
   "claude-agent-sdk": { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: false },
+  "codex-app-server": { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: false, supportsReasoningEffort: true, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: false },
   claude: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
   codex: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: false, supportsReasoningEffort: true, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
   gemini: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: false, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
@@ -187,6 +188,7 @@ export function resolveModelCapabilities(
 const STATIC_CONTEXT_WINDOW_PROVIDERS: Record<string, number> = {
   apple: 4_096,
   "claude-agent-sdk": 200_000,
+  "codex-app-server": 200_000,
   claude: 200_000,
   codex: 200_000,
   gemini: 200_000,

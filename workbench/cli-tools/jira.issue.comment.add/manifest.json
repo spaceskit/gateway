@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "id": "jira.issue.comment.add",
+  "displayName": "Jira Comment Add",
+  "description": "Add a Jira issue comment and return the refreshed issue payload.",
+  "bundleId": "jira-cli",
+  "bundleDisplayName": "Jira CLI",
+  "bundleDescription": "Gateway-managed Jira CLI bundle for account discovery plus project, board, release, epic, sprint, and issue operations.",
+  "toolGroupId": "issues",
+  "toolGroupDisplayName": "Issues",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools/spaces-jira.mjs",
+  "argsTemplate": [
+    "--op",
+    "issue.comment.add",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Optional Jira project key or id override for this call."
+          },
+          "issueKey": {
+            "type": "string",
+            "description": "Jira issue key, for example `OPS-123`."
+          },
+          "body": {
+            "type": "string",
+            "description": "Comment body."
+          },
+          "internal": {
+            "type": "boolean",
+            "description": "Whether the comment should be internal."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "issueKey",
+          "body"
+        ]
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool to add a comment to an issue when the comment text is ready to send.",
+  "examples": [
+    {
+      "name": "Add a progress comment",
+      "description": "Adds one comment to an issue.",
+      "arguments": {
+        "payload": {
+          "issueKey": "OPS-123",
+          "body": "The Jira connector wrapper is implemented and under test."
+        }
+      },
+      "expectedOutput": "{\n  \"ok\": true,\n  \"operation\": \"issue.comment.add\",\n  \"summary\": \"Added a comment to Jira issue OPS-123.\"\n}"
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/jira-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:29.005Z",
+  "updatedAt": "2026-04-11T09:40:29.005Z"
+}

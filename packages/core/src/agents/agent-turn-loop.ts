@@ -65,6 +65,7 @@ import {
   appendToolResultMessage,
   buildTurnResult,
 } from "./agent-runtime-turn-result.js";
+import type { ProviderFeedbackRequest, ProviderFeedbackResponse } from "./model-provider.js";
 
 export interface AgentTurnLoopDeps {
   agentId: string;
@@ -117,7 +118,9 @@ export async function* runAgentTurnCoreLoop(
   );
   const suppressInjectedTools = shouldSuppressInjectedToolsForPrompt(context.messages);
   const nativeCliToolsMode = isNativeCliToolsMode(deps.config.modelProvider, accessMode);
-  const cliAccessModeGuidance = buildCliExecutorAccessModeGuidance(deps.config.modelProvider, accessMode);
+  const capabilities = resolveModelCapabilities(deps.config.modelProvider, deps.config.modelId);
+  const isMediated = capabilities.toolSupportMode === "mediated";
+  const cliAccessModeGuidance = buildCliExecutorAccessModeGuidance(deps.config.modelProvider, accessMode, { isMediated });
   if (cliAccessModeGuidance) {
     messages.splice(1, 0, {
       role: "system",
@@ -125,18 +128,15 @@ export async function* runAgentTurnCoreLoop(
     });
   }
 
-  const capabilities = resolveModelCapabilities(deps.config.modelProvider, deps.config.modelId);
-  const isMediated = capabilities.toolSupportMode === "mediated";
-
   let toolDefs: ToolDefinition[] = [];
   let mediatedToolDefs: ToolDefinition[] = [];
   let mediatedFallbackEnabled = false;
   let toolProxy: GatewayToolProxy | null = null;
-  let mcpBridgeConfig: import("./model-provider.js").McpBridgeConfig | undefined;
+  let gatewayToolBridgeConfig: import("./model-provider.js").GatewayToolBridgeConfig | undefined;
   let mcpDiscoveryFilePath: string | undefined;
 
-  // Providers that can consume the gateway MCP bridge directly.
-  const mcpBridgeProviders = new Set(["claude", "codex", "claude-agent-sdk"]);
+  // Providers that can consume the gateway tool bridge directly.
+  const gatewayToolBridgeProviders = new Set(["claude", "codex", "claude-agent-sdk", "codex-app-server"]);
   // Providers that also support MCP file discovery (.mcp.json in workspace).
   const mcpDiscoveryProviders = new Set(["claude", "codex"]);
 
@@ -147,9 +147,9 @@ export async function* runAgentTurnCoreLoop(
     );
     if (mediatedToolDefs.length > 0) {
       const bridgeScriptPath = resolveMcpBridgeScriptPath();
-      const providerSupportsMcpBridge = mcpBridgeProviders.has(deps.config.modelProvider);
+      const providerSupportsGatewayToolBridge = gatewayToolBridgeProviders.has(deps.config.modelProvider);
       const providerSupportsMcpDiscovery = mcpDiscoveryProviders.has(deps.config.modelProvider);
-      if (bridgeScriptPath && providerSupportsMcpBridge) {
+      if (bridgeScriptPath && providerSupportsGatewayToolBridge) {
         // Full MCP bridge — gateway tools become callable MCP tools
         const executionCtx = {
           spaceId: context.spaceId,
@@ -177,7 +177,7 @@ export async function* runAgentTurnCoreLoop(
           }
         }
 
-        mcpBridgeConfig = {
+        gatewayToolBridgeConfig = {
           bridgeScriptPath,
           toolDefsJson,
           socketPath: toolProxy.socketPath,
@@ -270,7 +270,7 @@ export async function* runAgentTurnCoreLoop(
       })
       : undefined;
 
-    const generateOpts: GenerateOptions = {
+    const baseGenerateOpts: GenerateOptions = {
       messages,
       mode: context.mode,
       effort: context.effort,
@@ -281,9 +281,11 @@ export async function* runAgentTurnCoreLoop(
       accessMode,
       approvalBypassEnabled,
       nativeCliToolsEnabled: nativeCliToolsMode,
-      mcpBridgeConfig,
+      gatewayToolBridgeConfig,
+      mcpBridgeConfig: gatewayToolBridgeConfig,
       thinkingConfig,
       providerSessionHandle,
+      sessionTitle: context.sessionTitle,
       cliExecutionObserver,
       signal,
     };
@@ -293,6 +295,30 @@ export async function* runAgentTurnCoreLoop(
 
     for (let retryAttempt = 0; ; retryAttempt++) {
       try {
+        const llmEventQueue = new AsyncEventQueue<TurnEvent>();
+        let rawResult: LlmCallResult | null = null;
+        let llmError: Error | null = null;
+
+        const generateOpts: GenerateOptions = {
+          ...baseGenerateOpts,
+          feedbackHandler: async (request: ProviderFeedbackRequest): Promise<ProviderFeedbackResponse> => {
+            const checkpoint: RuntimeFeedbackCheckpoint = {
+              id: randomUUID(),
+              agentId: deps.agentId,
+              triggerClass: request.triggerClass,
+              description: request.description,
+              options: request.options ?? ["approve", "reject"],
+              ...(request.context ? { context: request.context } : {}),
+            };
+            deps.setState("needs_feedback");
+            llmEventQueue.push({ type: "state_changed", state: "needs_feedback" });
+            llmEventQueue.push({ type: "feedback_requested", request: checkpoint });
+            const feedback = await deps.waitForFeedback(context.turnId);
+            deps.setState("thinking");
+            llmEventQueue.push({ type: "state_changed", state: "thinking" });
+            return feedback;
+          },
+        };
         const llmCtx = Pipeline.createContext("llm", generateOpts, {
           spaceId: context.spaceId,
           agentId: deps.agentId,
@@ -306,10 +332,6 @@ export async function* runAgentTurnCoreLoop(
             turnId: context.turnId,
           },
         });
-
-        let rawResult: LlmCallResult | null = null;
-        let llmError: Error | null = null;
-        const llmEventQueue = new AsyncEventQueue<TurnEvent>();
 
         const llmRunPromise = deps.middleware.execute("llm", llmCtx, async () => {
           rawResult = await runLlmCall({
@@ -347,6 +369,21 @@ export async function* runAgentTurnCoreLoop(
         }
 
         const resolvedResult = rawResult as LlmCallResult;
+        if (resolvedResult.result.feedbackRequest) {
+          const feedback = resolvedResult.result.feedbackRequest;
+          const checkpoint: RuntimeFeedbackCheckpoint = {
+            id: randomUUID(),
+            agentId: deps.agentId,
+            triggerClass: feedback.triggerClass,
+            description: feedback.description,
+            options: feedback.options ?? ["approve", "reject"],
+            ...(feedback.context ? { context: feedback.context } : {}),
+          };
+          deps.setState("needs_feedback");
+          yield { type: "state_changed", state: "needs_feedback" };
+          yield { type: "feedback_requested", request: checkpoint };
+          return;
+        }
         streamedTextDeltaCount = resolvedResult.streamedTextDeltaCount;
         result = resolvedResult.result;
         break;

@@ -15,6 +15,7 @@ import { z } from "zod";
 export const SpaceTemplateAgentSchema = z.object({
   agentId: z.string(),
   profileId: z.string().optional(),
+  profileBinding: z.enum(["explicit", "gateway_default_main"]).optional(),
   role: z.string().optional(),
   isPrimary: z.boolean().optional().default(false),
   securityOverrides: z.record(z.unknown()).optional(),

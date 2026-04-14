@@ -68,6 +68,8 @@ export interface Notification {
   read?: boolean;
 }
 
+export type NotificationPushHandler = (clientId: string, notification: Notification) => Promise<void>;
+
 // ---------------------------------------------------------------------------
 // Subscriptions
 // ---------------------------------------------------------------------------
@@ -91,6 +93,9 @@ export interface NotificationSubscription {
 export interface NotificationService {
   /** Send a notification to matching subscribers. */
   send(notification: Notification): Promise<void>;
+
+  /** Bind or clear the live push delivery callback. */
+  setPushHandler(onPush?: NotificationPushHandler): void;
 
   /** Subscribe a client to notifications. */
   subscribe(

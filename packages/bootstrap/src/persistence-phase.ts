@@ -18,6 +18,7 @@ import {
   GatewayLinkedSkillIndexRepository,
   GatewayMemoryDefaultsRepository,
   GatewayPolicyRepository,
+  GatewayRuntimeDefaultsRepository,
   GatewaySkillCatalogRepository,
   GatewaySkillDraftRepository,
   GatewayWorkspaceDefaultsRepository,
@@ -40,6 +41,10 @@ import {
   SchedulerJobRepository,
   SchedulerJobRunRepository,
   SchedulerJobSpaceRepository,
+  WorkbenchArtifactRepository,
+  WorkbenchBatchRepository,
+  WorkbenchPolicyRepository,
+  WorkbenchRunRepository,
   SpaceAgentAssignmentRepository,
   SpaceChangeSetFileRepository,
   SpaceChangeSetRepository,
@@ -108,6 +113,10 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     schedulerJobRepo = null,
     schedulerJobSpaceRepo = null,
     schedulerJobRunRepo = null,
+    workbenchBatchRepo = null,
+    workbenchRunRepo = null,
+    workbenchArtifactRepo = null,
+    workbenchPolicyRepo = null,
     idempotencyRepo = null,
     gatewayPolicyRepo = null,
     auditEventsRepo = null,
@@ -145,6 +154,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     spaceAgentNotesRepo = null,
     spaceReplaySessionRepo = null,
     gatewayMemoryDefaultsRepo = null,
+    gatewayRuntimeDefaultsRepo = null,
     userProfileRepo = null,
     gatewayWorkspaceDefaultsRepo = null,
     gatewayExternalConnectivityRepo = null,
@@ -196,6 +206,10 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     schedulerJobRepo = new SchedulerJobRepository(db.db);
     schedulerJobSpaceRepo = new SchedulerJobSpaceRepository(db.db);
     schedulerJobRunRepo = new SchedulerJobRunRepository(db.db);
+    workbenchBatchRepo = new WorkbenchBatchRepository(db.db);
+    workbenchRunRepo = new WorkbenchRunRepository(db.db);
+    workbenchArtifactRepo = new WorkbenchArtifactRepository(db.db);
+    workbenchPolicyRepo = new WorkbenchPolicyRepository(db.db);
     idempotencyRepo = new IdempotencyRepository(db.db);
     gatewayPolicyRepo = new GatewayPolicyRepository(db.db);
     auditEventsRepo = new AuditEventsRepository(db.db);
@@ -233,6 +247,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     spaceAgentNotesRepo = new SpaceAgentNotesRepository(db.db);
     spaceReplaySessionRepo = new SpaceReplaySessionRepository(db.db);
     gatewayMemoryDefaultsRepo = new GatewayMemoryDefaultsRepository(db.db);
+    gatewayRuntimeDefaultsRepo = new GatewayRuntimeDefaultsRepository(db.db);
     userProfileRepo = new UserProfileRepository(db.db);
     gatewayWorkspaceDefaultsRepo = new GatewayWorkspaceDefaultsRepository(db.db);
     gatewayExternalConnectivityRepo = new GatewayExternalConnectivityRepository(db.db);
@@ -306,6 +321,10 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     schedulerJobRepo,
     schedulerJobSpaceRepo,
     schedulerJobRunRepo,
+    workbenchBatchRepo,
+    workbenchRunRepo,
+    workbenchArtifactRepo,
+    workbenchPolicyRepo,
     idempotencyRepo,
     gatewayPolicyRepo,
     auditEventsRepo,
@@ -343,6 +362,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     spaceAgentNotesRepo,
     spaceReplaySessionRepo,
     gatewayMemoryDefaultsRepo,
+    gatewayRuntimeDefaultsRepo,
     userProfileRepo,
     gatewayWorkspaceDefaultsRepo,
     gatewayExternalConnectivityRepo,

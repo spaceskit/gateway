@@ -1,5 +1,5 @@
 import type { ErrorPayload } from "../protocol.js";
-import { MessageTypes, type GatewayCreateIntegrationRequestPayload, type GatewayCreateIntegrationRequestResponsePayload, type GatewayDeleteSecretRefPayload, type GatewayDeleteSecretRefResponsePayload, type GatewayFactoryResetPayload, type GatewayFactoryResetResponsePayload, type GatewayGetLocalUsageTelemetryPayload, type GatewayGetLocalUsageTelemetryResponsePayload, type GatewayGetProviderSettingsPayload, type GatewayGetProviderSettingsResponsePayload, type GatewayGetProviderTelemetryPayload, type GatewayGetProviderTelemetryResponsePayload, type GatewayGetToolPayload, type GatewayGetToolResponsePayload, type GatewayListIntegrationRequestsPayload, type GatewayListIntegrationRequestsResponsePayload, type GatewayListInterconnectorsPayload, type GatewayListInterconnectorsResponsePayload, type GatewayListSecretRefsPayload, type GatewayListSecretRefsResponsePayload, type GatewayListToolApprovalGrantsPayload, type GatewayListToolApprovalGrantsResponsePayload, type GatewayListToolsPayload, type GatewayListToolsResponsePayload, type GatewayMessage, type GatewayProvisionLocalProfilePayload, type GatewayPutSecretRefPayload, type GatewayRegisterToolPayload, type GatewayRegisterToolResponsePayload, type GatewayRemoveProviderConfigPayload, type GatewayRemoveProviderConfigResponsePayload, type GatewayRemoveToolPayload, type GatewayRemoveToolResponsePayload, type GatewayRescanInterconnectorsPayload, type GatewayRescanInterconnectorsResponsePayload, type GatewayRevokeToolApprovalGrantPayload, type GatewayRevokeToolApprovalGrantResponsePayload, type GatewayScaffoldToolPayload, type GatewayScaffoldToolResponsePayload, type GatewaySetProviderConfigPayload, type GatewaySetProviderConfigResponsePayload, type GatewaySetToolEnabledPayload, type GatewaySetToolEnabledResponsePayload, type GatewayUpdateProviderSettingsPayload, type GatewayUpdateProviderSettingsResponsePayload } from "../protocol.js";
+import { MessageTypes, type GatewayCreateIntegrationRequestPayload, type GatewayCreateIntegrationRequestResponsePayload, type GatewayDeleteSecretRefPayload, type GatewayDeleteSecretRefResponsePayload, type GatewayFactoryResetPayload, type GatewayFactoryResetResponsePayload, type GatewayGetLocalUsageTelemetryPayload, type GatewayGetLocalUsageTelemetryResponsePayload, type GatewayGetProviderSettingsPayload, type GatewayGetProviderSettingsResponsePayload, type GatewayGetProviderTelemetryPayload, type GatewayGetProviderTelemetryResponsePayload, type GatewayGetRuntimeDefaultsPayload, type GatewayGetRuntimeDefaultsResponsePayload, type GatewayGetToolPayload, type GatewayGetToolResponsePayload, type GatewayListIntegrationRequestsPayload, type GatewayListIntegrationRequestsResponsePayload, type GatewayListInterconnectorsPayload, type GatewayListInterconnectorsResponsePayload, type GatewayListSecretRefsPayload, type GatewayListSecretRefsResponsePayload, type GatewayListToolApprovalGrantsPayload, type GatewayListToolApprovalGrantsResponsePayload, type GatewayListToolsPayload, type GatewayListToolsResponsePayload, type GatewayMessage, type GatewayProvisionLocalProfilePayload, type GatewayPutSecretRefPayload, type GatewayRegisterToolPayload, type GatewayRegisterToolResponsePayload, type GatewayRemoveProviderConfigPayload, type GatewayRemoveProviderConfigResponsePayload, type GatewayRemoveToolPayload, type GatewayRemoveToolResponsePayload, type GatewayRescanInterconnectorsPayload, type GatewayRescanInterconnectorsResponsePayload, type GatewayRevokeToolApprovalGrantPayload, type GatewayRevokeToolApprovalGrantResponsePayload, type GatewayScaffoldToolPayload, type GatewayScaffoldToolResponsePayload, type GatewaySetProviderConfigPayload, type GatewaySetProviderConfigResponsePayload, type GatewaySetRuntimeDefaultsPayload, type GatewaySetRuntimeDefaultsResponsePayload, type GatewaySetToolEnabledPayload, type GatewaySetToolEnabledResponsePayload, type GatewayUpdateProviderSettingsPayload, type GatewayUpdateProviderSettingsResponsePayload } from "../protocol.js";
 import type { ClientSession } from "../gateway-server.js";
 import type { GatewayAdminService, GatewayResetService } from "../message-router-gateway-services.js";
 import { normalizeString } from "../message-router-utils.js";
@@ -65,6 +65,40 @@ export async function handleGatewayListInterconnectors(
     interconnectors,
     generatedAt: new Date().toISOString(),
   } satisfies GatewayListInterconnectorsResponsePayload);
+}
+
+export async function handleGatewayGetRuntimeDefaults(
+  context: GatewayControlHandlerContext,
+  _client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  if (!context.gatewayAdminService) {
+    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Gateway admin service unavailable");
+  }
+
+  const payload = (msg.payload ?? {}) as GatewayGetRuntimeDefaultsPayload;
+  const defaults = await context.gatewayAdminService.getRuntimeDefaults(payload);
+  return context.response(msg.id, MessageTypes.GATEWAY_GET_RUNTIME_DEFAULTS, {
+    defaults,
+  } satisfies GatewayGetRuntimeDefaultsResponsePayload);
+}
+
+export async function handleGatewaySetRuntimeDefaults(
+  context: GatewayControlHandlerContext,
+  _client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  if (!context.gatewayAdminService) {
+    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Gateway admin service unavailable");
+  }
+
+  const payload = (msg.payload ?? {}) as GatewaySetRuntimeDefaultsPayload;
+  const updated = await context.gatewayAdminService.setRuntimeDefaults(payload);
+  return context.response(
+    msg.id,
+    MessageTypes.GATEWAY_SET_RUNTIME_DEFAULTS,
+    updated satisfies GatewaySetRuntimeDefaultsResponsePayload,
+  );
 }
 
 export async function handleGatewayRescanInterconnectors(
@@ -333,13 +367,34 @@ export async function handleGatewayGetLocalUsageTelemetry(
   if (payload?.providerId !== undefined && !providerId) {
     return context.errorResponse(msg.id, "INVALID_ARGUMENT", "providerId must be a non-empty string");
   }
-  const validationError = validateConfiguredProviderId(context, msg, providerId);
-  if (validationError) {
-    return validationError;
+  const rawProviderIds = payload?.providerIds;
+  if (providerId && rawProviderIds !== undefined) {
+    return context.errorResponse(
+      msg.id,
+      "INVALID_ARGUMENT",
+      "providerId and providerIds are mutually exclusive",
+    );
+  }
+  if (rawProviderIds !== undefined && !Array.isArray(rawProviderIds)) {
+    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "providerIds must be an array of strings");
+  }
+  const providerIds = rawProviderIds === undefined
+    ? undefined
+    : Array.from(
+      new Set(rawProviderIds.map((entry) => normalizeString(entry)?.toLowerCase())),
+    );
+  if (providerIds?.some((entry) => !entry) || (rawProviderIds !== undefined && providerIds?.length === 0)) {
+    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "providerIds must contain non-empty strings");
+  }
+  for (const targetProviderId of providerIds ?? [providerId]) {
+    const validationError = validateConfiguredProviderId(context, msg, targetProviderId);
+    if (validationError) {
+      return validationError;
+    }
   }
 
   const telemetry = await context.gatewayAdminService.getLocalUsageTelemetry(
-    providerId ? { providerId } : undefined,
+    providerIds ? { providerIds: providerIds as string[] } : providerId ? { providerId } : undefined,
   );
   return context.response(msg.id, MessageTypes.GATEWAY_GET_LOCAL_USAGE_TELEMETRY, {
     telemetry,

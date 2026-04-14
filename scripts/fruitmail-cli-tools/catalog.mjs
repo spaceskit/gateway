@@ -23,6 +23,8 @@ function booleanProperty(description) {
 }
 
 const COMMON_OUTPUT_HINTS = "Returns JSON output.";
+const COMMON_OUTPUT_MODE = "json";
+const DEFAULT_MAX_OUTPUT_BYTES = 131_072;
 
 export const FRUITMAIL_TOOL_DEFINITIONS = [
   {
@@ -37,6 +39,7 @@ export const FRUITMAIL_TOOL_DEFINITIONS = [
       type: "object",
       properties: {},
     },
+    outputMode: COMMON_OUTPUT_MODE,
     outputHint: COMMON_OUTPUT_HINTS,
     schemaVersion: FRUITMAIL_CLI_TOOL_SCHEMA_VERSION,
     wrapperVersion: SPACES_FRUITMAIL_WRAPPER_VERSION,
@@ -57,6 +60,7 @@ export const FRUITMAIL_TOOL_DEFINITIONS = [
         limit: integerProperty("Maximum number of results. Defaults to 20.", { minimum: 1 }),
       },
     },
+    outputMode: COMMON_OUTPUT_MODE,
     outputHint: COMMON_OUTPUT_HINTS,
     schemaVersion: FRUITMAIL_CLI_TOOL_SCHEMA_VERSION,
     wrapperVersion: SPACES_FRUITMAIL_WRAPPER_VERSION,
@@ -85,6 +89,7 @@ export const FRUITMAIL_TOOL_DEFINITIONS = [
         limit: integerProperty("Maximum number of results. Defaults to 20.", { minimum: 1 }),
       },
     },
+    outputMode: COMMON_OUTPUT_MODE,
     outputHint: COMMON_OUTPUT_HINTS,
     schemaVersion: FRUITMAIL_CLI_TOOL_SCHEMA_VERSION,
     wrapperVersion: SPACES_FRUITMAIL_WRAPPER_VERSION,
@@ -105,7 +110,8 @@ export const FRUITMAIL_TOOL_DEFINITIONS = [
       },
       required: ["messageId"],
     },
-    outputHint: "Returns email body as plain text.",
+    outputMode: COMMON_OUTPUT_MODE,
+    outputHint: "Returns JSON output containing the email body text.",
     schemaVersion: FRUITMAIL_CLI_TOOL_SCHEMA_VERSION,
     wrapperVersion: SPACES_FRUITMAIL_WRAPPER_VERSION,
     wrapperScriptPath: resolve(SCRIPT_DIR, "spaces-fruitmail.mjs"),
@@ -124,6 +130,7 @@ export const FRUITMAIL_TOOL_DEFINITIONS = [
         limit: integerProperty("Maximum number of results. Defaults to 20.", { minimum: 1 }),
       },
     },
+    outputMode: COMMON_OUTPUT_MODE,
     outputHint: COMMON_OUTPUT_HINTS,
     schemaVersion: FRUITMAIL_CLI_TOOL_SCHEMA_VERSION,
     wrapperVersion: SPACES_FRUITMAIL_WRAPPER_VERSION,
@@ -147,7 +154,8 @@ export const FRUITMAIL_TOOL_DEFINITIONS = [
       },
       required: ["to", "subject", "body"],
     },
-    outputHint: "Returns send confirmation.",
+    outputMode: COMMON_OUTPUT_MODE,
+    outputHint: "Returns JSON send confirmation.",
     schemaVersion: FRUITMAIL_CLI_TOOL_SCHEMA_VERSION,
     wrapperVersion: SPACES_FRUITMAIL_WRAPPER_VERSION,
     wrapperScriptPath: resolve(SCRIPT_DIR, "spaces-fruitmail.mjs"),
@@ -159,4 +167,164 @@ export function getFruitMailToolDefinitionByOperation(operation) {
   return FRUITMAIL_TOOL_DEFINITIONS.find(
     (tool) => tool.toolName === `shell.fruitmail.${normalized}` || tool.id === `shell.fruitmail.${normalized}`,
   );
+}
+
+export function resolveDefaultSpacesFruitMailWrapperPath() {
+  return resolve(SCRIPT_DIR, "spaces-fruitmail.mjs");
+}
+
+export function buildFruitMailCliManifest(tool, input = {}) {
+  const wrapperPath = resolveRequiredAbsolutePath(
+    input.wrapperPath ?? resolveDefaultSpacesFruitMailWrapperPath(),
+    "wrapperPath",
+  );
+  const fixedCwd = resolveRequiredAbsolutePath(input.fixedCwd ?? dirname(wrapperPath), "fixedCwd");
+  const now = input.now ?? new Date().toISOString();
+  const enabled = input.enabled ?? true;
+
+  return {
+    schemaVersion: tool.schemaVersion,
+    id: tool.id,
+    displayName: tool.displayName,
+    description: tool.description,
+    bundleId: tool.bundleId,
+    bundleDisplayName: tool.bundleDisplayName,
+    bundleDescription: tool.bundleDescription,
+    toolGroupId: tool.toolGroupId,
+    toolGroupDisplayName: tool.toolGroupDisplayName,
+    executable: wrapperPath,
+    resolvedExecutable: wrapperPath,
+    argsTemplate: [extractOperation(tool.id), "{{payload}}"],
+    inputSchema: wrapPayloadSchema(tool.inputSchema),
+    instructions: buildFruitMailInstructions(tool),
+    examples: buildFruitMailExamples(tool),
+    timeoutMs: FRUITMAIL_CLI_DEFAULT_TIMEOUT_MS,
+    maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
+    cwdMode: "fixed",
+    fixedCwd,
+    outputMode: tool.outputMode,
+    dangerLevel: "standard",
+    enabled,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function buildFruitMailCliToolReadme(tool) {
+  const payloadProperties = tool.inputSchema?.properties ?? {};
+  const required = new Set(tool.inputSchema?.required ?? []);
+  const payloadLines = Object.entries(payloadProperties).map(([name, schema]) => {
+    const description = typeof schema?.description === "string" ? schema.description : "See the manifest schema.";
+    const requirement = required.has(name) ? "required" : "optional";
+    return `- \`${name}\` (${requirement}): ${description}`;
+  });
+
+  return [
+    `# ${tool.displayName}`,
+    "",
+    "## Purpose",
+    tool.description,
+    "",
+    "## Wrapper Operation",
+    `- Tool id: \`${tool.id}\``,
+    `- Wrapper operation: \`${extractOperation(tool.id)}\``,
+    "",
+    "## Host Apple Mail Configuration",
+    "- Install `apple-mail-search-cli` (`fruitmail`) on the external gateway host.",
+    "- Confirm the host user can access the local Mail.app database before starting the gateway.",
+    "- Keep Mail.app signed in and fully synced for the account data you expect to query.",
+    "",
+    "## Payload",
+    ...(payloadLines.length > 0 ? payloadLines : ["- This tool does not require any payload fields."]),
+    "",
+    "## Output Contract",
+    "- The wrapper always emits JSON.",
+    `- Output mode: \`${tool.outputMode}\``,
+    `- Output hint: ${tool.outputHint}`,
+  ].join("\n");
+}
+
+function wrapPayloadSchema(inputSchema) {
+  return {
+    type: "object",
+    properties: {
+      payload: {
+        ...inputSchema,
+        description: "Structured FruitMail request payload.",
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
+function buildFruitMailInstructions(tool) {
+  return `Use ${tool.displayName} for Apple Mail operations only after the gateway host can run the fruitmail CLI successfully outside Spaces.`;
+}
+
+function buildFruitMailExamples(tool) {
+  const operation = extractOperation(tool.id);
+  switch (operation) {
+    case "stats":
+      return [
+        {
+          name: "Read mailbox statistics",
+          arguments: { payload: {} },
+          expectedOutput: "{\"ok\":true,\"operation\":\"stats\",\"data\":{\"total_messages\":42}}",
+        },
+      ];
+    case "recent":
+      return [
+        {
+          name: "List recent emails",
+          arguments: { payload: { days: 3, limit: 10 } },
+          expectedOutput: "{\"ok\":true,\"operation\":\"recent\",\"data\":[]}",
+        },
+      ];
+    case "search":
+      return [
+        {
+          name: "Search unread emails by sender",
+          arguments: { payload: { sender: "alerts@example.com", unread: true, limit: 10 } },
+          expectedOutput: "{\"ok\":true,\"operation\":\"search\",\"data\":[]}",
+        },
+      ];
+    case "body":
+      return [
+        {
+          name: "Read one message body",
+          arguments: { payload: { messageId: "12345" } },
+          expectedOutput: "{\"ok\":true,\"operation\":\"body\",\"data\":\"Email body text\"}",
+        },
+      ];
+    case "unread":
+      return [
+        {
+          name: "List unread emails",
+          arguments: { payload: { limit: 20 } },
+          expectedOutput: "{\"ok\":true,\"operation\":\"unread\",\"data\":[]}",
+        },
+      ];
+    case "send":
+      return [
+        {
+          name: "Send an email",
+          arguments: { payload: { to: "team@example.com", subject: "Status", body: "All green." } },
+          expectedOutput: "{\"ok\":true,\"operation\":\"send\",\"data\":{\"to\":\"team@example.com\"}}",
+        },
+      ];
+    default:
+      return [];
+  }
+}
+
+function extractOperation(toolId) {
+  return toolId.replace("shell.fruitmail.", "");
+}
+
+function resolveRequiredAbsolutePath(value, field) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) {
+    throw new Error(`${field} is required.`);
+  }
+  return resolve(normalized);
 }

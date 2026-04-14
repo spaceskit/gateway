@@ -1,5 +1,6 @@
 // Server
 export { GatewayServer } from "./gateway-server.js";
+export { legacyEffectiveToolMatrixFromAccess } from "./effective-tool-matrix.js";
 export type {
   GatewayServerOptions,
   ClientSession,

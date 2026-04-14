@@ -21,21 +21,16 @@ import {
 } from "./client.js";
 import { seedFixtures } from "./fixtures.js";
 import {
-  chatRoundtripLayer,
-  mcpToolsLayer,
-  orchestrationLayer,
-  providerToolParityLayer,
-  runAllLayers,
-  type ScenarioContext,
-} from "./scenarios/index.js";
-import {
-  computeWorkbenchOverallStatus,
   printConsoleReport,
   saveJsonReport,
-  type WorkbenchReport,
 } from "./report.js";
 import { startDashboard } from "./dashboard.js";
 import { filterWorkbenchLayers, parseWorkbenchArgs } from "./options.js";
+import { executeWorkbenchRun, WORKBENCH_LAYERS, buildWorkbenchLayerCatalog } from "./runtime.js";
+import { WorkbenchAnalystService } from "./analyst-service.js";
+import { createWorkbenchAnalystRuntime } from "./analyst-runtime.js";
+import { WorkbenchExecutionGate } from "./execution-gate.js";
+import { WorkbenchRunnerService } from "./runner-service.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -106,7 +101,11 @@ async function main(): Promise<void> {
 
   // 1. Boot gateway
   const previousProfile = Bun.env.SPACESKIT_GATEWAY_PROFILE;
+  const previousSecretRefMasterKey = Bun.env.SPACESKIT_SECRET_REF_MASTER_KEY;
   Bun.env.SPACESKIT_GATEWAY_PROFILE = "embedded";
+  if (!previousSecretRefMasterKey) {
+    Bun.env.SPACESKIT_SECRET_REF_MASTER_KEY = "workbench-local-secret-ref-master-key";
+  }
 
   const gateway = await startGateway({
     port: WORKBENCH_PORT,
@@ -119,7 +118,9 @@ async function main(): Promise<void> {
     runtimeGeneration: "workbench_v1",
     mainSpaceId: "workbench-main",
     mainProfileId: "workbench-profile",
+    mainOrchestratorProfileId: "workbench-profile",
     mainAgentId: "workbench-agent",
+    archFreezeEnforced: false,
     gatewayCapabilityGrants: [
       "lists.read",
       "lists.write",
@@ -133,13 +134,85 @@ async function main(): Promise<void> {
   } else {
     Bun.env.SPACESKIT_GATEWAY_PROFILE = previousProfile;
   }
+  if (previousSecretRefMasterKey === undefined) {
+    delete Bun.env.SPACESKIT_SECRET_REF_MASTER_KEY;
+  } else {
+    Bun.env.SPACESKIT_SECRET_REF_MASTER_KEY = previousSecretRefMasterKey;
+  }
 
   const wsUrl = `ws://${WORKBENCH_HOST}:${WORKBENCH_PORT}`;
   const httpUrl = `http://${WORKBENCH_HOST}:${WORKBENCH_PORT}`;
+  const selectedLayers = filterWorkbenchLayers(WORKBENCH_LAYERS, cliOptions.layers);
+  const selectedLayerNames = selectedLayers.map((layer) => layer.name);
+  const selectedProviders = cliOptions.providers ? Array.from(cliOptions.providers) : undefined;
+  const runnerDb = gateway.db?.db;
+  if (!runnerDb) {
+    throw new Error("Workbench runner requires an initialized gateway database.");
+  }
+  const executionGate = new WorkbenchExecutionGate();
+  const runner = new WorkbenchRunnerService({
+    db: runnerDb,
+    reportsDir: cliOptions.reportsDir,
+    gateway,
+    layerCatalog: buildWorkbenchLayerCatalog(WORKBENCH_LAYERS),
+    defaultLayers: WORKBENCH_LAYERS.map((layer) => layer.name),
+    executionGate,
+    executor: async (context) => ({
+      report: await executeWorkbenchRun({
+        gateway,
+        wsUrl,
+        httpUrl,
+        layerNames: context.config.layers,
+        providerFilters: context.config.providers.length > 0 ? new Set(context.config.providers) : undefined,
+        registerSpace: context.registerSpace,
+        registerTurn: context.registerTurn,
+        recordProviderParityRow: context.onProviderParityRow,
+        recordSchedulerEvalRun: context.onSchedulerEvalRun,
+        recordComparison: context.onComparison,
+        updateMessage: context.updateMessage,
+        onLayerStarted: context.onLayerStarted,
+        onLayerCompleted: context.onLayerCompleted,
+        onScenarioStarted: context.onScenarioStarted,
+        onScenarioCompleted: context.onScenarioCompleted,
+      }),
+    }),
+  });
+  runner.initialize();
+  const analyst = cliOptions.interactive || cliOptions.serveOnly
+    ? (() => {
+      const runtime = createWorkbenchAnalystRuntime({
+        gateway,
+        runner,
+        wsUrl,
+        httpUrl,
+        workspaceRoot: process.cwd(),
+      });
+      const service = new WorkbenchAnalystService({
+        db: runnerDb,
+        executionGate,
+        resolveRunSource: runtime.resolveRunSource,
+        resolveSpaceSource: runtime.resolveSpaceSource,
+        executor: runtime.executor,
+      });
+      service.initialize();
+      return service;
+    })()
+    : null;
+
+  const dashboard = cliOptions.interactive || cliOptions.serveOnly
+    ? startDashboard({
+      reportsDir: cliOptions.reportsDir,
+      runner,
+      analyst: analyst ?? undefined,
+    })
+    : null;
 
   console.log(`  Gateway ready: ${httpUrl}`);
   console.log(`  WebSocket:     ${wsUrl}`);
   console.log(`  Database:      ${cliOptions.dbPath}\n`);
+  if (dashboard) {
+    console.log(`  Dashboard:     http://${WORKBENCH_HOST}:${dashboard.port}\n`);
+  }
 
   // 2. Spawn MCP echo server
   const mcpProc = spawnMcpEchoServer();
@@ -224,42 +297,31 @@ async function main(): Promise<void> {
 
   // 5. Run scenarios (unless --serve-only)
   if (!cliOptions.serveOnly) {
-    const ctx: ScenarioContext = {
-      gateway,
-      wsUrl,
-      httpUrl,
-      providerParityRows: [],
-      ...(cliOptions.providers ? { providerFilters: cliOptions.providers } : {}),
-    };
-    const layers = filterWorkbenchLayers(
-      [
-        chatRoundtripLayer,
-        mcpToolsLayer,
-        providerToolParityLayer,
-        orchestrationLayer,
-      ],
-      cliOptions.layers,
-    );
-
     console.log("  Running scenarios...\n");
-    const start = Date.now();
-    const layerResults = await runAllLayers(layers, ctx);
-    const duration = Date.now() - start;
 
-    const report: WorkbenchReport = {
-      timestamp: new Date().toISOString(),
-      duration_ms: duration,
-      overall: computeWorkbenchOverallStatus(layerResults, ctx.providerParityRows),
-      layers: layerResults,
-      ...(ctx.providerParityRows.length > 0 ? { providerParity: ctx.providerParityRows } : {}),
-    };
-
-    printConsoleReport(report);
-    const reportPath = await saveJsonReport(report, cliOptions.reportsDir);
-    console.log(`\n  Report saved: ${reportPath}\n`);
-
-    if (!cliOptions.interactive) {
-      // Clean up and exit
+    if (cliOptions.interactive) {
+      const initialRun = runner.runNow({
+        name: selectedProviders?.length
+          ? `Interactive ${selectedLayerNames.join(", ")} · ${selectedProviders.join(", ")}`
+          : `Interactive ${selectedLayerNames.join(", ")}`,
+        layers: selectedLayerNames,
+        ...(selectedProviders ? { providers: selectedProviders } : {}),
+        source: "cli",
+      });
+      console.log(`  Initial run queued: ${initialRun.id}\n`);
+    } else {
+      const report = await executeWorkbenchRun({
+        gateway,
+        wsUrl,
+        httpUrl,
+        layerNames: selectedLayerNames,
+        providerFilters: cliOptions.providers,
+      });
+      printConsoleReport(report);
+      const reportPath = await saveJsonReport(report, cliOptions.reportsDir);
+      console.log(`\n  Report saved: ${reportPath}\n`);
+      await analyst?.shutdown();
+      await runner.shutdown();
       await adapter.disconnect();
       mcpProc.kill();
       await gateway.shutdown();
@@ -267,20 +329,21 @@ async function main(): Promise<void> {
     }
   }
 
-  // Interactive mode — keep alive with dashboard
-  const dashboard = startDashboard();
-
   console.log(
     "\n  Workbench is running. Press Ctrl+C to stop.\n",
   );
   console.log(`  Connect your app to: ${wsUrl}`);
   console.log(`  HTTP health check:   ${httpUrl}/health`);
-  console.log(`  Dashboard:           http://127.0.0.1:${dashboard.port}\n`);
+  if (dashboard) {
+    console.log(`  Dashboard:           http://${WORKBENCH_HOST}:${dashboard.port}\n`);
+  }
 
   // Handle graceful shutdown
   const shutdown = async () => {
     console.log("\n  Shutting down workbench...");
-    dashboard.stop();
+    dashboard?.stop();
+    await analyst?.shutdown();
+    await runner.shutdown();
     await adapter.disconnect();
     mcpProc.kill();
     await gateway.shutdown();
@@ -291,7 +354,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  console.error("Workbench failed:", err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("Workbench failed:", err);
+    process.exit(1);
+  });
+}

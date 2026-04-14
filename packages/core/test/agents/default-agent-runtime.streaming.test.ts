@@ -645,4 +645,55 @@ describe("DefaultAgentRuntime streaming text deltas", () => {
     expect(deltas).toEqual(["generated fallback"]);
     expect(events.some((event) => event.type === "error")).toBe(false);
   });
+
+  test("keeps provider-client activity deltas out of the final assistant transcript", async () => {
+    const provider = new StubModelProvider({
+      generate: async () => {
+        throw new Error("generate() should not run when stream succeeds");
+      },
+      stream: () => streamChunks([
+        {
+          type: "text_delta",
+          text: "Checking workspace guidance...",
+          transcriptVisibility: "activity_only",
+          streamKind: "provider_client",
+        },
+        {
+          type: "text_delta",
+          text: "Final answer.",
+          transcriptVisibility: "visible",
+          streamKind: "assistant_output",
+        },
+        {
+          type: "finish",
+          finishReason: "stop",
+        },
+      ]),
+    });
+    const runtime = buildRuntime(provider);
+
+    const events = await collectEvents(runtime);
+    const deltas = events
+      .filter((event): event is Extract<TurnEvent, { type: "text_delta" }> => event.type === "text_delta")
+      .map((event) => ({
+        text: event.text,
+        transcriptVisibility: event.transcriptVisibility,
+        streamKind: event.streamKind,
+      }));
+    const completed = events.find(isTurnCompleted);
+
+    expect(deltas).toEqual([
+      {
+        text: "Checking workspace guidance...",
+        transcriptVisibility: "activity_only",
+        streamKind: "provider_client",
+      },
+      {
+        text: "Final answer.",
+        transcriptVisibility: "visible",
+        streamKind: "assistant_output",
+      },
+    ]);
+    expect(completed?.result.finalMessage.content).toBe("Final answer.");
+  });
 });

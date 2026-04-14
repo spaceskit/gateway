@@ -23,10 +23,12 @@ export type PresetKind = "agent" | "space";
 export type PresetSource = "system" | "user";
 export type CommunicationMode = "async_notes" | "chat_first" | "structured_handoff";
 export type ConversationTopology = "direct" | "shared_team_chat" | "broadcast_team";
+export type TemplateAgentProfileBinding = "explicit" | "gateway_default_main";
 
 export interface TemplateAgentDefinition {
   agentId: string;
-  profileId: string;
+  profileId?: string;
+  profileBinding?: TemplateAgentProfileBinding;
   role?: "participant" | "global_coordinator" | "space_moderator";
   turnOrder?: number;
   isPrimary?: boolean;
@@ -545,7 +547,7 @@ export class SpaceConfiguratorService {
           visibility: input.visibility ?? "shared",
           initialAgents: spacePreset.baseAgents.map((definition, index) => ({
             agentId: definition.agentId,
-            profileId: this.resolveProfileId(definition.profileId),
+            profileId: this.resolveProfileId(definition),
             role: definition.role,
             turnOrder: definition.turnOrder ?? index,
             isPrimary: definition.isPrimary,
@@ -599,7 +601,10 @@ export class SpaceConfiguratorService {
         resourceId: input.resourceId?.trim() || "resource:preview",
         communicationMode: loaded.config.communicationMode,
         turnModel: loaded.config.turnModel,
-        initialAgents: loaded.config.baseAgents,
+        initialAgents: this.publicTemplateAgents(
+          loaded.config.baseAgents,
+          loaded.template.owner_principal_id,
+        ),
       },
       warnings: [],
     };
@@ -625,7 +630,7 @@ export class SpaceConfiguratorService {
       visibility: input.visibility ?? "shared",
       initialAgents: loaded.config.baseAgents.map((definition, index) => ({
         agentId: definition.agentId,
-        profileId: this.resolveProfileId(definition.profileId),
+        profileId: this.resolveProfileId(definition),
         role: definition.role,
         turnOrder: definition.turnOrder ?? index,
         isPrimary: definition.isPrimary,
@@ -698,6 +703,8 @@ export class SpaceConfiguratorService {
       }));
     }
 
+    baseAgents = this.materializeTemplateAgentsForOwner(baseAgents, principalId);
+
     if (!communicationMode) {
       communicationMode = "chat_first";
     }
@@ -707,6 +714,7 @@ export class SpaceConfiguratorService {
         {
           agentId: this.defaultAgentId,
           profileId: this.defaultProfileId,
+          profileBinding: "explicit",
           role: "global_coordinator",
           turnOrder: 0,
           isPrimary: true,
@@ -809,6 +817,7 @@ export class SpaceConfiguratorService {
         {
           agentId: this.defaultAgentId,
           profileId: this.defaultProfileId,
+          profileBinding: "explicit",
           role: "global_coordinator",
           turnOrder: 0,
           isPrimary: true,
@@ -898,15 +907,20 @@ export class SpaceConfiguratorService {
         : undefined,
       spaceId: input.spaceId,
       agentId: input.definition.agentId,
-      profileId: this.resolveProfileId(input.definition.profileId),
+      profileId: this.resolveProfileId(input.definition),
       role: input.definition.role,
       turnOrder: input.definition.turnOrder,
       isPrimary: input.definition.isPrimary,
     };
   }
 
-  private resolveProfileId(requestedProfileId: string): string {
-    const candidate = requestedProfileId.trim() || this.defaultProfileId;
+  private resolveProfileId(definition: TemplateAgentDefinition | string | undefined): string {
+    const requestedProfileId = typeof definition === "string"
+      ? definition
+      : definition?.profileBinding === "gateway_default_main"
+        ? this.defaultProfileId
+        : definition?.profileId;
+    const candidate = requestedProfileId?.trim() || this.defaultProfileId;
     if (!this.profileRepo) {
       return candidate;
     }
@@ -919,10 +933,26 @@ export class SpaceConfiguratorService {
     return this.defaultProfileId;
   }
 
+  private materializeTemplateAgentsForOwner(
+    baseAgents: TemplateAgentDefinition[],
+    ownerPrincipalId: string,
+  ): TemplateAgentDefinition[] {
+    if (ownerPrincipalId.trim() === "system") {
+      return baseAgents;
+    }
+
+    return baseAgents.map((definition) => ({
+      ...definition,
+      profileId: this.resolveProfileId(definition),
+      profileBinding: "explicit",
+    }));
+  }
+
   private systemPresetCatalog(): PresetDetail[] {
     const coordinatorAgent: TemplateAgentDefinition = {
       agentId: this.defaultAgentId,
       profileId: this.defaultProfileId,
+      profileBinding: "explicit",
       role: "global_coordinator",
       turnOrder: 0,
       isPrimary: true,
@@ -1002,7 +1032,7 @@ export class SpaceConfiguratorService {
         spacePreset: {
           communicationMode: config.communicationMode,
           turnModel: config.turnModel,
-          baseAgents: config.baseAgents,
+          baseAgents: this.publicTemplateAgents(config.baseAgents, template.owner_principal_id),
           agentPresetIds: config.agentPresetIds,
         },
       });
@@ -1164,7 +1194,7 @@ export class SpaceConfiguratorService {
       spacePreset: {
         communicationMode: config.communicationMode,
         turnModel: config.turnModel,
-        baseAgents: config.baseAgents,
+        baseAgents: this.publicTemplateAgents(config.baseAgents, template.owner_principal_id),
         agentPresetIds: config.agentPresetIds,
       },
     };
@@ -1271,7 +1301,11 @@ export class SpaceConfiguratorService {
       version: revision.revision,
       tags: config.tags,
       agentPreset: {
-        defaultAgents: config.defaultAgents,
+        defaultAgents: config.defaultAgents.map((definition) => ({
+          ...definition,
+          profileId: this.resolveProfileId(definition),
+          profileBinding: "explicit",
+        })),
       },
     };
   }
@@ -1308,7 +1342,7 @@ export class SpaceConfiguratorService {
       conversationTopology: summary.conversationTopology,
       promptPackId: summary.promptPackId,
       turnModel: config.turnModel,
-      agentDefinitions: config.baseAgents,
+      agentDefinitions: this.publicTemplateAgents(config.baseAgents, template.owner_principal_id),
       createdBy: config.metadata.createdBy,
       createdAt: template.created_at,
       updatedAt: template.updated_at,
@@ -1319,6 +1353,24 @@ export class SpaceConfiguratorService {
       sortOrder: config.metadata.sortOrder,
       agentCount: config.baseAgents.length,
     };
+  }
+
+  private publicTemplateAgents(
+    baseAgents: TemplateAgentDefinition[],
+    ownerPrincipalIdRaw: string,
+  ): TemplateAgentDefinition[] {
+    const preserveManagedBinding = ownerPrincipalIdRaw.trim() === "system";
+    return baseAgents.map((definition) => {
+      const profileBinding: TemplateAgentProfileBinding = preserveManagedBinding
+        && definition.profileBinding === "gateway_default_main"
+        ? "gateway_default_main"
+        : "explicit";
+      return {
+        ...definition,
+        profileId: this.resolveProfileId(definition),
+        profileBinding,
+      };
+    });
   }
 }
 
@@ -1349,13 +1401,19 @@ function normalizeStringArray(input: unknown): string[] {
 function normalizeTemplateAgents(input: TemplateAgentDefinition[]): TemplateAgentDefinition[] {
   return input
     .filter((entry) => typeof entry?.agentId === "string")
-    .map((entry, index) => ({
-      agentId: entry.agentId.trim(),
-      profileId: (entry.profileId ?? "").trim(),
-      role: entry.role ?? "participant",
-      turnOrder: typeof entry.turnOrder === "number" ? entry.turnOrder : index,
-      isPrimary: entry.isPrimary ?? false,
-    }))
+    .map((entry, index) => {
+      const profileBinding: TemplateAgentProfileBinding = entry.profileBinding === "gateway_default_main"
+        ? "gateway_default_main"
+        : "explicit";
+      return {
+        agentId: entry.agentId.trim(),
+        profileId: (entry.profileId ?? "").trim() || undefined,
+        profileBinding,
+        role: entry.role ?? "participant",
+        turnOrder: typeof entry.turnOrder === "number" ? entry.turnOrder : index,
+        isPrimary: entry.isPrimary ?? false,
+      };
+    })
     .filter((entry) => entry.agentId.length > 0);
 }
 
@@ -1386,7 +1444,11 @@ function parseTemplateConfig(rawJson: string): StoredTemplateConfig {
     const communicationMode = normalizeCommunicationMode(parsed.communicationMode);
     const turnModel = normalizeTurnModel(parsed.turnModel)
       ?? COMMUNICATION_MODE_TO_TURN_MODEL[communicationMode];
-    const baseAgents = normalizeTemplateAgents((parsed.baseAgents as TemplateAgentDefinition[] | undefined) ?? []);
+    const baseAgents = normalizeTemplateAgents(
+      (parsed.baseAgents as TemplateAgentDefinition[] | undefined)
+        ?? (parsed.agents as TemplateAgentDefinition[] | undefined)
+        ?? [],
+    );
     const agentPresetIds = normalizeStringArray(parsed.agentPresetIds);
     const tags = normalizeStringArray(parsed.tags);
 

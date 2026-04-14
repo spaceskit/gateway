@@ -6,7 +6,9 @@ import type {
   AgentState,
   TurnContext,
   TurnEvent,
+  TurnResult,
 } from "../src/agents/agent-runtime.js";
+import type { ProviderSessionHandle } from "../src/agents/model-provider.js";
 import type { SpaceConfig } from "../src/spaces/types.js";
 
 class InspectRuntime implements AgentRuntime {
@@ -36,6 +38,47 @@ class InspectRuntime implements AgentRuntime {
         usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
         state: "idle",
       },
+    };
+  }
+
+  async *resumeWithFeedback(): AsyncIterable<TurnEvent> {}
+
+  async cancel(): Promise<void> {}
+}
+
+class ProviderSessionRuntime implements AgentRuntime {
+  readonly state: AgentState = "idle";
+  readonly contexts: TurnContext[] = [];
+  private nextThreadIndex = 1;
+
+  constructor(readonly agentId: string) {}
+
+  async *executeTurn(context: TurnContext): AsyncIterable<TurnEvent> {
+    this.contexts.push(context);
+    const response = `response ${this.nextThreadIndex}`;
+    const result: TurnResult = {
+      agentId: this.agentId,
+      turnId: context.turnId,
+      messages: [
+        ...context.messages,
+        { role: "assistant", content: response },
+      ],
+      toolCalls: [],
+      toolResults: [],
+      finalMessage: { role: "assistant", content: response },
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      metadata: {
+        providerSessionHandle: {
+          type: "codex_app_server_thread",
+          threadId: `thread-${this.nextThreadIndex}`,
+        },
+      },
+      state: "idle",
+    };
+    this.nextThreadIndex += 1;
+    yield {
+      type: "turn_completed",
+      result,
     };
   }
 
@@ -116,6 +159,109 @@ async function waitForTurnFinished(
 }
 
 describe("SpaceManager session continuity", () => {
+  test("reuses provider session handles and generated titles across committed chat turns", async () => {
+    const eventBus = new EventBus();
+    const runtime = new ProviderSessionRuntime("agent-1");
+    const savedMetadata: Array<{
+      spaceId: string;
+      agentId: string;
+      displayTitle?: string;
+      providerSessionHandle?: ProviderSessionHandle;
+    }> = [];
+    let storedMetadata: {
+      displayTitle?: string;
+      providerSessionHandle?: ProviderSessionHandle;
+    } = {};
+    const singleAgentConfig = makeSpaceConfig("primary_only");
+    singleAgentConfig.agents = [singleAgentConfig.agents[0]!];
+
+    const manager = new SpaceManager({
+      eventBus,
+      loadSpaceConfig: async () => singleAgentConfig,
+      updateSpaceStatus: async () => undefined,
+      saveTurn: async () => undefined,
+      loadHistory: async () => [],
+      loadAgentHistory: async () => [],
+      loadAgentSessionMetadata: async () => storedMetadata,
+      saveAgentSessionMetadata: async (metadata) => {
+        savedMetadata.push(metadata);
+        storedMetadata = {
+          displayTitle: metadata.displayTitle ?? storedMetadata.displayTitle,
+          providerSessionHandle: metadata.providerSessionHandle ?? storedMetadata.providerSessionHandle,
+        };
+      },
+      resolveRuntime: async () => runtime,
+    });
+
+    const first = await manager.executeTurn("space-1", "```text\nUSER: Plan provider session reuse\n```");
+    await waitForTurnFinished(eventBus, first.turnId);
+
+    const second = await manager.executeTurn("space-1", "Continue from that plan");
+    await waitForTurnFinished(eventBus, second.turnId);
+
+    expect(runtime.contexts[0]?.providerSessionHandle).toBeUndefined();
+    expect(runtime.contexts[0]?.sessionTitle).toBe("Plan provider session reuse");
+    expect(runtime.contexts[1]?.providerSessionHandle).toEqual({
+      type: "codex_app_server_thread",
+      threadId: "thread-1",
+    });
+    expect(runtime.contexts[1]?.sessionTitle).toBe("Plan provider session reuse");
+    expect(savedMetadata).toContainEqual({
+      spaceId: "space-1",
+      agentId: "agent-1",
+      displayTitle: "Plan provider session reuse",
+    });
+    expect(savedMetadata).toContainEqual({
+      spaceId: "space-1",
+      agentId: "agent-1",
+      providerSessionHandle: {
+        type: "codex_app_server_thread",
+        threadId: "thread-1",
+      },
+    });
+  });
+
+  test("resetAgentSession clears in-memory provider handles before the next turn", async () => {
+    const eventBus = new EventBus();
+    const runtime = new ProviderSessionRuntime("agent-1");
+    let storedMetadata: {
+      displayTitle?: string;
+      providerSessionHandle?: ProviderSessionHandle;
+    } = {};
+    const singleAgentConfig = makeSpaceConfig("primary_only");
+    singleAgentConfig.agents = [singleAgentConfig.agents[0]!];
+
+    const manager = new SpaceManager({
+      eventBus,
+      loadSpaceConfig: async () => singleAgentConfig,
+      updateSpaceStatus: async () => undefined,
+      saveTurn: async () => undefined,
+      loadHistory: async () => [],
+      loadAgentHistory: async () => [],
+      loadAgentSessionMetadata: async () => storedMetadata,
+      saveAgentSessionMetadata: async (metadata) => {
+        storedMetadata = {
+          displayTitle: metadata.displayTitle ?? storedMetadata.displayTitle,
+          providerSessionHandle: metadata.providerSessionHandle ?? storedMetadata.providerSessionHandle,
+        };
+      },
+      resolveRuntime: async () => runtime,
+    });
+
+    const first = await manager.executeTurn("space-1", "Start a durable session");
+    await waitForTurnFinished(eventBus, first.turnId);
+
+    storedMetadata = {};
+    manager.resetAgentSession("space-1", "agent-1");
+
+    const second = await manager.executeTurn("space-1", "Start fresh");
+    await waitForTurnFinished(eventBus, second.turnId);
+
+    expect(runtime.contexts[0]?.providerSessionHandle).toBeUndefined();
+    expect(runtime.contexts[1]?.providerSessionHandle).toBeUndefined();
+    expect(runtime.contexts[1]?.sessionTitle).toBe("Start fresh");
+  });
+
   test("reuses runtime instances for the same agent across turns", async () => {
     const eventBus = new EventBus();
     const saves: SaveTurnInput[] = [];

@@ -1,7 +1,44 @@
 import { describe, expect, test } from "bun:test";
+import { DefaultNotificationService, EventBus } from "../../core/src/index.js";
 import { NotificationHandler } from "../src/notification-handler.js";
 
 describe("NotificationHandler.pushToClient", () => {
+  test("binds notification service push delivery after websocket handler setup", async () => {
+    const service = new DefaultNotificationService({ eventBus: new EventBus() });
+    const handler = new NotificationHandler({ notificationService: service });
+    const sent: string[] = [];
+
+    await handler.registerClient("client-1", {
+      send(message: string) {
+        sent.push(message);
+      },
+    } as any);
+
+    const subscriptions = await service.getSubscriptions("client-1");
+    expect(subscriptions[0]?.categories).toContain("task.input-required");
+
+    await service.send({
+      notificationId: "notif-1",
+      category: "feedback.requested",
+      title: "Input needed",
+      message: "Agent needs your input",
+      severity: "warning",
+      payload: { requestId: "request-1" },
+      targets: [{ type: "space", spaceId: "space-1" }],
+      createdAt: new Date("2026-03-14T10:00:00.000Z"),
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(sent[0] ?? "{}")).toMatchObject({
+      type: "notification",
+      payload: {
+        notificationId: "notif-1",
+        category: "feedback.requested",
+        body: "Agent needs your input",
+      },
+    });
+  });
+
   test("serializes notification payloads with body and context fields", async () => {
     const sent: string[] = [];
     const handler = new NotificationHandler({

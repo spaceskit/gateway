@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { createBudgetMiddleware } from "../../src/middleware/builtin/budget-middleware.js";
 import type { MiddlewareContext } from "../../src/middleware/types.js";
 import { EventBus } from "../../src/events/event-bus.js";
-import type { BudgetPolicy, BudgetState } from "@spaceskit/policy";
+import type { BudgetPolicy, BudgetState } from "../../src/policy/budget.js";
 
 function makeContext(overrides?: Partial<MiddlewareContext>): MiddlewareContext {
   return {

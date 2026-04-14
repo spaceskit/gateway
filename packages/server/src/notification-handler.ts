@@ -21,6 +21,7 @@ const DEFAULT_CATEGORIES: NotificationCategory[] = [
   "turn.completed",
   "turn.failed",
   "feedback.requested",
+  "task.input-required",
   "budget.warning",
   "budget.exceeded",
   "security.alert",
@@ -33,6 +34,11 @@ export class NotificationHandler {
 
   constructor(options: NotificationHandlerOptions) {
     this.notificationService = options.notificationService;
+    if (typeof this.notificationService.setPushHandler === "function") {
+      this.notificationService.setPushHandler((clientId, notification) =>
+        this.pushToClient(clientId, notification),
+      );
+    }
   }
 
   /**

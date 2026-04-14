@@ -6,12 +6,15 @@ export interface ProfileModelConfigPayload {
   constraints?: Record<string, unknown>;
 }
 
+export type TemplateAgentProfileBindingPayload = "explicit" | "gateway_default_main";
+
 export type CommunicationModePayload = "async_notes" | "chat_first" | "structured_handoff";
 export type ConversationTopologyPayload = "direct" | "shared_team_chat" | "broadcast_team";
 
 export interface TemplateAgentDefinitionPayload {
   agentId: string;
-  profileId: string;
+  profileId?: string;
+  profileBinding?: TemplateAgentProfileBindingPayload;
   role?: "participant" | "global_coordinator" | "space_moderator";
   turnOrder?: number;
   isPrimary?: boolean;

@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "id": "shell.fruitmail.send",
+  "displayName": "Send Email",
+  "description": "Send an email via the macOS mail command. No additional permissions required.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "send",
+  "toolGroupDisplayName": "Send",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "argsTemplate": [
+    "send",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Recipient email address."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Email subject line."
+          },
+          "body": {
+            "type": "string",
+            "description": "Email body text."
+          },
+          "cc": {
+            "type": "string",
+            "description": "Optional CC recipient email address."
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "description": "Structured FruitMail request payload."
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use Send Email for Apple Mail operations only after the gateway host can run the fruitmail CLI successfully outside Spaces.",
+  "examples": [
+    {
+      "name": "Send an email",
+      "arguments": {
+        "payload": {
+          "to": "team@example.com",
+          "subject": "Status",
+          "body": "All green."
+        }
+      },
+      "expectedOutput": "{\"ok\":true,\"operation\":\"send\",\"data\":{\"to\":\"team@example.com\"}}"
+    }
+  ],
+  "timeoutMs": 30000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:31.860Z",
+  "updatedAt": "2026-04-11T09:40:31.860Z"
+}

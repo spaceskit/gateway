@@ -9,13 +9,13 @@ import {
   isObjectRecord,
   mergeSessions,
   normalizeTokenCount,
-  parseJsonEntries,
   purgeMissingFiles,
   readCachedSessions,
   type CachedScannerFile,
   type LocalUsageSessionRecord,
   type LocalUsageSessionScanner,
   walkFiles,
+  yieldToEventLoop,
 } from "./local-usage-scanner.js";
 
 interface CodexSessionScannerOptions {
@@ -30,6 +30,7 @@ interface MutableCodexSession {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
 }
 
 interface TokenUsageCounts {
@@ -38,6 +39,8 @@ interface TokenUsageCounts {
   outputTokens: number;
   totalTokens: number;
 }
+
+const YIELD_EVERY_FILES = 10;
 
 export class CodexSessionScanner implements LocalUsageSessionScanner {
   readonly providerId = "codex";
@@ -53,23 +56,21 @@ export class CodexSessionScanner implements LocalUsageSessionScanner {
   }
 
   async scan(windowStartMs: number): Promise<LocalUsageSessionRecord[]> {
-    const files = walkFiles(this.roots, (filePath) =>
-      filePath.endsWith(".jsonl")
-      || filePath.endsWith(".json")
-      || filePath.includes("/sessions/")
-      || filePath.includes("/archived_sessions/"),
-    );
+    const files = walkFiles(this.roots, isCodexSessionFile);
     const retainedPaths = new Set(files);
     const sessions: LocalUsageSessionRecord[] = [];
 
-    for (const filePath of files) {
+    for (const [index, filePath] of files.entries()) {
       sessions.push(
-        ...readCachedSessions(
+        ...await readCachedSessions(
           filePath,
           this.fileCache,
-          (path, content, mtimeMs) => this.parseFile(path, content, mtimeMs),
+          (path, entries, mtimeMs) => this.parseFile(path, entries, mtimeMs),
         ),
       );
+      if ((index + 1) % YIELD_EVERY_FILES === 0) {
+        await yieldToEventLoop();
+      }
     }
 
     purgeMissingFiles(this.fileCache, retainedPaths);
@@ -78,10 +79,9 @@ export class CodexSessionScanner implements LocalUsageSessionScanner {
 
   private parseFile(
     filePath: string,
-    content: string,
+    entries: Record<string, unknown>[],
     fileMtimeMs: number,
   ): LocalUsageSessionRecord[] {
-    const entries = parseJsonEntries(content);
     const fallbackSessionId = deriveSessionIdFromPath(filePath);
     const bySessionId = new Map<string, MutableCodexSession>();
 
@@ -136,6 +136,7 @@ export class CodexSessionScanner implements LocalUsageSessionScanner {
         inputTokens: Math.max(0, state.inputTokens),
         cachedInputTokens: Math.max(0, state.cachedInputTokens),
         outputTokens: Math.max(0, state.outputTokens),
+        totalTokens: state.totalTokens,
       });
     }
 
@@ -187,24 +188,36 @@ export class CodexSessionScanner implements LocalUsageSessionScanner {
   private applyTotalsSnapshot(state: MutableCodexSession, usage: TokenUsageCounts): void {
     if (usage.inputTokens === 0 && usage.cachedInputTokens === 0 && usage.outputTokens === 0 && usage.totalTokens > 0) {
       state.inputTokens = Math.max(state.inputTokens, usage.totalTokens);
+      state.totalTokens = Math.max(state.totalTokens ?? 0, usage.totalTokens);
       return;
     }
 
     state.inputTokens = Math.max(state.inputTokens, usage.inputTokens);
     state.cachedInputTokens = Math.max(state.cachedInputTokens, usage.cachedInputTokens);
     state.outputTokens = Math.max(state.outputTokens, usage.outputTokens);
+    state.totalTokens = Math.max(state.totalTokens ?? 0, usage.totalTokens);
   }
 
   private applyDelta(state: MutableCodexSession, usage: TokenUsageCounts): void {
     if (usage.inputTokens === 0 && usage.cachedInputTokens === 0 && usage.outputTokens === 0 && usage.totalTokens > 0) {
       state.inputTokens += usage.totalTokens;
+      state.totalTokens = (state.totalTokens ?? 0) + usage.totalTokens;
       return;
     }
 
     state.inputTokens += usage.inputTokens;
     state.cachedInputTokens += usage.cachedInputTokens;
     state.outputTokens += usage.outputTokens;
+    state.totalTokens = (state.totalTokens ?? 0) + usage.totalTokens;
   }
+}
+
+function isCodexSessionFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").toLowerCase();
+  const inKnownSessionFolder = normalized.includes("/sessions/")
+    || normalized.includes("/archived_sessions/");
+  return inKnownSessionFolder
+    && (normalized.endsWith(".jsonl") || normalized.endsWith(".json"));
 }
 
 function extractModelFromNested(entry: Record<string, unknown>): string | undefined {

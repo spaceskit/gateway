@@ -2,9 +2,13 @@ import { describe, expect, test } from "bun:test";
 import type { ToolDefinition } from "../../src/agents/model-provider.js";
 import { DefaultToolExecutor } from "../../src/agents/default-tool-executor.js";
 import { CapabilityRegistry } from "../../src/capabilities/registry.js";
+import type { AgentSecurityScope } from "../../src/security/types.js";
 import { EventBus } from "../../src/events/event-bus.js";
 
-function buildExecutor() {
+function buildExecutor(options?: {
+  scope?: Partial<AgentSecurityScope>;
+  approvableCliTools?: ToolDefinition[];
+}) {
   const eventBus = new EventBus();
   const registry = new CapabilityRegistry(eventBus);
 
@@ -88,7 +92,11 @@ function buildExecutor() {
       maxTokensPerTurn: 4096,
       maxToolCallsPerTurn: 10,
       requireOutputReview: false,
+      ...options?.scope,
     }),
+    getApprovableCliTools: options?.approvableCliTools
+      ? () => options.approvableCliTools ?? []
+      : undefined,
   });
 }
 
@@ -181,5 +189,39 @@ describe("DefaultToolExecutor tool definitions", () => {
 
     const getComposeSession = toolMap.get("email.getComposeSession");
     expect(schemaFor(getComposeSession!).required).toEqual(["composeSessionId"]);
+  });
+
+  test("filters approvable CLI tools when shell is outside the allowed capability scope", async () => {
+    const executor = buildExecutor({
+      scope: {
+        allowedCapabilities: ["lists"],
+      },
+      approvableCliTools: [{
+        name: "shell.hrvst.projects.list",
+        description: "List Harvest projects",
+        inputSchema: { type: "object", properties: {} },
+      }],
+    });
+
+    const tools = await executor.getAvailableTools("space-main", "agent-1");
+    expect(tools.some((tool) => tool.name === "shell.hrvst.projects.list")).toBe(false);
+    expect(tools.some((tool) => tool.name === "lists.listLists")).toBe(true);
+  });
+
+  test("keeps approvable CLI tools visible when shell is explicitly allowed", async () => {
+    const executor = buildExecutor({
+      scope: {
+        allowedCapabilities: ["lists", "shell"],
+        allowShell: true,
+      },
+      approvableCliTools: [{
+        name: "shell.hrvst.projects.list",
+        description: "List Harvest projects",
+        inputSchema: { type: "object", properties: {} },
+      }],
+    });
+
+    const tools = await executor.getAvailableTools("space-main", "agent-1");
+    expect(tools.some((tool) => tool.name === "shell.hrvst.projects.list")).toBe(true);
   });
 });

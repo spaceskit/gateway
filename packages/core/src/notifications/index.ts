@@ -5,6 +5,7 @@ export type {
   Notification,
   NotificationSubscription,
   NotificationService,
+  NotificationPushHandler,
   NotificationStats,
 } from "./types.js";
 

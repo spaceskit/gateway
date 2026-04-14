@@ -4,6 +4,7 @@ import {
   SpaceManager,
   ReflectionService,
   type ModelMessage,
+  type ProviderSessionHandle,
   type SaveTurnInput,
   type SpaceConfig,
 } from "@spaceskit/core";
@@ -353,6 +354,26 @@ export function initializeSpaceManager(state: BootstrapState): void {
 
       return [...injectedMessages, ...history];
     },
+    loadAgentSessionMetadata: async (spaceId: string, agentId: string) => {
+      const activeSession = state.agentUsageSessionRepo?.getActive(spaceId, agentId);
+      if (!activeSession) {
+        return undefined;
+      }
+      return {
+        displayTitle: activeSession.display_title || undefined,
+        providerSessionHandle: parseProviderSessionHandle(activeSession.provider_session_handle_json),
+      };
+    },
+    saveAgentSessionMetadata: async (metadata) => {
+      state.agentUsageSessionRepo?.updateRuntimeMetadata({
+        spaceId: metadata.spaceId,
+        agentId: metadata.agentId,
+        displayTitle: metadata.displayTitle,
+        providerSessionHandleJson: metadata.providerSessionHandle
+          ? JSON.stringify(metadata.providerSessionHandle)
+          : undefined,
+      });
+    },
     resolveRuntime: async (spaceId: string, agentId: string) => {
       const externalBinding = state.spaceMcpService.getBinding(spaceId, agentId);
       if (externalBinding) {
@@ -457,4 +478,33 @@ export function initializeSpaceManager(state: BootstrapState): void {
 
   logger.info("Space manager initialized");
   state.spaceManager = spaceManager;
+}
+
+function parseProviderSessionHandle(value: string | null | undefined): ProviderSessionHandle | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.type === "openai_response" && typeof record.previousResponseId === "string" && record.previousResponseId.trim()) {
+      return {
+        type: "openai_response",
+        previousResponseId: record.previousResponseId,
+      };
+    }
+    if (record.type === "codex_app_server_thread" && typeof record.threadId === "string" && record.threadId.trim()) {
+      return {
+        type: "codex_app_server_thread",
+        threadId: record.threadId,
+      };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }

@@ -37,9 +37,11 @@ import type {
   TurnAccessMode,
   TurnExecutionMode,
   TurnReasoningEffort,
+  ProviderSessionHandle,
 } from "../agents/model-provider.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
 import type {
+  ConversationTopology,
   SpaceConfig,
   SpaceState,
   SpaceAgentAssignment,
@@ -71,6 +73,13 @@ export interface SpaceManagerOptions {
   loadHistory: (spaceId: string, limit?: number) => Promise<ModelMessage[]>;
   /** Optional per-agent history loader for agent session continuity. */
   loadAgentHistory?: (spaceId: string, agentId: string, limit?: number) => Promise<ModelMessage[]>;
+  /** Optional per-agent runtime metadata loader for provider-native session continuity. */
+  loadAgentSessionMetadata?: (
+    spaceId: string,
+    agentId: string,
+  ) => Promise<AgentSessionRuntimeMetadata | undefined> | AgentSessionRuntimeMetadata | undefined;
+  /** Optional per-agent runtime metadata persistence hook. */
+  saveAgentSessionMetadata?: (metadata: SaveAgentSessionRuntimeMetadataInput) => Promise<void> | void;
   /** Resolve (or create) an AgentRuntime for an agent in a space. */
   resolveRuntime: (spaceId: string, agentId: string) => Promise<AgentRuntime>;
   /** Optional checkpoint manager for crash recovery. */
@@ -125,6 +134,8 @@ export interface SpaceManagerOptions {
 export interface SaveTurnInput {
   turnId: string;
   userTurnId?: string;
+  replyToTurnId?: string;
+  conversationTopology?: ConversationTopology;
   spaceId: string;
   agentId: string;
   input: string;
@@ -136,6 +147,18 @@ export interface SaveTurnInput {
   totalTokens: number;
 }
 
+export interface AgentSessionRuntimeMetadata {
+  displayTitle?: string;
+  providerSessionHandle?: ProviderSessionHandle;
+}
+
+export interface SaveAgentSessionRuntimeMetadataInput {
+  spaceId: string;
+  agentId: string;
+  displayTitle?: string;
+  providerSessionHandle?: ProviderSessionHandle;
+}
+
 export interface TurnExecutionIdentity {
   principalId?: string;
   deviceId?: string;
@@ -143,6 +166,9 @@ export interface TurnExecutionIdentity {
   accessMode?: TurnAccessMode;
   mode?: TurnExecutionMode;
   effort?: TurnReasoningEffort;
+  targetAgentIds?: string[];
+  replyToTurnId?: string;
+  conversationTopology?: ConversationTopology;
 }
 
 interface ActiveSpace {
@@ -173,6 +199,8 @@ interface AgentSessionState {
   sessionId: string;
   agentId: string;
   messages: ModelMessage[];
+  displayTitle?: string;
+  providerSessionHandle?: ProviderSessionHandle;
   lastTurnId?: string;
   lastActivityAt: Date;
 }
@@ -323,6 +351,12 @@ export class SpaceManager {
     }
   }
 
+  /** Drop one cached agent session so the next turn reloads from the active persistence boundary. */
+  resetAgentSession(spaceId: string, agentId: string): void {
+    const active = this.activeSpaces.get(spaceId);
+    active?.agentSessions.delete(agentId);
+  }
+
   /**
    * Pre-warm a space by loading its config and agent sessions into cache.
    * This is a best-effort operation — errors are silently ignored.
@@ -403,16 +437,18 @@ export class SpaceManager {
     executionIdentity?: TurnExecutionIdentity,
   ): Promise<void> {
     const space = await this.ensureActive(spaceId);
+    const turnSpace = this.resolveTurnScopedSpace(space, targetAgentId, executionIdentity);
     const userMessage: ModelMessage = { role: "user", content: input };
 
-    const strategy = space.config.turnModel;
-    const targetingSpecificAgent = normalizeAgentIdentifier(targetAgentId) !== undefined;
-    const masterFlow = !targetingSpecificAgent && this.shouldUseMasterMode(space)
-      ? this.resolveMasterFlowAssignments(space)
+    const strategy = turnSpace.config.turnModel;
+    const targetingSingleAgent = normalizeAgentIdentifier(targetAgentId) !== undefined
+      || turnSpace.config.agents.length === 1;
+    const masterFlow = !targetingSingleAgent && this.shouldUseMasterMode(turnSpace)
+      ? this.resolveMasterFlowAssignments(turnSpace)
       : null;
     const agents = masterFlow
       ? [masterFlow.master, ...masterFlow.guests]
-      : this.selectAgents(space, targetAgentId);
+      : this.selectAgents(turnSpace, targetAgentId);
 
     if (agents.length === 0) {
       throw new Error(
@@ -420,7 +456,7 @@ export class SpaceManager {
       );
     }
 
-    const launchSnapshots = await this.buildLaunchSnapshots(space, turnId, agents, userMessage, executionIdentity);
+    const launchSnapshots = await this.buildLaunchSnapshots(turnSpace, turnId, agents, userMessage, executionIdentity);
 
     for (const snap of launchSnapshots) {
       console.info(`[space:${spaceId}] [turn:${turnId}] agent=${snap.agentId} provider=${snap.providerId} model=${snap.modelId}`);
@@ -439,13 +475,13 @@ export class SpaceManager {
       timestamp: new Date(),
     });
 
-    const summaryTrace = this.createSummaryTrace(space, turnId, input, strategy, agents);
+    const summaryTrace = this.createSummaryTrace(turnSpace, turnId, input, strategy, agents);
     let executionError: unknown;
 
     try {
       if (masterFlow) {
         await this.executeMasterMode(
-          space,
+          turnSpace,
           turnId,
           userMessage,
           masterFlow,
@@ -454,7 +490,7 @@ export class SpaceManager {
         );
       } else if (strategy === "parallel_race") {
         await this.executeParallelRace(
-          space,
+          turnSpace,
           turnId,
           agents,
           userMessage,
@@ -463,7 +499,7 @@ export class SpaceManager {
         );
       } else if (strategy === "debate_synthesis") {
         await this.executeDebateSynthesis(
-          space,
+          turnSpace,
           turnId,
           agents,
           userMessage,
@@ -472,7 +508,7 @@ export class SpaceManager {
         );
       } else {
         await this.executeSequential(
-          space,
+          turnSpace,
           turnId,
           agents,
           userMessage,
@@ -485,7 +521,7 @@ export class SpaceManager {
       executionError = error;
       throw error;
     } finally {
-      this.emitSummaryEvent(space.config.id, turnId, summaryTrace, executionError);
+      this.emitSummaryEvent(turnSpace.config.id, turnId, summaryTrace, executionError);
     }
   }
 
@@ -662,6 +698,7 @@ export class SpaceManager {
         accessMode: executionIdentity?.accessMode,
         mode: executionIdentity?.mode,
         effort: executionIdentity?.effort,
+        ...(await this.resolveCommittedSessionFields(space, session, userMessage)),
       };
 
       let result: TurnResult | null = null;
@@ -692,7 +729,10 @@ export class SpaceManager {
 
       if (result) {
         // Save turn — fire-and-forget with dead letter queue fallback
-        this.updateAgentSession(session, turnId, userMessage, result.finalMessage);
+        this.updateAgentSession(session, turnId, userMessage, result.finalMessage, {
+          spaceId: space.config.id,
+          providerSessionHandle: result.metadata?.providerSessionHandle,
+        });
         this.options.saveTurn({
           turnId: this.buildPersistedTurnId(turnId, assignment.agentId),
           userTurnId: turnId,
@@ -843,6 +883,7 @@ export class SpaceManager {
           accessMode: executionIdentity?.accessMode,
           mode: executionIdentity?.mode,
           effort: executionIdentity?.effort,
+          ...(await this.resolveCommittedSessionFields(space, session, userMessage)),
         };
 
         let result: TurnResult | null = null;
@@ -892,7 +933,10 @@ export class SpaceManager {
 
         if (result) {
           totalTokensUsed += result.usage.totalTokens;
-          this.updateAgentSession(session, turnId, userMessage, result.finalMessage);
+          this.updateAgentSession(session, turnId, userMessage, result.finalMessage, {
+            spaceId: space.config.id,
+            providerSessionHandle: result.metadata?.providerSessionHandle,
+          });
           this.options.saveTurn({
             turnId: this.buildPersistedTurnId(turnId, guest.agentId),
             userTurnId: turnId,
@@ -1046,6 +1090,7 @@ export class SpaceManager {
       accessMode: executionIdentity?.accessMode,
       mode: executionIdentity?.mode,
       effort: executionIdentity?.effort,
+      ...(await this.resolveCommittedSessionFields(space, masterSession, userMessage)),
     };
 
     let synthesisResult: TurnResult | null = null;
@@ -1081,7 +1126,10 @@ export class SpaceManager {
       throw new Error("Master synthesis phase completed without a final result.");
     }
 
-    this.updateAgentSession(masterSession, turnId, userMessage, synthesisResult.finalMessage);
+    this.updateAgentSession(masterSession, turnId, userMessage, synthesisResult.finalMessage, {
+      spaceId: space.config.id,
+      providerSessionHandle: synthesisResult.metadata?.providerSessionHandle,
+    });
     this.options.saveTurn({
       turnId: this.buildPersistedTurnId(turnId, assignments.master.agentId),
       userTurnId: turnId,
@@ -1270,6 +1318,7 @@ export class SpaceManager {
         accessMode: executionIdentity?.accessMode,
         mode: executionIdentity?.mode,
         effort: executionIdentity?.effort,
+        ...(await this.resolveCommittedSessionFields(space, session, userMessage)),
       };
 
       let reviewResult: TurnResult | null = null;
@@ -1735,6 +1784,71 @@ export class SpaceManager {
     this.options.recordOrchestrationMetric?.({ name, value, tags });
   }
 
+  private resolveTurnScopedSpace(
+    space: ActiveSpace,
+    targetAgentId?: string,
+    executionIdentity?: TurnExecutionIdentity,
+  ): ActiveSpace {
+    const conversationTopology = normalizeConversationTopology(executionIdentity?.conversationTopology);
+    const hasSingleTarget = normalizeAgentIdentifier(targetAgentId) !== undefined;
+    const targetAgentIds = hasSingleTarget
+      ? []
+      : normalizeAgentIdentifiers(executionIdentity?.targetAgentIds);
+    const hasAgentSubset = targetAgentIds.length > 0;
+
+    if (!conversationTopology && !hasAgentSubset) {
+      return space;
+    }
+
+    const agents = hasAgentSubset
+      ? this.filterAgentsByTargetIds(space.config.agents, targetAgentIds)
+      : space.config.agents;
+    const nextConfig: SpaceConfig = {
+      ...space.config,
+      agents,
+      ...(conversationTopology ? { conversationTopology } : {}),
+    };
+
+    if (conversationTopology) {
+      const turnModel = this.turnModelForConversationTopology(conversationTopology);
+      nextConfig.turnModel = turnModel;
+      nextConfig.turnModelConfig = {
+        ...(space.config.turnModelConfig ?? { strategy: turnModel }),
+        strategy: turnModel,
+        masterModeEnabled: conversationTopology === "broadcast_team",
+      };
+    }
+
+    return {
+      ...space,
+      config: nextConfig,
+    };
+  }
+
+  private filterAgentsByTargetIds(
+    agents: SpaceAgentAssignment[],
+    targetAgentIds: string[],
+  ): SpaceAgentAssignment[] {
+    if (targetAgentIds.length === 0) return agents;
+    const targets = new Set(targetAgentIds);
+    return this.sortAssignments(agents).filter((assignment) => {
+      const agentId = normalizeAgentIdentifier(assignment.agentId);
+      return Boolean(agentId && targets.has(agentId));
+    });
+  }
+
+  private turnModelForConversationTopology(
+    conversationTopology: ConversationTopology,
+  ): TurnModelStrategy {
+    switch (conversationTopology) {
+      case "broadcast_team":
+      case "direct":
+        return "primary_only";
+      case "shared_team_chat":
+        return "sequential_all";
+    }
+  }
+
   private shouldUseMasterMode(space: ActiveSpace): boolean {
     const config = this.getMasterModeTurnModelConfig(space);
     if ((this.options.masterModeEnabled ?? true) === false) {
@@ -1860,7 +1974,10 @@ export class SpaceManager {
         this.forwardEvent(space.config.id, turnId, event, assignment.agentId);
         if (event.type === "turn_completed") {
           result = event.result;
-          this.updateAgentSession(session, turnId, userMessage, event.result.finalMessage);
+          this.updateAgentSession(session, turnId, userMessage, event.result.finalMessage, {
+            spaceId: space.config.id,
+            providerSessionHandle: event.result.metadata?.providerSessionHandle,
+          });
         }
       }
 
@@ -1949,6 +2066,7 @@ export class SpaceManager {
           accessMode: executionIdentity?.accessMode,
           mode: executionIdentity?.mode,
           effort: executionIdentity?.effort,
+          ...(await this.resolveCommittedSessionFields(space, session, userMessage)),
         };
 
         let result: TurnResult | null = null;
@@ -1957,7 +2075,10 @@ export class SpaceManager {
           this.forwardEvent(space.config.id, turnId, event, assignment.agentId);
           if (event.type === "turn_completed") {
             result = event.result;
-            this.updateAgentSession(session, turnId, userMessage, event.result.finalMessage);
+            this.updateAgentSession(session, turnId, userMessage, event.result.finalMessage, {
+              spaceId: space.config.id,
+              providerSessionHandle: event.result.metadata?.providerSessionHandle,
+            });
           }
         }
 
@@ -2003,6 +2124,7 @@ export class SpaceManager {
         accessMode: executionIdentity?.accessMode,
         mode: executionIdentity?.mode,
         effort: executionIdentity?.effort,
+        ...(await this.resolveCommittedSessionFields(space, synthSession, userMessage)),
       };
 
       for await (const event of synthRuntime.executeTurn(synthContext)) {
@@ -2010,7 +2132,10 @@ export class SpaceManager {
         this.forwardEvent(space.config.id, turnId, event, synthesizerAgentId);
 
         if (event.type === "turn_completed" && event.result) {
-          this.updateAgentSession(synthSession, turnId, userMessage, event.result.finalMessage);
+          this.updateAgentSession(synthSession, turnId, userMessage, event.result.finalMessage, {
+            spaceId: space.config.id,
+            providerSessionHandle: event.result.metadata?.providerSessionHandle,
+          });
           this.options.saveTurn({
             turnId: this.buildPersistedTurnId(turnId, synthesizerAgentId),
             userTurnId: turnId,
@@ -2486,15 +2611,63 @@ export class SpaceManager {
     const loadedHistory = this.options.loadAgentHistory
       ? await this.options.loadAgentHistory(space.config.id, agentId, 100)
       : await this.options.loadHistory(space.config.id, 100);
+    const loadedMetadata = await this.options.loadAgentSessionMetadata?.(space.config.id, agentId);
 
     const session: AgentSessionState = {
       sessionId: `${space.orchestratorSessionId}:agent:${agentId}`,
       agentId,
       messages: [...loadedHistory],
+      displayTitle: normalizeOptionalString(loadedMetadata?.displayTitle),
+      providerSessionHandle: normalizeProviderSessionHandle(loadedMetadata?.providerSessionHandle),
       lastActivityAt: new Date(),
     };
     space.agentSessions.set(agentId, session);
     return session;
+  }
+
+  private async resolveCommittedSessionFields(
+    space: ActiveSpace,
+    session: AgentSessionState,
+    userMessage: ModelMessage,
+  ): Promise<Pick<TurnContext, "providerSessionHandle" | "sessionTitle">> {
+    if (!normalizeOptionalString(session.displayTitle)) {
+      session.displayTitle = this.buildSessionTitle(space, session.agentId, userMessage.content);
+      await this.persistAgentSessionMetadata(space.config.id, session, {
+        displayTitle: session.displayTitle,
+      }).catch(() => {});
+    }
+
+    return {
+      ...(session.providerSessionHandle ? { providerSessionHandle: session.providerSessionHandle } : {}),
+      ...(session.displayTitle ? { sessionTitle: session.displayTitle } : {}),
+    };
+  }
+
+  private async persistAgentSessionMetadata(
+    spaceId: string,
+    session: AgentSessionState,
+    metadata: Omit<SaveAgentSessionRuntimeMetadataInput, "spaceId" | "agentId">,
+  ): Promise<void> {
+    if (!this.options.saveAgentSessionMetadata) {
+      return;
+    }
+    await this.options.saveAgentSessionMetadata({
+      spaceId,
+      agentId: session.agentId,
+      ...metadata,
+    });
+  }
+
+  private buildSessionTitle(space: ActiveSpace, agentId: string, input: string): string {
+    const baseTitle = sanitizeSessionTitle(input);
+    const fallback = sanitizeSessionTitle(`${space.config.name} · ${agentId}`) || `Space · ${agentId}`;
+    if (!baseTitle) {
+      return truncateSessionTitle(fallback);
+    }
+    if (space.config.agents.length <= 1) {
+      return truncateSessionTitle(baseTitle);
+    }
+    return truncateSessionTitle(`${baseTitle} · ${agentId}`);
   }
 
   private async buildLaunchSnapshots(
@@ -2540,6 +2713,10 @@ export class SpaceManager {
     turnId: string,
     userMessage: ModelMessage,
     assistantMessage: ModelMessage,
+    options?: {
+      spaceId: string;
+      providerSessionHandle?: ProviderSessionHandle;
+    },
   ): void {
     if (session.lastTurnId !== turnId) {
       session.messages.push(userMessage);
@@ -2550,6 +2727,13 @@ export class SpaceManager {
     }
     session.lastTurnId = turnId;
     session.lastActivityAt = new Date();
+    const providerSessionHandle = normalizeProviderSessionHandle(options?.providerSessionHandle);
+    if (providerSessionHandle) {
+      session.providerSessionHandle = providerSessionHandle;
+      void this.persistAgentSessionMetadata(options!.spaceId, session, {
+        providerSessionHandle,
+      }).catch(() => {});
+    }
   }
 
   private buildPersistedTurnId(turnId: string, agentId: string): string {
@@ -2657,8 +2841,33 @@ function normalizeExecutionIdentity(
   const accessMode = normalizeAccessMode(input.accessMode);
   const mode = normalizeExecutionMode(input.mode);
   const effort = normalizeReasoningEffort(input.effort);
-  if (!principalId && !deviceId && !executionOrigin && !accessMode && !mode && !effort) return undefined;
-  return { principalId, deviceId, executionOrigin, accessMode, mode, effort };
+  const targetAgentIds = normalizeAgentIdentifiers(input.targetAgentIds);
+  const replyToTurnId = normalizeOptionalString(input.replyToTurnId);
+  const conversationTopology = normalizeConversationTopology(input.conversationTopology);
+  if (
+    !principalId
+    && !deviceId
+    && !executionOrigin
+    && !accessMode
+    && !mode
+    && !effort
+    && targetAgentIds.length === 0
+    && !replyToTurnId
+    && !conversationTopology
+  ) {
+    return undefined;
+  }
+  return {
+    principalId,
+    deviceId,
+    executionOrigin,
+    accessMode,
+    mode,
+    effort,
+    ...(targetAgentIds.length > 0 ? { targetAgentIds } : {}),
+    ...(replyToTurnId ? { replyToTurnId } : {}),
+    ...(conversationTopology ? { conversationTopology } : {}),
+  };
 }
 
 function normalizeOptionalString(value?: string): string | undefined {
@@ -2666,9 +2875,71 @@ function normalizeOptionalString(value?: string): string | undefined {
   return normalized ? normalized : undefined;
 }
 
+function normalizeProviderSessionHandle(value?: ProviderSessionHandle): ProviderSessionHandle | undefined {
+  if (!value || value.type === "none") {
+    return undefined;
+  }
+  if (value.type === "openai_response" && normalizeOptionalString(value.previousResponseId)) {
+    return value;
+  }
+  if (value.type === "codex_app_server_thread" && normalizeOptionalString(value.threadId)) {
+    return value;
+  }
+  return undefined;
+}
+
+function sanitizeSessionTitle(input: string): string {
+  const normalized = input
+    .replace(/```[a-zA-Z0-9_-]*\s*/g, " ")
+    .replace(/```/g, " ")
+    .replace(/^\s*(user|assistant|system|tool)\s*:\s*/gim, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const lower = normalized.toLowerCase();
+  if (
+    normalized.length < 3
+    || lower === "hi"
+    || lower === "hello"
+    || lower === "hey"
+    || lower === "help"
+    || lower === "test"
+  ) {
+    return "";
+  }
+  return truncateSessionTitle(normalized);
+}
+
+function truncateSessionTitle(input: string): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 80) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 77).trimEnd()}...`;
+}
+
 function normalizeAgentIdentifier(value?: string): string | undefined {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : undefined;
+}
+
+function normalizeAgentIdentifiers(values?: string[]): string[] {
+  if (!Array.isArray(values)) return [];
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const agentId = normalizeAgentIdentifier(value);
+    if (!agentId || seen.has(agentId)) continue;
+    seen.add(agentId);
+    normalized.push(agentId);
+  }
+  return normalized;
+}
+
+function normalizeConversationTopology(value?: ConversationTopology): ConversationTopology | undefined {
+  if (value === "direct" || value === "shared_team_chat" || value === "broadcast_team") {
+    return value;
+  }
+  return undefined;
 }
 
 function normalizeExecutionOrigin(value?: CapabilityExecutionOrigin): CapabilityExecutionOrigin | undefined {

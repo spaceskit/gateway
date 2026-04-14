@@ -9,6 +9,7 @@ import {
   AppleFoundationModelProvider,
   ClaudeAgentSdkModelProvider,
   CliExecutorModelProvider,
+  CodexAppServerModelProvider,
   LmStudioModelProvider,
   OpenAICompatibleModelProvider,
   OpenAIResponsesModelProvider,
@@ -33,7 +34,7 @@ interface ExecutionAdapterFactoryOptions {
   appleHelperRunCommand?: AppleFoundationProviderConfig["runCommand"];
 }
 
-const EXECUTOR_PROVIDER_IDS = new Set(["claude", "claude-agent-sdk", "codex", "gemini"]);
+const EXECUTOR_PROVIDER_IDS = new Set(["claude", "claude-agent-sdk", "codex", "codex-app-server", "gemini"]);
 const LOCAL_RUNTIME_PROVIDER_IDS = new Set(["apple", "lmstudio", "ollama"]);
 
 export function classifyExecutionAdapter(providerIdRaw?: string): ExecutionAdapterClass {
@@ -85,6 +86,17 @@ export class ExecutionAdapterFactory {
         model: input.model,
         apiKey: input.apiKey,
         authMode: input.authMode,
+        isLocal: false,
+      });
+    }
+
+    if (providerId === "codex-app-server") {
+      return new CodexAppServerModelProvider({
+        id: providerId,
+        name: "Codex App Server",
+        model: input.model,
+        apiKey: input.apiKey,
+        authMode: input.authMode as "api_key" | "host_login" | undefined,
         isLocal: false,
       });
     }

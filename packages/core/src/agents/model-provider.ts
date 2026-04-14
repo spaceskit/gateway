@@ -44,6 +44,27 @@ export interface ThinkingConfig {
   display?: "summarized" | "omitted";
 }
 
+export interface ProviderFeedbackRequest {
+  triggerClass:
+    | "permission_gate"
+    | "policy_escalation"
+    | "high_impact"
+    | "ambiguity"
+    | "conflict"
+    | "security";
+  description: string;
+  options?: ("approve" | "reject" | "revise" | "defer")[];
+  context?: Record<string, unknown>;
+}
+
+export interface ProviderFeedbackResponse {
+  action: "approve" | "reject" | "revise" | "defer";
+  revision?: string;
+}
+
+export type TranscriptVisibility = "visible" | "activity_only" | "summary";
+export type StreamKind = "assistant_output" | "provider_client";
+
 /**
  * Opaque handle for provider-side session state that persists across turns.
  *
@@ -52,9 +73,10 @@ export interface ThinkingConfig {
  */
 export type ProviderSessionHandle =
   | { type: "openai_response"; previousResponseId: string }
+  | { type: "codex_app_server_thread"; threadId: string }
   | { type: "none" };
 
-export interface McpBridgeConfig {
+export interface GatewayToolBridgeConfig {
   /** Absolute path to the gateway MCP bridge stdio script. */
   bridgeScriptPath: string;
   /** JSON-serialized array of ToolDefinition for the bridge to expose. */
@@ -62,6 +84,9 @@ export interface McpBridgeConfig {
   /** Path to the Unix domain socket for proxying tool execution back to the gateway. */
   socketPath: string;
 }
+
+/** @deprecated Use GatewayToolBridgeConfig instead. */
+export type McpBridgeConfig = GatewayToolBridgeConfig;
 
 export interface GenerateOptions {
   messages: ModelMessage[];
@@ -83,14 +108,23 @@ export interface GenerateOptions {
   /** @deprecated Use accessMode instead. */
   nativeCliToolsEnabled?: boolean;
   /**
-   * MCP bridge configuration for CLI executors. When set, the CLI subprocess
-   * connects to a gateway-backed MCP server that exposes gateway tools.
+   * Gateway tool bridge configuration for mediated executors. When set, the
+   * runtime can expose gateway tools through an MCP bridge or dynamic tool
+   * proxy, depending on provider capabilities.
+   */
+  gatewayToolBridgeConfig?: GatewayToolBridgeConfig;
+  /**
+   * @deprecated Use gatewayToolBridgeConfig instead.
    */
   mcpBridgeConfig?: McpBridgeConfig;
   /** Provider-native thinking/reasoning configuration resolved from effort + capabilities. */
   thinkingConfig?: ThinkingConfig;
   /** Opaque session handle from a prior turn for providers that support server-side history. */
   providerSessionHandle?: ProviderSessionHandle;
+  /** User-facing title for provider-native sessions/threads that support naming. */
+  sessionTitle?: string;
+  /** Internal runtime callback for provider-native approval gates. */
+  feedbackHandler?: (request: ProviderFeedbackRequest) => Promise<ProviderFeedbackResponse>;
   /**
    * Optional observer for native CLI executions.
    *
@@ -107,6 +141,8 @@ export interface GenerateResult {
   finishReason: FinishReason;
   /** Opaque session handle for providers that support server-side history chaining. */
   providerSessionHandle?: ProviderSessionHandle;
+  /** Provider-native feedback checkpoint that paused turn execution. */
+  feedbackRequest?: ProviderFeedbackRequest;
 }
 
 export interface StreamChunk {
@@ -119,8 +155,11 @@ export interface StreamChunk {
     | "tool_call_end"
     | "tool_result"
     | "rate_limited"
+    | "feedback_request"
     | "finish";
   text?: string;
+  transcriptVisibility?: TranscriptVisibility;
+  streamKind?: StreamKind;
   toolCall?: Partial<ToolCall>;
   toolResult?: ToolResult;
   state?: string;
@@ -130,6 +169,8 @@ export interface StreamChunk {
   maxAttempts?: number;
   providerId?: string;
   retryAt?: string;
+  providerSessionHandle?: ProviderSessionHandle;
+  feedbackRequest?: ProviderFeedbackRequest;
   usage?: TokenUsage;
   finishReason?: FinishReason;
 }

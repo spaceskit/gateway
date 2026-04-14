@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ToolsUnsupportedError } from "../src/provider-errors.js";
 import {
+  createLmStudioSdkLogger,
   LmStudioModelProvider,
   checkLmStudioAvailability,
   listLmStudioLoadedModels,
@@ -252,6 +253,62 @@ describe("LM Studio helpers", () => {
   test("normalizes legacy HTTP base URLs to SDK websocket URLs", () => {
     expect(normalizeLmStudioBaseURL("http://127.0.0.1:1234/v1")).toBe("ws://127.0.0.1:1234");
     expect(normalizeLmStudioBaseURL("ws://127.0.0.1:1234")).toBe("ws://127.0.0.1:1234");
+  });
+
+  test("suppresses the expected websocket-close warning emitted during LM Studio client disposal", () => {
+    const seenWarns: unknown[][] = [];
+    const logger = createLmStudioSdkLogger({
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (...messages: unknown[]) => {
+        seenWarns.push(messages);
+      },
+      error: () => undefined,
+    });
+
+    logger.warn(
+      "[LMStudioClient][LLM][ClientPort][WsClientTransport:AuthenticatedWsClientTransport]",
+      "WebSocket error:",
+      new Error("WebSocket connection closed"),
+    );
+
+    expect(seenWarns).toEqual([]);
+  });
+
+  test("suppresses the expected websocket-close warning when the SDK logs it as a single formatted string", () => {
+    const seenWarns: unknown[][] = [];
+    const logger = createLmStudioSdkLogger({
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (...messages: unknown[]) => {
+        seenWarns.push(messages);
+      },
+      error: () => undefined,
+    });
+
+    logger.warn("[LMStudioClient][LLM][ClientPort][WsClientTransport:AuthenticatedWsClientTransport] WebSocket error: warn: WebSocket connection closed");
+
+    expect(seenWarns).toEqual([]);
+  });
+
+  test("preserves meaningful LM Studio warnings that are not the expected close-on-dispose path", () => {
+    const seenWarns: unknown[][] = [];
+    const logger = createLmStudioSdkLogger({
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (...messages: unknown[]) => {
+        seenWarns.push(messages);
+      },
+      error: () => undefined,
+    });
+
+    logger.warn(
+      "[LMStudioClient][LLM][ClientPort][WsClientTransport:AuthenticatedWsClientTransport]",
+      "WebSocket error:",
+      Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1234"), { code: "ECONNREFUSED" }),
+    );
+
+    expect(seenWarns).toHaveLength(1);
   });
 
   test("lists loaded LM Studio models and availability through the shared helper", async () => {

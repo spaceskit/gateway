@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Logger } from "@spaceskit/observability";
-import { initDatabase, ProviderSecretRefRepository } from "@spaceskit/persistence";
+import {
+  initDatabase,
+  ProfileRepository,
+  ProviderSecretRefRepository,
+} from "@spaceskit/persistence";
 import {
   DefaultGatewayAdminService,
   type AppleFoundationAvailabilitySnapshot,
@@ -21,6 +25,62 @@ const NO_OP_EXECUTABLE_RESOLVER = {
   resolve: () => ({ path: undefined, resolutionSource: "not_found" as const, manualPathConfigured: false }),
 } as unknown as LocalExecutableResolver;
 
+function createSpaceAdminStub() {
+  const spaces = new Map<string, any>();
+
+  return {
+    getSpace: async (spaceId: string) => spaces.get(spaceId) ?? null,
+    createSpace: async (input: any) => {
+      spaces.set(input.spaceId, {
+        spaceId: input.spaceId,
+        spaceUid: `uid-${input.spaceId}`,
+        orchestratorProfileId: input.initialAgents?.[0]?.profileId ?? null,
+        agents: [...(input.initialAgents ?? [])],
+      });
+      return spaces.get(input.spaceId);
+    },
+    addAgent: async (input: any) => {
+      const current = spaces.get(input.spaceId);
+      if (!current) {
+        throw new Error(`Missing space for addAgent: ${input.spaceId}`);
+      }
+      current.agents.push({
+        agentId: input.agentId,
+        profileId: input.profileId,
+        role: input.role,
+        turnOrder: input.turnOrder,
+        isPrimary: input.isPrimary,
+      });
+      return { assignment: current.agents[current.agents.length - 1] };
+    },
+    updateAgentAssignment: async (input: any) => {
+      const current = spaces.get(input.spaceId);
+      if (!current) {
+        throw new Error(`Missing space for updateAgentAssignment: ${input.spaceId}`);
+      }
+      const index = current.agents.findIndex((agent: any) => agent.agentId === input.agentId);
+      if (index >= 0) {
+        current.agents[index] = {
+          agentId: input.agentId,
+          profileId: input.profileId,
+          role: input.role,
+          turnOrder: input.turnOrder,
+          isPrimary: input.isPrimary,
+        };
+      }
+      return { assignment: current.agents[index] ?? null };
+    },
+    setSpaceOrchestrator: async (input: any) => {
+      const current = spaces.get(input.spaceId);
+      if (!current) {
+        throw new Error(`Missing space for setSpaceOrchestrator: ${input.spaceId}`);
+      }
+      current.orchestratorProfileId = input.profileId;
+      return current;
+    },
+  };
+}
+
 function createContext(options?: {
   gatewayProfile?: "embedded" | "external";
   enableAppleFoundationProvider?: boolean;
@@ -33,6 +93,8 @@ function createContext(options?: {
     rescan: () => Promise<{ interconnectors: unknown[] }>;
   };
   claudeAgentSdkMetadataProbe?: () => Promise<any>;
+  codexAppServerMetadataProbe?: () => Promise<any>;
+  withProfiles?: boolean;
 }) {
   const previousEnv = new Map<string, string | undefined>();
   for (const key of ENV_KEYS) {
@@ -45,6 +107,7 @@ function createContext(options?: {
     runtimeGeneration: `test-gateway-admin-${crypto.randomUUID()}`,
   });
   const repository = new ProviderSecretRefRepository(db.db);
+  const profileRepo = options?.withProfiles ? new ProfileRepository(db.db) : null;
   const providerSecretRefService = new ProviderSecretRefService({
     repository,
     logger: new Logger({ minLevel: "error", module: "gateway-admin-test.secret-ref" }),
@@ -52,12 +115,8 @@ function createContext(options?: {
   });
   const admin = new DefaultGatewayAdminService({
     logger: new Logger({ minLevel: "error", module: "gateway-admin-test" }),
-    profileRepo: null,
-    spaceAdminService: {
-      getSpace: async () => null,
-      addAgent: async () => ({ assignment: null }),
-      updateAgentAssignment: async () => ({ assignment: null }),
-    } as any,
+    profileRepo,
+    spaceAdminService: createSpaceAdminStub() as any,
     providerSecretRefService,
     gatewayProfile: options?.gatewayProfile ?? "external",
     enableAppleFoundationProvider: options?.enableAppleFoundationProvider ?? false,
@@ -67,10 +126,12 @@ function createContext(options?: {
     executableResolver: options?.executableResolver ?? NO_OP_EXECUTABLE_RESOLVER,
     interconnectorCatalogService: options?.interconnectorCatalogService as any,
     claudeAgentSdkMetadataProbe: options?.claudeAgentSdkMetadataProbe,
+    codexAppServerMetadataProbe: options?.codexAppServerMetadataProbe,
   });
 
   return {
     db,
+    profileRepo,
     providerSecretRefService,
     admin,
     restoreEnv() {
@@ -112,6 +173,56 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       expect(resolved.providerId).toBe("openrouter");
       expect(resolved.apiKeySecretRef).toBe("secretref-openrouter-primary");
       expect(resolved.apiKey).toBe("sk-or-primary");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("stores runtime defaults and synchronizes managed profiles", async () => {
+    const ctx = createContext({ withProfiles: true });
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+      });
+      ctx.admin.setProviderConfig({
+        providerId: "openai",
+        model: "openai/gpt-4.1",
+        apiKey: "sk-openai-primary",
+      });
+
+      const result = await ctx.admin.setRuntimeDefaults({
+        main: {
+          providerId: "codex-app-server",
+          modelId: "codex-app-server/gpt-5.4",
+        },
+        concierge: {
+          providerId: "openai",
+          modelId: "openai/gpt-4.1",
+        },
+      });
+
+      expect(result.defaults.main.providerId).toBe("codex-app-server");
+      expect(result.defaults.concierge.modelId).toBe("openai/gpt-4.1");
+      expect(result.mainAgentState.providerHint).toBe("codex-app-server");
+      expect(result.conciergeAgentState.providerHint).toBe("openai");
+
+      const mainProfile = ctx.profileRepo?.getById("main-profile");
+      const conciergeProfile = ctx.profileRepo?.getById("concierge-profile");
+      const mainRevision = ctx.profileRepo?.getActiveRevision("main-profile");
+      const conciergeRevision = ctx.profileRepo?.getActiveRevision("concierge-profile");
+
+      expect(mainProfile?.is_default).toBe(1);
+      expect(conciergeProfile?.is_default).toBe(0);
+      expect(mainRevision?.provider_hint).toBe("codex-app-server");
+      expect(mainRevision?.model_hint).toBe("codex-app-server/gpt-5.4");
+      expect(conciergeRevision?.provider_hint).toBe("openai");
+      expect(conciergeRevision?.model_hint).toBe("openai/gpt-4.1");
+
+      const defaults = await ctx.admin.getRuntimeDefaults();
+      expect(defaults.main.providerId).toBe("codex-app-server");
+      expect(defaults.concierge.providerId).toBe("openai");
     } finally {
       ctx.db.close();
       ctx.restoreEnv();
@@ -426,6 +537,202 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
+  test("surfaces Codex App Server host login metadata and discovered models", async () => {
+    const ctx = createContext({
+      codexAppServerMetadataProbe: async () => ({
+        authStatus: "authenticated",
+        authAccount: {
+          email: "developer@example.com",
+          subscriptionType: "pro",
+          tokenSource: "chatgpt",
+          apiProvider: "openai",
+        },
+        models: [
+          {
+            id: "codex-app-server/gpt-5.4",
+            displayName: "GPT-5.4",
+            contextWindow: 1_048_576,
+          },
+          {
+            id: "codex-app-server/gpt-5.4-mini",
+            displayName: "GPT-5.4 Mini",
+            contextWindow: 1_048_576,
+          },
+        ],
+      }),
+    });
+
+    try {
+      const configured = ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+        authMode: "host_login",
+      });
+
+      expect(configured.authMode).toBe("host_login");
+      expect(configured.hasApiKey).toBe(false);
+
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "codex-app-server" });
+      expect(catalogs).toHaveLength(1);
+      expect(catalogs[0]).toMatchObject({
+        providerId: "codex-app-server",
+        displayName: "Codex App Server",
+        group: "executor",
+        integrationClass: "executor",
+        supportedAuthModes: ["host_login", "api_key"],
+        authMode: "host_login",
+        authStatus: "authenticated",
+        requiresApiKey: false,
+        hasApiKey: false,
+        authAccount: {
+          email: "developer@example.com",
+          subscriptionType: "pro",
+          tokenSource: "chatgpt",
+          apiProvider: "openai",
+        },
+      });
+      expect(catalogs[0]?.models.map((entry) => entry.id)).toContain("codex-app-server/gpt-5.4");
+      expect(catalogs[0]?.models.map((entry) => entry.id)).toContain("codex-app-server/gpt-5.4-mini");
+
+      const resolved = await ctx.admin.resolveProviderForProfile(
+        "codex-app-server",
+        "codex-app-server/gpt-5.4",
+      );
+      expect(resolved.providerId).toBe("codex-app-server");
+      expect(resolved.model).toBe("codex-app-server/gpt-5.4");
+      expect(resolved.authMode).toBe("host_login");
+      expect(resolved.apiKey).toBeUndefined();
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("keeps fallback Codex App Server models visible when host login needs authentication", async () => {
+    const ctx = createContext({
+      codexAppServerMetadataProbe: async () => ({
+        authStatus: "needs_auth",
+        models: [],
+      }),
+    });
+
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+        authMode: "host_login",
+      });
+
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "codex-app-server" });
+      expect(catalogs[0]?.status).toBe("needs_auth");
+      expect(catalogs[0]?.authStatus).toBe("needs_auth");
+      expect(catalogs[0]?.models.map((entry) => entry.id)).toContain("codex-app-server/gpt-5.4");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("resolves exact codex app server host-login runtime config without provider fallback", () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "openai",
+        model: "openai/gpt-4.1",
+        apiKey: "sk-openai-test",
+      });
+      ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4-mini",
+        authMode: "host_login",
+      });
+
+      const resolved = ctx.admin.resolveExactProviderRuntimeConfig({
+        providerId: "codex-app-server",
+      });
+      expect(resolved.providerId).toBe("codex-app-server");
+      expect(resolved.model).toBe("codex-app-server/gpt-5.4-mini");
+      expect(resolved.authMode).toBe("host_login");
+      expect(resolved.apiKey).toBeUndefined();
+      expect(resolved.isLocal).toBe(false);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("resolves exact codex app server api-key runtime config", () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+        authMode: "api_key",
+        apiKey: "sk-openai-runtime",
+      });
+
+      const resolved = ctx.admin.resolveExactProviderRuntimeConfig({
+        providerId: "codex-app-server",
+      });
+      expect(resolved.providerId).toBe("codex-app-server");
+      expect(resolved.model).toBe("codex-app-server/gpt-5.4");
+      expect(resolved.authMode).toBe("api_key");
+      expect(resolved.apiKey).toBe("sk-openai-runtime");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("resolves exact provider runtime config through secret references", () => {
+    const ctx = createContext();
+    try {
+      ctx.providerSecretRefService.putSecretRef({
+        providerId: "codex-app-server",
+        secretRef: "secretref-codex-app-server-primary",
+        label: "Codex App Server primary",
+        secret: "sk-openai-secret-ref",
+      });
+
+      ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+        authMode: "api_key",
+        apiKeySecretRef: "secretref-codex-app-server-primary",
+      });
+
+      const resolved = ctx.admin.resolveExactProviderRuntimeConfig({
+        providerId: "codex-app-server",
+      });
+      expect(resolved.apiKeySecretRef).toBe("secretref-codex-app-server-primary");
+      expect(resolved.apiKey).toBe("sk-openai-secret-ref");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("does not apply provider fallback when resolving an exact runtime config", () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "openai",
+        model: "openai/gpt-4.1",
+        apiKey: "sk-openai-test",
+      });
+
+      const resolved = ctx.admin.resolveExactProviderRuntimeConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+      });
+      expect(resolved.providerId).toBe("codex-app-server");
+      expect(resolved.model).toBe("codex-app-server/gpt-5.4");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
   test("rejects host login auth mode for direct Anthropic API provider", () => {
     const ctx = createContext();
     try {
@@ -731,6 +1038,27 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
+  test("auto-seeds a separate codex-app-server provider config when codex is installed", () => {
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "codex" ? "/opt/homebrew/bin/codex" : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+    try {
+      const codex = ctx.admin.getProviderSettings("codex");
+      const codexAppServer = ctx.admin.getProviderSettings("codex-app-server");
+
+      expect(codex.providerId).toBe("codex");
+      expect(codexAppServer.providerId).toBe("codex-app-server");
+      expect(codexAppServer.model).toBe("codex-app-server/gpt-5.4");
+      expect(codexAppServer.authMode).toBe("host_login");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
   test("discoverLocalAgents uses executable resolver for embedded CLI detection", async () => {
     const executableResolver = {
       resolve: ({ cacheKey }: { cacheKey: string }) => ({
@@ -879,7 +1207,47 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
     }
   });
 
-  test("derives claude telemetry without probing interactive auth status", async () => {
+  test("passes requested providerIds batch to local provider telemetry service", async () => {
+    const ctx = createContext();
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "openai",
+        model: "openai/gpt-4.1",
+        apiKey: "sk-openai-test",
+      });
+      ctx.admin.setProviderConfig({
+        providerId: "openrouter",
+        model: "openrouter/anthropic/claude-sonnet-4",
+        apiKey: "sk-openrouter-test",
+      });
+      ctx.admin.setProviderConfig({
+        providerId: "anthropic",
+        model: "anthropic/claude-sonnet-4",
+        apiKey: "sk-anthropic-test",
+      });
+
+      let received: any = null;
+      ctx.admin.setLocalUsageTelemetryService({
+        getTelemetry: async (input: any) => {
+          received = input;
+          return [];
+        },
+      } as any);
+
+      const telemetry = await ctx.admin.getLocalUsageTelemetry({
+        providerIds: ["openrouter", "openai", "openrouter"],
+      });
+
+      expect(telemetry).toEqual([]);
+      expect(received.providerIds).toEqual(["openrouter", "openai"]);
+      expect(received.fallbackTelemetry.map((entry: any) => entry.providerId)).toEqual(["openrouter", "openai"]);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("returns Claude quota windows from OAuth usage probe", async () => {
     const ctx = createContext();
     try {
       ctx.admin.setProviderConfig({
@@ -917,14 +1285,115 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       } as any);
 
       (ctx.admin as any).findExecutable = () => "/usr/local/bin/claude";
+      (ctx.admin as any).readClaudeOAuthAccessToken = async () => ({
+        accessToken: "oauth-token",
+        source: "keychain",
+      });
+      (ctx.admin as any).fetchClaudeOAuthUsage = async (accessToken: string) => {
+        expect(accessToken).toBe("oauth-token");
+        return {
+          windows: [
+            {
+              scopeId: "claude",
+              scopeName: "Claude",
+              window: "primary",
+              usedPercent: 25,
+              remainingPercent: 75,
+              resetsAt: "2026-02-28T13:00:00.000Z",
+              windowDurationMins: 300,
+            },
+            {
+              scopeId: "claude",
+              scopeName: "Claude",
+              window: "secondary",
+              usedPercent: 10,
+              remainingPercent: 90,
+              resetsAt: "2026-03-06T08:00:00.000Z",
+              windowDurationMins: 10080,
+            },
+          ],
+        };
+      };
 
       const telemetry = await ctx.admin.getProviderTelemetry({ providerId: "claude" });
       expect(telemetry.length).toBe(1);
       expect(telemetry[0].providerId).toBe("claude");
       expect(telemetry[0].source).toBe("claude_cli");
       expect(telemetry[0].status).toBe("available");
+      expect(telemetry[0].windows.map((entry) => entry.window)).toEqual(["primary", "secondary"]);
+      expect(telemetry[0].windows[0].usedPercent).toBe(25);
+      expect(telemetry[0].windows[1].windowDurationMins).toBe(10080);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("does not use Anthropic API keys for Claude quota windows", async () => {
+    const ctx = createContext();
+    try {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-api-key";
+      ctx.admin.setProviderConfig({
+        providerId: "claude",
+        model: "claude/sonnet",
+      });
+      (ctx.admin as any).findExecutable = () => "/usr/local/bin/claude";
+      (ctx.admin as any).readClaudeOAuthAccessToken = async () => ({
+        message: "No Claude OAuth token found.",
+      });
+      (ctx.admin as any).fetchClaudeOAuthUsage = async () => {
+        throw new Error("Claude OAuth fetch should not run without an OAuth token");
+      };
+
+      const telemetry = await ctx.admin.getProviderTelemetry({ providerId: "claude" });
+      expect(telemetry.length).toBe(1);
+      expect(telemetry[0].providerId).toBe("claude");
+      expect(telemetry[0].source).toBe("claude_cli");
       expect(telemetry[0].windows).toEqual([]);
-      expect(telemetry[0].message).toContain("not probed");
+      expect(telemetry[0].message).toContain("OAuth");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("prefers Claude OAuth Keychain credentials before legacy credentials file", async () => {
+    const ctx = createContext();
+    try {
+      (ctx.admin as any).readClaudeOAuthAccessTokenFromKeychain = () => ({
+        accessToken: "keychain-token",
+        source: "keychain",
+      });
+      (ctx.admin as any).readClaudeOAuthAccessTokenFromCredentialsFile = () => ({
+        accessToken: "file-token",
+        source: "credentials_file",
+      });
+
+      const credentials = await (ctx.admin as any).readClaudeOAuthAccessToken();
+      expect(credentials).toEqual({
+        accessToken: "keychain-token",
+        source: "keychain",
+      });
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("falls back to Claude legacy credentials file when Keychain has no OAuth token", async () => {
+    const ctx = createContext();
+    try {
+      (ctx.admin as any).readClaudeOAuthAccessTokenFromKeychain = () => ({});
+      (ctx.admin as any).readClaudeOAuthAccessTokenFromCredentialsFile = () => ({
+        accessToken: "file-token",
+        source: "credentials_file",
+      });
+
+      const credentials = await (ctx.admin as any).readClaudeOAuthAccessToken();
+      expect(credentials).toEqual({
+        accessToken: "file-token",
+        source: "credentials_file",
+      });
     } finally {
       ctx.db.close();
       ctx.restoreEnv();

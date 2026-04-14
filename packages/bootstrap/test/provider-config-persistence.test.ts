@@ -116,6 +116,32 @@ describe("Provider config persistence", () => {
     }
   });
 
+  test("host login auth mode persists and reloads for codex-app-server", () => {
+    const ctx = createContext();
+    try {
+      const config = ctx.admin.setProviderConfig({
+        providerId: "codex-app-server",
+        model: "codex-app-server/gpt-5.4",
+        authMode: "host_login",
+      });
+
+      expect(config.authMode).toBe("host_login");
+      expect(config.hasApiKey).toBe(false);
+
+      const row = ctx.providerConfigRepo.getById("codex-app-server");
+      expect(row).not.toBeNull();
+      expect(row!.auth_mode).toBe("host_login");
+
+      const admin2 = createAdminWithRepo(ctx.db, ctx.providerConfigRepo);
+      const reloaded = admin2.getProviderSettings("codex-app-server");
+      expect(reloaded.authMode).toBe("host_login");
+      expect(reloaded.hasApiKey).toBe(false);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
   test("remove config removes from repo", () => {
     const ctx = createContext();
     try {

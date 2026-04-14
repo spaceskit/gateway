@@ -231,6 +231,59 @@ describe("MessageRouter feature handlers", () => {
     ]);
   });
 
+  test("forwards per-turn topology, reply, and target agent subset into execute_turn", async () => {
+    const executeTurnCalls: Array<[string, string, string | undefined, any]> = [];
+    const router = makeRouter({
+      spaceSharingService: {
+        evaluateAccess: () => ({ allowed: true, enforced: false, mode: "collaborator" }),
+        getActiveParticipant: () => null,
+      },
+      spaceManager: {
+        executeTurn: async (
+          spaceId: string,
+          input: string,
+          targetAgentId?: string,
+          identity?: Record<string, unknown>,
+        ) => {
+          executeTurnCalls.push([spaceId, input, targetAgentId, identity]);
+          return { turnId: "turn-topology-contract" };
+        },
+        resumeFeedback: async () => {},
+      },
+    });
+
+    const response = await router.handle(
+      makeClient({ publicKey: "principal-1", deviceId: "device-1" }),
+      makeMessage(MessageTypes.EXECUTE_TURN, {
+        spaceUid: "main-space",
+        input: "discuss the plan",
+        targetAgentIds: [" plan-coordinator ", "plan-codex-architect", "plan-coordinator"],
+        replyToTurnId: " root-turn ",
+        conversationTopology: "broadcast_team",
+      }),
+    );
+
+    expect(response?.type).toBe(MessageTypes.TURN_EVENT);
+    expect(executeTurnCalls).toEqual([
+      [
+        "main-space",
+        "discuss the plan",
+        undefined,
+        {
+          principalId: "principal-1",
+          deviceId: "device-1",
+          executionOrigin: "owner",
+          accessMode: "default",
+          mode: undefined,
+          effort: undefined,
+          targetAgentIds: ["plan-coordinator", "plan-codex-architect"],
+          replyToTurnId: "root-turn",
+          conversationTopology: "broadcast_team",
+        },
+      ],
+    ]);
+  });
+
   test("marks execute_turn identity as guest for invite-joined participants", async () => {
     const executeTurnCalls: Array<[string, string, string | undefined, any]> = [];
     const router = makeRouter({

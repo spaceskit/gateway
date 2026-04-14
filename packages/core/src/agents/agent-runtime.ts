@@ -21,6 +21,8 @@ import type {
   TurnExecutionMode,
   TurnReasoningEffort,
   ProviderSessionHandle,
+  TranscriptVisibility,
+  StreamKind,
 } from "./model-provider.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
 import type { CliLaunchSnapshot } from "./cli-launch-snapshot.js";
@@ -62,6 +64,8 @@ export interface TurnContext {
   effort?: TurnReasoningEffort;
   /** Opaque provider session handle from a prior turn (e.g. OpenAI previous_response_id). */
   providerSessionHandle?: ProviderSessionHandle;
+  /** User-facing session title for provider-native thread naming. */
+  sessionTitle?: string;
 }
 
 export type AgentState =
@@ -157,7 +161,12 @@ export interface AgentRuntime {
 
 export type TurnEvent =
   | { type: "state_changed"; state: AgentState }
-  | { type: "text_delta"; text: string }
+  | {
+    type: "text_delta";
+    text: string;
+    transcriptVisibility?: TranscriptVisibility;
+    streamKind?: StreamKind;
+  }
   | { type: "reasoning_delta"; text: string; summarized?: boolean }
   | { type: "tool_call_start"; toolCall: ToolCall }
   | { type: "tool_result"; result: ToolResult }

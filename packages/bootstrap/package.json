@@ -25,7 +25,8 @@
     "@spaceskit/persistence": "*",
     "@spaceskit/policy": "*",
     "@spaceskit/provider-runtime": "*",
-    "@spaceskit/server": "*"
+    "@spaceskit/server": "*",
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

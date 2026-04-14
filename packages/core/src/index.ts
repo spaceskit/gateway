@@ -19,10 +19,14 @@ export type {
   TurnExecutionMode,
   TurnReasoningEffort,
   ThinkingConfig,
+  ProviderFeedbackRequest,
+  ProviderFeedbackResponse,
   ProviderSessionHandle,
   TokenUsage,
   TokenUsageDetails,
   ModelInfo,
+  GatewayToolBridgeConfig,
+  McpBridgeConfig,
 } from "./agents/model-provider.js";
 
 export type {
@@ -358,6 +362,10 @@ export type {
   SecretsMiddlewareOptions,
 } from "./middleware/builtin/index.js";
 
+// Budget policy
+export { checkBudget, estimateCostUsd } from "./policy/budget.js";
+export type { BudgetPolicy, BudgetState, BudgetCheckResult } from "./policy/budget.js";
+
 // Memory
 export type {
   MemoryProvider,
@@ -388,6 +396,7 @@ export type {
   NotificationTarget,
   NotificationSubscription,
   NotificationService,
+  NotificationPushHandler,
   NotificationStats,
 } from "./notifications/types.js";
 export { DefaultNotificationService } from "./notifications/notification-service.js";

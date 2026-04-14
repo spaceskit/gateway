@@ -256,6 +256,7 @@ export interface AgentUsageSessionPayload {
   spaceId: string;
   agentId: string;
   agentRole: string;
+  displayTitle?: string;
   status: "active" | "closed";
   startedAt: string;
   endedAt?: string;

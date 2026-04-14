@@ -368,6 +368,7 @@ function buildCommand(
     }
     case "codex": {
       const codexBridgeArgs = buildCodexMcpBridgeArgs(options);
+      const codexReasoningArgs = buildCodexReasoningArgs(options);
       // When gateway bridge tools are present, bypass Codex's approval system entirely.
       // The gateway validates tool permissions server-side via toolExecutor.checkPermission(),
       // so Codex's own approval is redundant and blocks MCP tool calls in non-interactive mode.
@@ -391,6 +392,7 @@ function buildCommand(
           "--color",
           "never",
           ...(cwd ? ["-C", cwd] : []),
+          ...codexReasoningArgs,
           ...codexBridgeArgs,
           "--model",
           reference.providerModelId,
@@ -477,6 +479,11 @@ function buildCodexMcpBridgeArgs(options: GenerateOptions): string[] {
   ];
 }
 
+function buildCodexReasoningArgs(options: GenerateOptions): string[] {
+  const effort = normalizeCodexEffort(options.effort) ?? "high";
+  return ["-c", `model_reasoning_effort=${JSON.stringify(effort)}`];
+}
+
 function writeToolDefsToTempFile(toolDefsJson: string): string {
   const tmpDir = require("node:os").tmpdir();
   const filePath = require("node:path").join(tmpDir, `spaceskit-tool-defs-${crypto.randomUUID().slice(0, 8)}.json`);
@@ -499,6 +506,16 @@ function buildClaudeEffortArgs(options: GenerateOptions): string[] {
 function normalizeClaudeEffort(value?: GenerateOptions["effort"]): "low" | "medium" | "high" | "max" | undefined {
   if (value === "low" || value === "medium" || value === "high" || value === "max") {
     return value;
+  }
+  return undefined;
+}
+
+function normalizeCodexEffort(value?: GenerateOptions["effort"]): "low" | "medium" | "high" | undefined {
+  if (value === "low" || value === "medium" || value === "high") {
+    return value;
+  }
+  if (value === "max") {
+    return "high";
   }
   return undefined;
 }
@@ -764,6 +781,8 @@ interface JsonLineParserState {
   assistantText: string;
   sawFinish: boolean;
   lastState: NormalizedAgentState | null;
+  sawVisibleAssistantOutput: boolean;
+  latestCompletedAgentMessage?: string;
 }
 
 class JsonLineCliStreamParser implements CliStreamParser {
@@ -781,6 +800,8 @@ class JsonLineCliStreamParser implements CliStreamParser {
       assistantText: "",
       sawFinish: false,
       lastState: null,
+      sawVisibleAssistantOutput: false,
+      latestCompletedAgentMessage: undefined,
     };
   }
 
@@ -823,8 +844,9 @@ class JsonLineCliStreamParser implements CliStreamParser {
       const record = JSON.parse(line) as Record<string, unknown>;
       const chunks = normalizeParsedStreamChunks(this.parseRecord(record, this.state), this.state);
       for (const chunk of chunks) {
-        if (chunk.type === "text_delta" && typeof chunk.text === "string") {
+        if (chunk.type === "text_delta" && typeof chunk.text === "string" && isVisibleAssistantTextChunk(chunk)) {
           this.state.assistantText += chunk.text;
+          this.state.sawVisibleAssistantOutput = true;
         }
         if (chunk.type === "finish") {
           this.state.sawFinish = true;
@@ -974,11 +996,21 @@ function parseCodexStreamRecord(record: Record<string, unknown>, state: JsonLine
     return parseCodexItem(asRecord(record.item) ?? asRecord(record.response_item), false, state);
   }
   if (type === "turn.completed") {
-    return [{
+    const chunks: StreamChunk[] = [];
+    if (state.latestCompletedAgentMessage && !state.sawVisibleAssistantOutput) {
+      chunks.push({
+        type: "text_delta",
+        text: state.latestCompletedAgentMessage,
+        transcriptVisibility: "visible",
+        streamKind: "assistant_output",
+      });
+    }
+    chunks.push({
       type: "finish",
       finishReason: normalizeFinishReason(asString(record.finish_reason) ?? asString(record.stop_reason)),
       ...(parseCodexUsage(asRecord(record.usage)) ? { usage: parseCodexUsage(asRecord(record.usage))! } : {}),
-    }];
+    });
+    return chunks;
   }
   return [];
 }
@@ -998,7 +1030,14 @@ function parseCodexEventMessage(
   }
   if (messageType === "agent_message") {
     const text = extractTextPayload(message);
-    return text ? [{ type: "text_delta", text }] : [];
+    return text
+      ? [{
+        type: "text_delta",
+        text,
+        transcriptVisibility: "activity_only",
+        streamKind: "provider_client",
+      }]
+      : [];
   }
   if (messageType === "agent_reasoning") {
     const text = extractTextPayload(message);
@@ -1023,13 +1062,22 @@ function parseCodexItem(
   const itemType = asString(item.type);
   if (itemType === "agent_message" && completed) {
     const text = extractTextPayload(item);
-    return text ? [{ type: "text_delta", text }] : [];
+    if (text) {
+      state.latestCompletedAgentMessage = text;
+    }
+    return [];
   }
   if (itemType === "reasoning") {
     const text = extractTextPayload(item);
     return text ? [{ type: "reasoning_delta", text }] : [];
   }
-  if (itemType === "function_call" || itemType === "tool_call" || itemType === "tool_use" || itemType === "exec_command") {
+  if (
+    itemType === "function_call"
+    || itemType === "tool_call"
+    || itemType === "tool_use"
+    || itemType === "exec_command"
+    || itemType === "mcp_tool_call"
+  ) {
     if (!completed) {
       return maybeEmitToolCallStart(item, state);
     }
@@ -1076,6 +1124,7 @@ function buildToolCall(record: Record<string, unknown>): ToolCall | null {
   const name =
     asString(record.name)
     ?? asString(record.tool_name)
+    ?? asString(record.tool)
     ?? asString(record.command)
     ?? asString(record.operation)
     ?? asString(record.title);
@@ -1258,6 +1307,12 @@ function deriveStateFromChunk(chunk: StreamChunk): NormalizedAgentState | null {
     default:
       return null;
   }
+}
+
+function isVisibleAssistantTextChunk(chunk: StreamChunk): boolean {
+  const transcriptVisibility = chunk.transcriptVisibility ?? "visible";
+  const streamKind = chunk.streamKind ?? "assistant_output";
+  return transcriptVisibility === "visible" && streamKind === "assistant_output";
 }
 
 function normalizeAgentStateValue(value: unknown): NormalizedAgentState | null {

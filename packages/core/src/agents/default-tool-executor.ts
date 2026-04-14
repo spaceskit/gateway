@@ -559,6 +559,14 @@ export class DefaultToolExecutor implements ToolExecutor {
     if (this.getApprovableCliTools) {
       const existingNames = new Set(tools.map((t) => t.name));
       for (const cliTool of this.getApprovableCliTools()) {
+        const capabilityType = capabilityTypeFromToolName(cliTool.name);
+        if (
+          capabilityType
+          && scope.allowedCapabilities.length > 0
+          && !scope.allowedCapabilities.includes(capabilityType)
+        ) {
+          continue;
+        }
         if (!existingNames.has(cliTool.name)) {
           tools.push(cliTool);
         }
@@ -1187,6 +1195,15 @@ function normalizeTargetProvider(rawValue: unknown, toolName: string): string | 
   }
 
   return trimmed;
+}
+
+function capabilityTypeFromToolName(toolName: string): CapabilityType | null {
+  const separatorIndex = toolName.indexOf(".");
+  if (separatorIndex <= 0) {
+    return null;
+  }
+  const candidate = toolName.slice(0, separatorIndex);
+  return isCapabilityType(candidate) ? candidate : null;
 }
 
 function resolveToolHint(capability: CapabilityType, operation: string): ToolDefinitionHint {

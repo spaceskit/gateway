@@ -221,6 +221,10 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
       const space = await state.spaceAdminService.getSpace(spaceId);
       const assignment = space?.agents.find((entry: any) => entry.agentId === agentId);
       const assignmentScope = assignment?.securityScope;
+      const allowedCapabilities = mergeAllowedCapabilities(
+        space?.capabilities ?? [],
+        assignmentScope?.allowedCapabilities ?? [],
+      );
       const workspace = state.spaceWorkspaceService
         ? await state.spaceWorkspaceService.ensureWorkspace(spaceId).catch(() => null)
         : null;
@@ -239,7 +243,7 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
         ...DEFAULT_AGENT_SCOPE,
         ...assignmentScope,
         agentId,
-        allowedCapabilities: uniqueStrings(assignmentScope?.allowedCapabilities ?? []),
+        allowedCapabilities,
         commandAllowlist: uniqueStrings(assignmentScope?.commandAllowlist ?? []),
         filesystemScope: mergedFilesystemScopes[0]
           ?? assignmentScope?.filesystemScope
@@ -407,4 +411,22 @@ function classifyShellDecisionSource(
     return "gateway_profile";
   }
   return null;
+}
+
+function mergeAllowedCapabilities(
+  spaceCapabilities: string[],
+  assignmentCapabilities: string[],
+): string[] {
+  const normalizedSpace = uniqueStrings(spaceCapabilities);
+  const normalizedAssignment = uniqueStrings(assignmentCapabilities);
+  if (normalizedSpace.length > 0 && normalizedAssignment.length > 0) {
+    return normalizedAssignment.filter((capability) => normalizedSpace.includes(capability));
+  }
+  if (normalizedAssignment.length > 0) {
+    return normalizedAssignment;
+  }
+  if (normalizedSpace.length > 0) {
+    return normalizedSpace;
+  }
+  return [];
 }

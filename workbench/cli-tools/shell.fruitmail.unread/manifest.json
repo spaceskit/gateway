@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "id": "shell.fruitmail.unread",
+  "displayName": "Unread Emails",
+  "description": "List all unread emails from Apple Mail.",
+  "bundleId": "fruitmail-cli",
+  "bundleDisplayName": "Apple Mail (fruitmail)",
+  "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
+  "toolGroupId": "messages",
+  "toolGroupDisplayName": "Messages",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "argsTemplate": [
+    "unread",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results. Defaults to 20.",
+            "minimum": 1
+          }
+        },
+        "description": "Structured FruitMail request payload."
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use Unread Emails for Apple Mail operations only after the gateway host can run the fruitmail CLI successfully outside Spaces.",
+  "examples": [
+    {
+      "name": "List unread emails",
+      "arguments": {
+        "payload": {
+          "limit": 20
+        }
+      },
+      "expectedOutput": "{\"ok\":true,\"operation\":\"unread\",\"data\":[]}"
+    }
+  ],
+  "timeoutMs": 30000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-04-11T09:40:31.860Z",
+  "updatedAt": "2026-04-11T09:40:31.860Z"
+}

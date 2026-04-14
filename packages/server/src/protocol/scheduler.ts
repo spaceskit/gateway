@@ -3,6 +3,14 @@ export type SchedulerRunStatusPayload = "running" | "completed" | "failed" | "sk
 export type SchedulerRunTriggerPayload = "scheduled" | "manual";
 export type SchedulerScheduleKindPayload = "hourly" | "daily" | "weekly";
 export type SchedulerActionTypePayload = "space_prompt";
+export type SchedulerExecutionTargetModePayload = "existing_space" | "new_space";
+export type SchedulerCalendarSyncStatusPayload = "pending" | "synced" | "error";
+export type SchedulerCalendarDriftStatusPayload = "none" | "drifted";
+export type SchedulerEvalSummaryModePayload = "checkpoints" | "final_summary";
+export type SchedulerEvalRecommendationStatusPayload = "suggested" | "applied";
+export type SchedulerEvalRecommendationKindPayload = "flow_variant" | "prompt_pack" | "summary_mode";
+export type SchedulerEvalScenarioStatusPayload = "pass" | "fail" | "skip";
+export type SchedulerEvalCheckpointStatusPayload = "completed" | "failed" | "observed";
 
 export interface SchedulerSchedulePresetPayload {
   kind: SchedulerScheduleKindPayload;
@@ -16,6 +24,107 @@ export interface SchedulerActionPayload {
   type: SchedulerActionTypePayload;
   promptText: string;
   targetAgentId?: string;
+}
+
+export interface SchedulerExecutionTargetPayload {
+  mode: SchedulerExecutionTargetModePayload;
+}
+
+export interface SchedulerCalendarBindingPayload {
+  providerId: string;
+  calendarId: string;
+  eventId?: string;
+  syncStatus?: SchedulerCalendarSyncStatusPayload;
+  driftStatus?: SchedulerCalendarDriftStatusPayload;
+  driftMessage?: string;
+  lastSyncedAt?: string;
+}
+
+export interface SchedulerEvalConfigPayload {
+  evalDefinitionId: string;
+  scenarioIds?: string[];
+  promptVariantId?: string;
+  promptPackId?: string;
+  flowVariantId?: string;
+  summaryMode?: SchedulerEvalSummaryModePayload;
+  selfImproveEnabled?: boolean;
+}
+
+export interface SchedulerEvalSelfImproveStatePayload {
+  enabled: boolean;
+  appliedRevisionIds: string[];
+  lastAppliedRunId?: string;
+}
+
+export interface SchedulerEvalCheckpointPayload {
+  checkpointId: string;
+  kind: string;
+  status: SchedulerEvalCheckpointStatusPayload;
+  actorId?: string;
+  createdAt: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface SchedulerEvalRecommendationPayload {
+  recommendationId: string;
+  status: SchedulerEvalRecommendationStatusPayload;
+  kind: SchedulerEvalRecommendationKindPayload;
+  title: string;
+  summary?: string;
+  originatingRunId?: string;
+  promptVariantId?: string;
+  promptPackId?: string;
+  flowVariantId?: string;
+  appliedRevisionId?: string;
+  createdAt: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface SchedulerEvalScenarioResultPayload {
+  scenarioId: string;
+  status: SchedulerEvalScenarioStatusPayload;
+  checkpointCount: number;
+  failureReason?: string;
+}
+
+export interface SchedulerEvalArtifactRefPayload {
+  kind: "space" | "turn" | "scheduler_run";
+  id: string;
+  label?: string;
+}
+
+export interface SchedulerEvalRunPayload {
+  evalRunId: string;
+  evalDefinitionId: string;
+  scenarioIds: string[];
+  promptVariantId?: string;
+  promptPackId?: string;
+  flowVariantId?: string;
+  summaryMode: SchedulerEvalSummaryModePayload;
+  selfImproveEnabled: boolean;
+  spaceId?: string;
+  spaceUid?: string;
+  rootTurnId?: string;
+  finalSummaryText?: string;
+  artifactRefs: SchedulerEvalArtifactRefPayload[];
+  checkpoints: SchedulerEvalCheckpointPayload[];
+  scenarioResults: SchedulerEvalScenarioResultPayload[];
+  recommendations: SchedulerEvalRecommendationPayload[];
+}
+
+export interface SchedulerEvalDomainPayload {
+  domainId: string;
+  description?: string;
+  scenarioIds: string[];
+}
+
+export interface SchedulerEvalDefinitionPayload {
+  evalDefinitionId: string;
+  suiteId: string;
+  description?: string;
+  domainIds: string[];
+  scenarioIds: string[];
+  domains: SchedulerEvalDomainPayload[];
 }
 
 export interface SchedulerLinkedSpacePayload {
@@ -46,6 +155,10 @@ export interface SchedulerJobPayload {
   createdAt: string;
   updatedAt: string;
   linkedSpaces: SchedulerLinkedSpacePayload[];
+  executionTarget: SchedulerExecutionTargetPayload;
+  calendarBinding?: SchedulerCalendarBindingPayload;
+  evalConfig?: SchedulerEvalConfigPayload;
+  evalSelfImproveState?: SchedulerEvalSelfImproveStatePayload;
 }
 
 export interface SchedulerJobRunPayload {
@@ -61,6 +174,7 @@ export interface SchedulerJobRunPayload {
   errorCode?: string;
   errorMessage?: string;
   result?: Record<string, unknown>;
+  evalRun?: SchedulerEvalRunPayload;
 }
 
 export interface SchedulerCreateJobPayload {
@@ -72,6 +186,9 @@ export interface SchedulerCreateJobPayload {
   action: SchedulerActionPayload;
   primarySpaceId: string;
   relatedSpaceIds?: string[];
+  executionTarget?: SchedulerExecutionTargetPayload;
+  calendarBinding?: SchedulerCalendarBindingPayload;
+  evalConfig?: SchedulerEvalConfigPayload;
 }
 
 export interface SchedulerCreateJobResponsePayload {
@@ -98,6 +215,14 @@ export interface SchedulerListJobsResponsePayload {
   jobs: SchedulerJobPayload[];
 }
 
+export interface SchedulerListEvalDefinitionsPayload {
+  apiVersion?: string;
+}
+
+export interface SchedulerListEvalDefinitionsResponsePayload {
+  definitions: SchedulerEvalDefinitionPayload[];
+}
+
 export interface SchedulerUpdateJobPayload {
   apiVersion?: string;
   idempotencyKey?: string;
@@ -109,6 +234,9 @@ export interface SchedulerUpdateJobPayload {
   action?: SchedulerActionPayload;
   primarySpaceId?: string | null;
   relatedSpaceIds?: string[];
+  executionTarget?: SchedulerExecutionTargetPayload;
+  calendarBinding?: SchedulerCalendarBindingPayload | null;
+  evalConfig?: SchedulerEvalConfigPayload | null;
 }
 
 export interface SchedulerUpdateJobResponsePayload {

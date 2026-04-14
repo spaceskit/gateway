@@ -14,6 +14,7 @@ import type { EventBus, GatewayEvent } from "../events/event-bus.js";
 import type {
   Notification,
   NotificationCategory,
+  NotificationPushHandler,
   NotificationService,
   NotificationSubscription,
   NotificationTarget,
@@ -120,7 +121,7 @@ function normalizeEventMessage(value: unknown): string | undefined {
 export interface DefaultNotificationServiceOptions {
   eventBus: EventBus;
   /** Callback to push a notification to a specific client via WebSocket. */
-  onPush?: (clientId: string, notification: Notification) => Promise<void>;
+  onPush?: NotificationPushHandler;
   /** Max notifications to keep in memory per client. Default: 200. */
   maxStoredPerClient?: number;
 }
@@ -133,7 +134,7 @@ export class DefaultNotificationService implements NotificationService {
   private subscriptions = new Map<string, NotificationSubscription>();
   private clientSubscriptions = new Map<string, Set<string>>();
   private storedNotifications: Notification[] = [];
-  private onPush?: (clientId: string, notification: Notification) => Promise<void>;
+  private onPush?: NotificationPushHandler;
   private maxStored: number;
   private stats: NotificationStats = {
     totalSent: 0,
@@ -148,6 +149,10 @@ export class DefaultNotificationService implements NotificationService {
 
     // Auto-hook EventBus
     this.hookEventBus(options.eventBus);
+  }
+
+  setPushHandler(onPush?: NotificationPushHandler): void {
+    this.onPush = onPush;
   }
 
   private hookEventBus(eventBus: EventBus): void {

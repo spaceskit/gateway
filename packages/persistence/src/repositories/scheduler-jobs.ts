@@ -16,6 +16,8 @@ export interface SchedulerJobRow {
   target_agent_id: string;
   execution_target_json: string;
   calendar_binding_json: string | null;
+  eval_config_json: string | null;
+  eval_self_improve_state_json: string | null;
   primary_space_id: string | null;
   invalid_reason: string;
   next_run_at: string | null;
@@ -41,6 +43,8 @@ export interface CreateSchedulerJobInput {
   targetAgentId?: string;
   executionTargetJson?: string;
   calendarBindingJson?: string | null;
+  evalConfigJson?: string | null;
+  evalSelfImproveStateJson?: string | null;
   primarySpaceId?: string | null;
   invalidReason?: string;
   nextRunAt?: string | null;
@@ -63,6 +67,8 @@ export interface UpdateSchedulerJobInput {
   targetAgentId?: string | null;
   executionTargetJson?: string;
   calendarBindingJson?: string | null;
+  evalConfigJson?: string | null;
+  evalSelfImproveStateJson?: string | null;
   primarySpaceId?: string | null;
   invalidReason?: string | null;
   nextRunAt?: string | null;
@@ -93,13 +99,15 @@ export class SchedulerJobRepository {
         target_agent_id,
         execution_target_json,
         calendar_binding_json,
+        eval_config_json,
+        eval_self_improve_state_json,
         primary_space_id,
         invalid_reason,
         next_run_at,
         created_by_principal_id,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.jobId,
       input.name,
@@ -113,6 +121,8 @@ export class SchedulerJobRepository {
       input.targetAgentId ?? "",
       input.executionTargetJson ?? JSON.stringify({ mode: "existing_space" }),
       input.calendarBindingJson ?? null,
+      input.evalConfigJson ?? null,
+      input.evalSelfImproveStateJson ?? null,
       input.primarySpaceId ?? null,
       input.invalidReason ?? "",
       input.nextRunAt ?? null,
@@ -207,6 +217,14 @@ export class SchedulerJobRepository {
       assignments.push("calendar_binding_json = ?");
       values.push(patch.calendarBindingJson ?? null);
     }
+    if (patch.evalConfigJson !== undefined) {
+      assignments.push("eval_config_json = ?");
+      values.push(patch.evalConfigJson ?? null);
+    }
+    if (patch.evalSelfImproveStateJson !== undefined) {
+      assignments.push("eval_self_improve_state_json = ?");
+      values.push(patch.evalSelfImproveStateJson ?? null);
+    }
     if (patch.primarySpaceId !== undefined) {
       assignments.push("primary_space_id = ?");
       values.push(patch.primarySpaceId ?? null);
@@ -274,6 +292,16 @@ export class SchedulerJobRepository {
     if (!columnNames.has("calendar_binding_json")) {
       this.db.exec(
         "ALTER TABLE scheduler_jobs ADD COLUMN calendar_binding_json TEXT",
+      );
+    }
+    if (!columnNames.has("eval_config_json")) {
+      this.db.exec(
+        "ALTER TABLE scheduler_jobs ADD COLUMN eval_config_json TEXT",
+      );
+    }
+    if (!columnNames.has("eval_self_improve_state_json")) {
+      this.db.exec(
+        "ALTER TABLE scheduler_jobs ADD COLUMN eval_self_improve_state_json TEXT",
       );
     }
   }

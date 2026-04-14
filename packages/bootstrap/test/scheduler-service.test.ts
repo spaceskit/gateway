@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { EventBus } from "@spaceskit/core";
 import {
   initDatabase,
+  OrchestrationJournalRepository,
   SchedulerJobRepository,
   SchedulerJobRunRepository,
   SchedulerJobSpaceRepository,
@@ -16,7 +18,12 @@ afterEach(() => {
   }
 });
 
-function createHarness(nowIso = "2026-01-01T00:30:00.000Z") {
+function createHarness(
+  nowIso = "2026-01-01T00:30:00.000Z",
+  overrides: {
+    submitCommand?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  } = {},
+) {
   const db = initDatabase({
     path: ":memory:",
     runtimeGeneration: `test-scheduler-service-${crypto.randomUUID()}`,
@@ -52,13 +59,18 @@ function createHarness(nowIso = "2026-01-01T00:30:00.000Z") {
   const jobs = new SchedulerJobRepository(db.db);
   const jobSpaces = new SchedulerJobSpaceRepository(db.db);
   const runs = new SchedulerJobRunRepository(db.db);
+  const orchestrationJournal = new OrchestrationJournalRepository(db.db);
+  const eventBus = new EventBus();
 
   const submittedCommands: Array<Record<string, unknown>> = [];
+  const templateCreations: Array<Record<string, unknown>> = [];
   const service = new SchedulerService({
     jobs,
     jobSpaces,
     runs,
     spaces,
+    eventBus,
+    orchestrationJournal,
     spaceAdminService: {
       getSpace: async (spaceId: string) => {
         const row = spaces.getById(spaceId);
@@ -70,9 +82,38 @@ function createHarness(nowIso = "2026-01-01T00:30:00.000Z") {
         } as any;
       },
     } as any,
+    spaceTemplateService: {
+      createFromTemplate: async (input: Record<string, unknown>, principalId: string) => {
+        templateCreations.push({ ...input, principalId });
+        const spaceId = String(input.spaceId ?? `space-eval-${templateCreations.length}`);
+        if (!spaces.getById(spaceId)) {
+          spaces.create({
+            spaceId,
+            resourceId: String(input.resourceId ?? `resource:${spaceId}`),
+            name: String(input.name ?? "Eval Space"),
+            spaceType: "space",
+            goal: String(input.goal ?? ""),
+            turnModel: "primary_only",
+          });
+        }
+        return {
+          template: {
+            templateId: String(input.templateId ?? "archetype/research"),
+          },
+          space: {
+            id: spaceId,
+            spaceUid: `uid-${spaceId}`,
+            name: String(input.name ?? "Eval Space"),
+          },
+        } as any;
+      },
+    } as any,
     orchestratorCommandService: {
       submitCommand: async (input: Record<string, unknown>) => {
         submittedCommands.push(input);
+        if (overrides.submitCommand) {
+          return overrides.submitCommand(input);
+        }
         return {
           commandId: `cmd-${submittedCommands.length}`,
           status: "completed",
@@ -89,7 +130,10 @@ function createHarness(nowIso = "2026-01-01T00:30:00.000Z") {
     jobSpaces,
     runs,
     spaces,
+    eventBus,
+    orchestrationJournal,
     submittedCommands,
+    templateCreations,
     nowIso,
   };
 }
@@ -113,6 +157,9 @@ function createDirectJob(
     actionType: overrides.actionType ?? "space_prompt",
     promptText: overrides.promptText ?? "Summarize updates.",
     targetAgentId: overrides.targetAgentId ?? "agent-1",
+    executionTargetJson: overrides.executionTargetJson ?? JSON.stringify({ mode: "existing_space" }),
+    evalConfigJson: overrides.evalConfigJson ?? null,
+    evalSelfImproveStateJson: overrides.evalSelfImproveStateJson ?? null,
     primarySpaceId: overrides.primarySpaceId ?? "space-main",
     invalidReason: overrides.invalidReason ?? "",
     nextRunAt: overrides.nextRunAt ?? "2025-12-31T01:00:00.000Z",
@@ -258,6 +305,165 @@ describe("SchedulerService", () => {
     expect(runRows).toHaveLength(1);
     expect(runRows[0]?.status).toBe("completed");
     expect(runRows[0]?.command_id).toBe("cmd-1");
+  });
+
+  test("round-trips executionTarget and eval config on scheduler jobs", async () => {
+    const { service } = createHarness("2026-01-01T00:30:00.000Z");
+
+    const created = await service.createJob({
+      principalId: "principal-1",
+      name: "Nightly Eval",
+      timezone: "UTC",
+      schedulePreset: { kind: "daily", minute: 0, hour: 2 },
+      action: { type: "space_prompt", promptText: "Evaluate the research flow." },
+      primarySpaceId: "space-main",
+      executionTarget: { mode: "new_space" },
+      evalConfig: {
+        evalDefinitionId: "suite:full",
+        scenarioIds: ["space-interactions.in-process-combined-smoke"],
+        flowVariantId: "research",
+        promptPackId: "broadcast-team-v1",
+        summaryMode: "checkpoints",
+        selfImproveEnabled: false,
+      },
+    });
+
+    expect(created.executionTarget.mode).toBe("new_space");
+    expect(created.evalConfig?.evalDefinitionId).toBe("suite:full");
+    expect(created.evalConfig?.summaryMode).toBe("checkpoints");
+    expect(created.evalSelfImproveState?.enabled).toBe(false);
+  });
+
+  test("runNow on eval jobs creates a fresh space and persists canonical eval checkpoints", async () => {
+    const { service, runs, submittedCommands, templateCreations, eventBus, orchestrationJournal } = createHarness(
+      "2026-01-01T00:30:00.000Z",
+      {
+        submitCommand: async (input: Record<string, unknown>) => {
+          const targetSpaceId = String(input.targetSpaceId);
+          orchestrationJournal.create({
+            eventId: "journal-planner",
+            spaceId: targetSpaceId,
+            turnId: "turn-eval-1",
+            eventType: "planner.input",
+            actorId: "coordinator",
+            payloadJson: JSON.stringify({ userInput: "Evaluate the research flow." }),
+          });
+          orchestrationJournal.create({
+            eventId: "journal-guest",
+            spaceId: targetSpaceId,
+            turnId: "turn-eval-1",
+            eventType: "guest.dispatch",
+            actorId: "researcher-1",
+            payloadJson: JSON.stringify({ iteration: 0 }),
+          });
+          orchestrationJournal.create({
+            eventId: "journal-peer",
+            spaceId: targetSpaceId,
+            turnId: "turn-eval-1",
+            eventType: "peer_review.result",
+            actorId: "reviewer-1",
+            payloadJson: JSON.stringify({ status: "approved" }),
+          });
+          orchestrationJournal.create({
+            eventId: "journal-synthesis",
+            spaceId: targetSpaceId,
+            turnId: "turn-eval-1",
+            eventType: "synthesis.result",
+            actorId: "coordinator",
+            payloadJson: JSON.stringify({ output: "Final synthesis." }),
+          });
+
+          eventBus.emit({
+            type: "context.summarized",
+            spaceId: targetSpaceId,
+            messagesSummarized: 8,
+            droppedRecentMessages: 0,
+            summaryTruncated: false,
+            newTokenEstimate: 1200,
+            maxTokenEstimate: 4000,
+            newMessageCount: 6,
+            timestamp: new Date("2026-01-01T00:30:01.000Z"),
+          });
+          eventBus.emit({
+            type: "space.orchestrator_event",
+            spaceId: targetSpaceId,
+            turnId: "turn-eval-1",
+            commandId: "summary-turn-eval-1",
+            correlationId: "turn-eval-1",
+            status: "completed",
+            createdAt: "2026-01-01T00:30:02.000Z",
+            eventType: "summary.completed",
+            event: {
+              type: "summary.completed",
+              summary: {
+                finalSummaryText: "Final synthesis.",
+                status: "completed",
+              },
+            },
+            timestamp: new Date("2026-01-01T00:30:02.000Z"),
+          });
+
+          return {
+            commandId: "cmd-eval-1",
+            status: "completed",
+            result: { turnId: "turn-eval-1" },
+          };
+        },
+      },
+    );
+
+    const job = await service.createJob({
+      principalId: "principal-1",
+      name: "Nightly Eval",
+      timezone: "UTC",
+      schedulePreset: { kind: "daily", minute: 0, hour: 2 },
+      action: { type: "space_prompt", promptText: "Evaluate the research flow." },
+      primarySpaceId: "space-main",
+      executionTarget: { mode: "new_space" },
+      evalConfig: {
+        evalDefinitionId: "suite:full",
+        scenarioIds: [
+          "space-interactions.in-process-combined-smoke",
+          "summarization.gateway-smoke",
+        ],
+        flowVariantId: "research",
+        summaryMode: "checkpoints",
+        selfImproveEnabled: true,
+      },
+    });
+
+    const response = await service.runNow({
+      principalId: "principal-1",
+      jobId: job.jobId,
+    });
+
+    expect(templateCreations).toHaveLength(1);
+    expect(templateCreations[0]?.templateId).toBe("archetype/research");
+    const createdEvalSpaceId = String(templateCreations[0]?.spaceId ?? "");
+    expect(createdEvalSpaceId.startsWith("space-eval-")).toBe(true);
+    expect(submittedCommands).toHaveLength(1);
+    expect(submittedCommands[0]?.targetSpaceId).toBe(createdEvalSpaceId);
+    expect(response.run.evalRun?.spaceId).toBe(createdEvalSpaceId);
+    expect(response.run.evalRun?.rootTurnId).toBe("turn-eval-1");
+    expect(
+      [...(response.run.evalRun?.checkpoints.map((checkpoint) => checkpoint.kind) ?? [])].sort(),
+    ).toEqual([
+      "context.summarized",
+      "guest.dispatch",
+      "planner.input",
+      "peer_review.result",
+      "summary.completed",
+      "synthesis.result",
+    ].sort());
+    expect(response.run.evalRun?.finalSummaryText).toBe("Final synthesis.");
+    expect(response.run.evalRun?.scenarioResults).toHaveLength(2);
+    expect(response.run.evalRun?.recommendations.length).toBeGreaterThan(0);
+    expect(response.job.evalSelfImproveState?.enabled).toBe(true);
+    expect(response.job.evalSelfImproveState?.lastAppliedRunId).toBe(response.run.runId);
+
+    const runRows = runs.listByJob(job.jobId, 10, 0);
+    expect(runRows[0]?.eval_run_json).toContain("\"rootTurnId\":\"turn-eval-1\"");
+    expect(runRows[0]?.eval_run_json).toContain("\"summary.completed\"");
   });
 
   test("marks job invalid when primary space has been deleted and keeps run history", async () => {

@@ -2,7 +2,6 @@
  * E2E Test Harness
  *
  * Reusable helpers for starting in-process gateways with real client-ts clients.
- * All tests use embedded profile with auth disabled for simplicity.
  */
 
 import { rmSync } from "node:fs";
@@ -11,12 +10,14 @@ import { tmpdir } from "node:os";
 import { startGateway } from "../../src/index.js";
 import {
   GatewayClient,
-  GatewayAdapterClient,
   generateAuthKeyPair,
   type GatewayClientOptions,
+} from "../../../../../client-ts/src/gateway-client.ts";
+import {
+  GatewayAdapterClient,
   type GatewayAdapterClientOptions,
   type AdapterProviderRegistration,
-} from "../../../../../client-ts/src/index.js";
+} from "../../../../../client-ts/src/adapter-client.ts";
 
 export type GatewayInstance = Awaited<ReturnType<typeof startGateway>>;
 
@@ -41,37 +42,67 @@ export interface TestGateway {
   cleanup: () => Promise<void>;
 }
 
+export interface CreateTestGatewayOptions {
+  gatewayProfile?: "embedded" | "external";
+  env?: Record<string, string | undefined>;
+}
+
 export async function createTestGateway(
   overrides?: Record<string, unknown>,
+  options: CreateTestGatewayOptions = {},
 ): Promise<TestGateway> {
   const port = randomPort();
   const dbPath = join(
     tmpdir(),
     `spaceskit-e2e-${crypto.randomUUID()}.db`,
   );
+  const gatewayProfile = options.gatewayProfile ?? "embedded";
+  const envOverrides = {
+    SPACESKIT_GATEWAY_PROFILE: gatewayProfile,
+    ...(options.env ?? {}),
+  };
+  const previousEnv = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(envOverrides)) {
+    previousEnv.set(key, Bun.env[key]);
+    if (value === undefined) {
+      delete Bun.env[key];
+    } else {
+      Bun.env[key] = value;
+    }
+  }
 
-  const previousGatewayProfile = Bun.env.SPACESKIT_GATEWAY_PROFILE;
-  Bun.env.SPACESKIT_GATEWAY_PROFILE = "embedded";
-
-  const instance = await startGateway({
-    port,
-    host: "127.0.0.1",
-    dbPath,
-    logLevel: "error",
-    skipAuth: true,
-    a2aRequireAuth: false,
-    syncRequireSecret: false,
-    runtimeGeneration: `e2e_${crypto.randomUUID().slice(0, 8)}`,
-    mainSpaceId: `e2e-main-${crypto.randomUUID().slice(0, 8)}`,
-    mainProfileId: `e2e-profile-${crypto.randomUUID().slice(0, 8)}`,
-    mainAgentId: `e2e-agent-${crypto.randomUUID().slice(0, 8)}`,
-    ...overrides,
-  } as Record<string, unknown>);
-
-  if (previousGatewayProfile === undefined) {
-    delete Bun.env.SPACESKIT_GATEWAY_PROFILE;
-  } else {
-    Bun.env.SPACESKIT_GATEWAY_PROFILE = previousGatewayProfile;
+  let instance: GatewayInstance;
+  try {
+    instance = await startGateway({
+      port,
+      host: "127.0.0.1",
+      dbPath,
+      logLevel: "error",
+      runtimeGeneration: `e2e_${crypto.randomUUID().slice(0, 8)}`,
+      mainSpaceId: `e2e-main-${crypto.randomUUID().slice(0, 8)}`,
+      mainProfileId: `e2e-profile-${crypto.randomUUID().slice(0, 8)}`,
+      mainAgentId: `e2e-agent-${crypto.randomUUID().slice(0, 8)}`,
+      ...(gatewayProfile === "external"
+        ? {
+            gatewayProfile: "external",
+            archFreezeEnforced: false,
+            httpPrincipalAuthHs256Secret: `e2e-http-secret-${crypto.randomUUID().slice(0, 8)}`,
+          }
+        : {
+            skipAuth: true,
+            a2aRequireAuth: false,
+            syncRequireSecret: false,
+          }),
+      ...overrides,
+    } as Record<string, unknown>);
+  } finally {
+    for (const [key, value] of previousEnv.entries()) {
+      if (value === undefined) {
+        delete Bun.env[key];
+      } else {
+        Bun.env[key] = value;
+      }
+    }
   }
 
   const cleanup = async () => {

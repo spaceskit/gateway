@@ -126,6 +126,15 @@ export async function runLlmCall({
     }
   }
 
+  if (shouldBypassStreamingForMediatedCliTurn(providerId, generateOpts)) {
+    try {
+      const generatedResult = await modelProvider.generate(modelId, generateOpts);
+      return { result: generatedResult, streamedTextDeltaCount: 0 };
+    } catch (err) {
+      throw toActionableLmStudioBadRequestError(err, providerId, modelId) ?? err;
+    }
+  }
+
   const streamedResult = await tryStreamLlmCall(modelProvider, modelId, providerId, generateOpts, emitEvent);
   if (streamedResult) {
     return streamedResult;
@@ -139,6 +148,13 @@ export async function runLlmCall({
   }
 }
 
+function shouldBypassStreamingForMediatedCliTurn(
+  providerId: string,
+  generateOpts: GenerateOptions,
+): boolean {
+  return providerId === "gemini" && generateOpts.accessMode === "default";
+}
+
 async function tryStreamLlmCall(
   modelProvider: ModelProvider,
   modelId: string,
@@ -147,8 +163,11 @@ async function tryStreamLlmCall(
   emitEvent: (event: TurnEvent) => void,
 ): Promise<LlmCallResult | null> {
   const chunks: string[] = [];
+  let sawAnyTextDelta = false;
   let finishReason: FinishReason = "stop";
   let usage: TokenUsage | undefined;
+  let providerSessionHandle: GenerateResult["providerSessionHandle"] | undefined;
+  let feedbackRequest: GenerateResult["feedbackRequest"] | undefined;
   let streamedTextDeltaCount = 0;
   let sawFinish = false;
 
@@ -157,9 +176,17 @@ async function tryStreamLlmCall(
       if (chunk.type === "text_delta") {
         const text = typeof chunk.text === "string" ? chunk.text : "";
         if (!text) continue;
-        chunks.push(text);
+        sawAnyTextDelta = true;
+        if (shouldAccumulateTranscriptText(chunk)) {
+          chunks.push(text);
+        }
         streamedTextDeltaCount += 1;
-        emitEvent({ type: "text_delta", text });
+        emitEvent({
+          type: "text_delta",
+          text,
+          transcriptVisibility: chunk.transcriptVisibility,
+          streamKind: chunk.streamKind,
+        });
         continue;
       }
 
@@ -211,10 +238,19 @@ async function tryStreamLlmCall(
         continue;
       }
 
+      if (chunk.type === "feedback_request") {
+        if (chunk.feedbackRequest) {
+          feedbackRequest = chunk.feedbackRequest;
+          sawFinish = true;
+        }
+        continue;
+      }
+
       if (chunk.type === "finish") {
         sawFinish = true;
         finishReason = chunk.finishReason ?? finishReason;
         usage = chunk.usage ?? usage;
+        providerSessionHandle = chunk.providerSessionHandle ?? providerSessionHandle;
       }
     }
   } catch (err) {
@@ -224,7 +260,7 @@ async function tryStreamLlmCall(
     throw err;
   }
 
-  if (!sawFinish && streamedTextDeltaCount === 0) {
+  if (!sawFinish && !sawAnyTextDelta) {
     return null;
   }
 
@@ -236,9 +272,22 @@ async function tryStreamLlmCall(
       },
       finishReason,
       ...(usage ? { usage } : {}),
+      ...(providerSessionHandle ? { providerSessionHandle } : {}),
+      ...(feedbackRequest ? { feedbackRequest } : {}),
     },
     streamedTextDeltaCount,
   };
+}
+
+function shouldAccumulateTranscriptText(
+  chunk: {
+    transcriptVisibility?: "visible" | "activity_only" | "summary";
+    streamKind?: "assistant_output" | "provider_client";
+  },
+): boolean {
+  const transcriptVisibility = chunk.transcriptVisibility ?? "visible";
+  const streamKind = chunk.streamKind ?? "assistant_output";
+  return transcriptVisibility === "visible" && streamKind === "assistant_output";
 }
 
 function normalizeStreamedAgentState(state: unknown): AgentState | null {

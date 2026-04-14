@@ -1,57 +1,40 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FRUITMAIL_TOOL_DEFINITIONS,
-  SPACES_FRUITMAIL_WRAPPER_VERSION,
+  buildFruitMailCliManifest,
+  buildFruitMailCliToolReadme,
+  resolveDefaultSpacesFruitMailWrapperPath,
 } from "./catalog.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 export async function materializeFruitMailCliTools(input) {
   const targetDir = input?.targetDir ? resolve(input.targetDir) : resolve(SCRIPT_DIR, "../../.spaceskit-cli-tools");
-  const wrapperPath = resolve(SCRIPT_DIR, "spaces-fruitmail.mjs");
-  const fixedCwd = dirname(wrapperPath);
+  const wrapperPath = resolve(input?.wrapperPath ?? resolveDefaultSpacesFruitMailWrapperPath());
+  const fixedCwd = resolve(input?.fixedCwd ?? dirname(wrapperPath));
+
+  await assertExecutable(wrapperPath, "wrapperPath");
 
   await mkdir(targetDir, { recursive: true });
 
   const tools = [];
   for (const tool of FRUITMAIL_TOOL_DEFINITIONS) {
     const toolDir = join(targetDir, tool.id);
+    const manifestPath = join(toolDir, "manifest.json");
+    const readmePath = join(toolDir, "README.md");
     await mkdir(toolDir, { recursive: true });
 
-    const existingEnabled = await readExistingEnabled(join(toolDir, "manifest.json"));
+    const existingEnabled = await readExistingEnabled(manifestPath);
+    const manifest = buildFruitMailCliManifest(tool, { wrapperPath, fixedCwd, enabled: existingEnabled });
+    const readme = buildFruitMailCliToolReadme(tool);
 
-    const manifest = {
-      id: tool.id,
-      toolName: tool.toolName,
-      displayName: tool.displayName,
-      description: tool.description,
-      bundleId: tool.bundleId,
-      bundleDisplayName: tool.bundleDisplayName,
-      bundleDescription: tool.bundleDescription,
-      toolGroupId: tool.toolGroupId,
-      toolGroupDisplayName: tool.toolGroupDisplayName,
-      inputSchema: tool.inputSchema,
-      outputHint: tool.outputHint,
-      schemaVersion: tool.schemaVersion,
-      wrapperVersion: tool.wrapperVersion,
-      enabled: existingEnabled ?? true,
-      runtime: {
-        type: "shell",
-        command: "node",
-        args: [wrapperPath, extractOperation(tool.id), "{{payload}}"],
-        cwd: fixedCwd,
-        timeoutMs: 30000,
-      },
-    };
-
-    await writeFile(join(toolDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
-
-    const readme = `# ${tool.displayName}\n\n${tool.description}\n\nBundle: ${tool.bundleDisplayName}\nWrapper: ${SPACES_FRUITMAIL_WRAPPER_VERSION}\n`;
-    await writeFile(join(toolDir, "README.md"), readme);
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    await writeFile(readmePath, `${readme}\n`);
 
     tools.push({ id: tool.id, dir: toolDir });
   }
@@ -59,8 +42,12 @@ export async function materializeFruitMailCliTools(input) {
   return { tools, targetDir };
 }
 
-function extractOperation(toolId) {
-  return toolId.replace("shell.fruitmail.", "");
+async function assertExecutable(path, field) {
+  try {
+    await access(path, constants.X_OK);
+  } catch {
+    throw new Error(`${field} must point to an executable file: ${path}`);
+  }
 }
 
 async function readExistingEnabled(manifestPath) {

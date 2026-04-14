@@ -130,22 +130,6 @@ export function isCapabilityTier(value: string): value is CapabilityTier {
   return TIER_MAP.has(value as CapabilityTier);
 }
 
-/**
- * Map the legacy suggestModelTier output to a CapabilityTier.
- */
-export function legacyTierToCapabilityTier(
-  legacy: "fast" | "standard" | "capable",
-): CapabilityTier {
-  switch (legacy) {
-    case "fast":
-      return "local";
-    case "standard":
-      return "standard";
-    case "capable":
-      return "advanced";
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Built-in Archetype Definitions
 // ---------------------------------------------------------------------------

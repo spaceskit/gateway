@@ -10,7 +10,7 @@
 
 import type { Middleware, MiddlewareContext } from "../types.js";
 import type { EventBus } from "../../events/event-bus.js";
-import { checkBudget, estimateCostUsd, type BudgetPolicy, type BudgetState } from "@spaceskit/policy";
+import { checkBudget, estimateCostUsd, type BudgetPolicy, type BudgetState } from "../../policy/budget.js";
 
 export interface BudgetMiddlewareOptions {
   eventBus: EventBus;

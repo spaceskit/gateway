@@ -1,5 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
+import { createInterface } from "node:readline";
 
 export interface LocalUsageSessionRecord {
   sessionId: string;
@@ -9,6 +11,7 @@ export interface LocalUsageSessionRecord {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
 }
 
 export interface LocalUsageSessionScanner {
@@ -64,14 +67,14 @@ export function walkFiles(
   return files;
 }
 
-export function readCachedSessions(
+export async function readCachedSessions(
   filePath: string,
   cache: Map<string, CachedScannerFile>,
-  parseFile: (path: string, content: string, fileMtimeMs: number) => LocalUsageSessionRecord[],
-): LocalUsageSessionRecord[] {
-  let fileStat: ReturnType<typeof statSync> | null = null;
+  parseFile: (path: string, entries: Record<string, unknown>[], fileMtimeMs: number) => LocalUsageSessionRecord[],
+): Promise<LocalUsageSessionRecord[]> {
+  let fileStat: Awaited<ReturnType<typeof stat>> | null = null;
   try {
-    fileStat = statSync(filePath);
+    fileStat = await stat(filePath);
   } catch {
     return [];
   }
@@ -83,9 +86,9 @@ export function readCachedSessions(
     return cached.sessions;
   }
 
-  let content = "";
+  let entries: Record<string, unknown>[] = [];
   try {
-    content = readFileSync(filePath, "utf8");
+    entries = await readJsonEntries(filePath);
   } catch {
     cache.set(filePath, {
       mtimeMs,
@@ -95,13 +98,50 @@ export function readCachedSessions(
     return [];
   }
 
-  const sessions = parseFile(filePath, content, mtimeMs);
+  const sessions = parseFile(filePath, entries, mtimeMs);
   cache.set(filePath, {
     mtimeMs,
     size,
     sessions,
   });
   return sessions;
+}
+
+export async function readJsonEntries(filePath: string): Promise<Record<string, unknown>[]> {
+  const normalized = filePath.toLowerCase();
+  if (normalized.endsWith(".jsonl") || normalized.endsWith(".log")) {
+    return readJsonLines(filePath);
+  }
+
+  const content = await readFile(filePath, "utf8");
+  return parseJsonEntries(content);
+}
+
+async function readJsonLines(filePath: string): Promise<Record<string, unknown>[]> {
+  const entries: Record<string, unknown>[] = [];
+  const lines = createInterface({
+    input: createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of lines) {
+    const candidate = line.trim();
+    if (!candidate || !candidate.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isObjectRecord(parsed)) {
+        entries.push(parsed);
+      }
+    } catch {
+      // Ignore malformed JSONL lines.
+    }
+  }
+
+  return entries;
+}
+
+export async function yieldToEventLoop(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 export function purgeMissingFiles(cache: Map<string, CachedScannerFile>, retainedPaths: Set<string>): void {
@@ -172,11 +212,18 @@ export function mergeSessions(
       inputTokens: Math.max(existing.inputTokens, rawSession.inputTokens),
       cachedInputTokens: Math.max(existing.cachedInputTokens, rawSession.cachedInputTokens),
       outputTokens: Math.max(existing.outputTokens, rawSession.outputTokens),
+      totalTokens: maxDefined(existing.totalTokens, rawSession.totalTokens),
     });
   }
 
   return Array.from(bySessionId.values())
     .sort((lhs, rhs) => rhs.lastActivityAtMs - lhs.lastActivityAtMs);
+}
+
+function maxDefined(lhs: number | undefined, rhs: number | undefined): number | undefined {
+  if (lhs === undefined) return rhs;
+  if (rhs === undefined) return lhs;
+  return Math.max(lhs, rhs);
 }
 
 function minDefined(lhs: number | undefined, rhs: number | undefined): number | undefined {

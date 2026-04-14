@@ -91,7 +91,12 @@ export interface TurnStreamPayload {
   spaceId: string;
   spaceUid: string;
   turnId: string;
+  rootTurnId?: string;
   agentId: string;
+  conversationTopology?: string;
+  transcriptVisibility?: "visible" | "activity_only" | "summary";
+  summaryTurnId?: string;
+  streamKind?: "assistant_output" | "provider_client";
   delta: string;
   seq: number;
   done: boolean;

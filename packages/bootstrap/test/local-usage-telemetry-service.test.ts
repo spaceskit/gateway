@@ -155,7 +155,29 @@ describe("CodexBarUsageAdapter", () => {
     expect(quota.message).toContain("Missing Current session");
   });
 
-  test("prefers CodexBar widget snapshot windows when available", () => {
+  test("parses matching provider payload from multiline codexbar output", () => {
+    const adapter = new CodexBarUsageAdapter({
+      logger: TEST_LOGGER,
+      enableWidgetSnapshot: false,
+      runCommand: () =>
+        ({
+          status: 1,
+          stdout: [
+            '{"file":"CodexBarCore/CodexBarLog.swift","level":"error","message":"Could not extract OAuth credentials from Gemini CLI"}',
+            '[{"provider":"gemini","source":"auto","error":{"message":"Gemini API error: Could not find Gemini CLI OAuth configuration","code":1,"kind":"provider"}}]',
+            '[{"provider":"claude","source":"web","usage":{"primary":{"usedPercent":7,"windowMinutes":300},"secondary":{"usedPercent":43,"windowMinutes":10080}}}]',
+          ].join("\n"),
+          stderr: "",
+        }) as any,
+    });
+
+    const quota = adapter.readProviderUsage("claude", { allowCommandProbe: true });
+    expect(quota.available).toBe(true);
+    expect(quota.sourceLabel).toBe("web");
+    expect(quota.windows.map((entry) => entry.window)).toEqual(["primary", "secondary"]);
+  });
+
+  test("falls back to CodexBar widget snapshot only after a live probe has no usable quota", () => {
     const tempHome = join(tmpdir(), `codexbar-test-${crypto.randomUUID()}`);
     const snapshotDir = join(
       tempHome,
@@ -199,15 +221,30 @@ describe("CodexBarUsageAdapter", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = tempHome;
     try {
+      let commandCalls = 0;
       const adapter = new CodexBarUsageAdapter({
         logger: TEST_LOGGER,
         enableWidgetSnapshot: true,
         runCommand: () => {
-          throw new Error("runCommand should not be called when snapshot exists");
+          commandCalls += 1;
+          return {
+            status: 1,
+            stdout: JSON.stringify([
+              {
+                provider: "claude",
+                source: "auto",
+                error: {
+                  message: "Web source unavailable.",
+                },
+              },
+            ]),
+            stderr: "",
+          } as any;
         },
       });
 
-      const quota = adapter.readProviderUsage("claude");
+      const quota = adapter.readProviderUsage("claude", { allowCommandProbe: true });
+      expect(commandCalls).toBe(2);
       expect(quota.available).toBe(true);
       expect(quota.sourceLabel).toBe("codexbar-widget");
       expect(quota.windows.map((entry) => entry.window)).toEqual(["primary", "secondary", "tertiary"]);
@@ -224,7 +261,7 @@ describe("CodexBarUsageAdapter", () => {
 });
 
 describe("LocalUsageTelemetryService", () => {
-  test("auto mode stays passive and falls back when no snapshot windows exist", async () => {
+  test("auto mode stays passive and uses provider telemetry fallback windows", async () => {
     let commandCalls = 0;
     const adapter = new CodexBarUsageAdapter({
       logger: TEST_LOGGER,
@@ -338,5 +375,75 @@ describe("LocalUsageTelemetryService", () => {
     expect(commandCalls).toBe(1);
     expect(telemetry[0]?.quota.windows[0]?.usedPercent).toBe(61);
     expect(telemetry[0]?.quota.sourceLabel).toBe("codex-cli");
+  });
+
+  test("uses provider telemetry fallback when CodexBar has no provider data", async () => {
+    const service = new LocalUsageTelemetryService({
+      logger: TEST_LOGGER,
+      codexBarAdapter: new CodexBarUsageAdapter({
+        logger: TEST_LOGGER,
+        enableWidgetSnapshot: false,
+        runCommand: () =>
+          ({
+            status: 0,
+            stdout: JSON.stringify([
+              {
+                provider: "openai",
+                source: "api",
+              },
+            ]),
+            stderr: "",
+          }) as any,
+      }),
+      codexBarMode: "auto",
+      scanners: {
+        openai: {
+          providerId: "openai",
+          scan: async () => [],
+        },
+      },
+    });
+
+    const telemetry = await service.getTelemetry({
+      providerIds: ["openai"],
+      fallbackTelemetry: [
+        {
+          providerId: "openai",
+          status: "available",
+          source: "usage_snapshot",
+          fetchedAt: "2026-02-28T10:00:00.000Z",
+          windows: [
+            {
+              scopeId: "openai",
+              scopeName: "OpenAI",
+              window: "primary",
+              usedPercent: 9,
+              remainingPercent: 91,
+              windowDurationMins: 300,
+              resetsAt: "2026-02-28T18:00:00.000Z",
+            },
+          ],
+          usage: {
+            providerId: "openai",
+            status: "available",
+            inputTokens: 120,
+            outputTokens: 40,
+            totalTokens: 160,
+            spentUsd: 0.0123,
+            tokenAccuracy: "reported",
+            usageSource: "ledger",
+          },
+        },
+      ],
+    });
+
+    expect(telemetry).toHaveLength(1);
+    expect(telemetry[0]?.status).toBe("available");
+    expect(telemetry[0]?.quota.available).toBe(true);
+    expect(telemetry[0]?.quota.windows[0]?.usedPercent).toBe(9);
+    expect(telemetry[0]?.quota.sourceLabel).toBe("api");
+    expect(telemetry[0]?.summary.totalTokens).toBe(160);
+    expect(telemetry[0]?.summary.tokenAccuracy).toBe("reported");
+    expect(telemetry[0]?.summary.usageSource).toBe("ledger");
   });
 });

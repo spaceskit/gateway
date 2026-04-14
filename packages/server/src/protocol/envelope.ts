@@ -22,7 +22,9 @@ export interface ExecuteTurnPayload {
   spaceUid: string;
   input: string;
   targetAgentId?: string;
+  targetAgentIds?: string[];
   replyToTurnId?: string;
+  conversationTopology?: "direct" | "shared_team_chat" | "broadcast_team";
   mode?: "ask" | "plan" | "execute";
   effort?: "low" | "medium" | "high" | "max";
   accessMode?: "default" | "full_access";

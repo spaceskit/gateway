@@ -58,6 +58,19 @@ function createJobInput(jobId: string) {
     timezone: "UTC",
     promptText: "Summarize the latest changes.",
     targetAgentId: "agent-summary",
+    executionTargetJson: JSON.stringify({ mode: "new_space" }),
+    evalConfigJson: JSON.stringify({
+      evalDefinitionId: "suite:full",
+      scenarioIds: ["space-interactions.in-process-combined-smoke"],
+      flowVariantId: "research",
+      summaryMode: "checkpoints",
+      selfImproveEnabled: true,
+    }),
+    evalSelfImproveStateJson: JSON.stringify({
+      enabled: true,
+      appliedRevisionIds: ["eval-rev-1"],
+      lastAppliedRunId: "run-0",
+    }),
     primarySpaceId: "space-main",
     nextRunAt: new Date(Date.now() + 3_600_000).toISOString(),
     createdByPrincipalId: "principal-owner",
@@ -72,6 +85,9 @@ describe("Scheduler repositories", () => {
     expect(created.job_id).toBe("job-1");
     expect(created.status).toBe("active");
     expect(created.enabled).toBe(1);
+    expect(created.execution_target_json).toContain("\"new_space\"");
+    expect(created.eval_config_json).toContain("\"evalDefinitionId\":\"suite:full\"");
+    expect(created.eval_self_improve_state_json).toContain("\"enabled\":true");
 
     const listedAll = repos.jobs.list();
     expect(listedAll.map((job) => job.job_id)).toContain("job-1");
@@ -83,6 +99,18 @@ describe("Scheduler repositories", () => {
       name: "Morning Summary",
       status: "paused",
       enabled: false,
+      executionTargetJson: JSON.stringify({ mode: "existing_space" }),
+      evalConfigJson: JSON.stringify({
+        evalDefinitionId: "suite:e2e-core",
+        scenarioIds: ["infra.fast-preflight"],
+        promptPackId: "shared-team-chat-v1",
+        summaryMode: "checkpoints",
+        selfImproveEnabled: false,
+      }),
+      evalSelfImproveStateJson: JSON.stringify({
+        enabled: false,
+        appliedRevisionIds: [],
+      }),
       lastRunStatus: "completed",
       lastErrorMessage: "none",
     });
@@ -91,6 +119,9 @@ describe("Scheduler repositories", () => {
     expect(updated?.status).toBe("paused");
     expect(updated?.enabled).toBe(0);
     expect(updated?.last_run_status).toBe("completed");
+    expect(updated?.execution_target_json).toContain("\"existing_space\"");
+    expect(updated?.eval_config_json).toContain("\"evalDefinitionId\":\"suite:e2e-core\"");
+    expect(updated?.eval_self_improve_state_json).toContain("\"enabled\":false");
 
     expect(repos.jobs.delete("job-1")).toBe(true);
     expect(repos.jobs.get("job-1")).toBeUndefined();
@@ -136,5 +167,52 @@ describe("Scheduler repositories", () => {
     expect(deleted).toBe(5);
     expect(repos.runs.countByJob("job-runs")).toBe(200);
   });
-});
 
+  test("persists canonical eval run payloads on scheduler job runs", () => {
+    const repos = createRepos();
+    repos.jobs.create(createJobInput("job-eval-runs"));
+
+    const created = repos.runs.create({
+      runId: "run-eval-1",
+      jobId: "job-eval-runs",
+      trigger: "manual",
+      status: "completed",
+      commandId: "cmd-eval-1",
+      evalRunJson: JSON.stringify({
+        evalRunId: "run-eval-1",
+        evalDefinitionId: "suite:full",
+        scenarioIds: ["space-interactions.in-process-combined-smoke"],
+        flowVariantId: "research",
+        summaryMode: "checkpoints",
+        selfImproveEnabled: false,
+        spaceId: "space-main",
+        spaceUid: "uid-space-main",
+        rootTurnId: "turn-eval-1",
+        checkpoints: [
+          { checkpointId: "cp-1", kind: "planner.input", status: "completed", createdAt: "2026-01-01T00:00:00.000Z" },
+        ],
+        recommendations: [
+          { recommendationId: "rec-1", status: "suggested", kind: "flow_variant", title: "Use research flow", createdAt: "2026-01-01T00:00:01.000Z" },
+        ],
+      }),
+    });
+
+    expect(created.eval_run_json).toContain("\"evalDefinitionId\":\"suite:full\"");
+
+    const updated = repos.runs.update("run-eval-1", {
+      evalRunJson: JSON.stringify({
+        evalRunId: "run-eval-1",
+        evalDefinitionId: "suite:full",
+        scenarioIds: ["space-interactions.in-process-combined-smoke"],
+        flowVariantId: "analysis",
+        summaryMode: "checkpoints",
+        selfImproveEnabled: true,
+        checkpoints: [],
+        recommendations: [],
+      }),
+    });
+
+    expect(updated?.eval_run_json).toContain("\"flowVariantId\":\"analysis\"");
+    expect(updated?.eval_run_json).toContain("\"selfImproveEnabled\":true");
+  });
+});

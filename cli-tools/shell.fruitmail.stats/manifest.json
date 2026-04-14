@@ -1,6 +1,6 @@
 {
+  "schemaVersion": 1,
   "id": "shell.fruitmail.stats",
-  "toolName": "shell.fruitmail.stats",
   "displayName": "Mail Stats",
   "description": "Get Apple Mail database statistics: total messages, unread, deleted, and attachment counts.",
   "bundleId": "fruitmail-cli",
@@ -8,23 +8,40 @@
   "bundleDescription": "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.",
   "toolGroupId": "general",
   "toolGroupDisplayName": "General",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
+  "argsTemplate": [
+    "stats",
+    "{{payload}}"
+  ],
   "inputSchema": {
     "type": "object",
-    "properties": {}
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {},
+        "description": "Structured FruitMail request payload."
+      }
+    },
+    "additionalProperties": false
   },
-  "outputHint": "Returns JSON output.",
-  "schemaVersion": 1,
-  "wrapperVersion": "0.1.0",
+  "instructions": "Use Mail Stats for Apple Mail operations only after the gateway host can run the fruitmail CLI successfully outside Spaces.",
+  "examples": [
+    {
+      "name": "Read mailbox statistics",
+      "arguments": {
+        "payload": {}
+      },
+      "expectedOutput": "{\"ok\":true,\"operation\":\"stats\",\"data\":{\"total_messages\":42}}"
+    }
+  ],
+  "timeoutMs": 30000,
+  "maxOutputBytes": 131072,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
   "enabled": true,
-  "runtime": {
-    "type": "shell",
-    "command": "node",
-    "args": [
-      "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools/spaces-fruitmail.mjs",
-      "stats",
-      "{{payload}}"
-    ],
-    "cwd": "/Users/caruso/code/spaces/gateway/scripts/fruitmail-cli-tools",
-    "timeoutMs": 30000
-  }
+  "createdAt": "2026-04-13T07:21:25.231Z",
+  "updatedAt": "2026-04-13T07:21:25.231Z"
 }

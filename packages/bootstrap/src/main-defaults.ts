@@ -386,7 +386,11 @@ export async function ensureMainSpaceSystemSkills(
 
   let attached = 0;
   for (const skillId of MAIN_SPACE_SYSTEM_SKILL_IDS) {
-    await spaceAdminService.addSkillToSpace({ spaceId: config.mainSpaceId, skillId });
+    await spaceAdminService.addSkillToSpace({
+      spaceId: config.mainSpaceId,
+      skillId,
+      idempotencyKey: `bootstrap:main-space-skill:${config.mainSpaceId}:${skillId}`,
+    });
     attached += 1;
   }
 

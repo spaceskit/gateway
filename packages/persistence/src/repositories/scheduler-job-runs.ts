@@ -16,6 +16,7 @@ export interface SchedulerJobRunRow {
   error_code: string;
   error_message: string;
   result_json: string | null;
+  eval_run_json: string | null;
   created_at: string;
 }
 
@@ -32,6 +33,7 @@ export interface CreateSchedulerJobRunInput {
   errorCode?: string;
   errorMessage?: string;
   resultJson?: string | null;
+  evalRunJson?: string | null;
 }
 
 export interface UpdateSchedulerJobRunInput {
@@ -43,10 +45,13 @@ export interface UpdateSchedulerJobRunInput {
   errorCode?: string;
   errorMessage?: string;
   resultJson?: string | null;
+  evalRunJson?: string | null;
 }
 
 export class SchedulerJobRunRepository {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Database) {
+    this.ensureCanonicalColumns();
+  }
 
   create(input: CreateSchedulerJobRunInput): SchedulerJobRunRow {
     const now = new Date().toISOString();
@@ -64,8 +69,9 @@ export class SchedulerJobRunRepository {
         error_code,
         error_message,
         result_json,
+        eval_run_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.runId,
       input.jobId,
@@ -79,6 +85,7 @@ export class SchedulerJobRunRepository {
       input.errorCode ?? "",
       input.errorMessage ?? "",
       input.resultJson ?? null,
+      input.evalRunJson ?? null,
       now,
     );
     return this.get(input.runId)!;
@@ -126,6 +133,10 @@ export class SchedulerJobRunRepository {
     if (patch.resultJson !== undefined) {
       assignments.push("result_json = ?");
       values.push(patch.resultJson ?? null);
+    }
+    if (patch.evalRunJson !== undefined) {
+      assignments.push("eval_run_json = ?");
+      values.push(patch.evalRunJson ?? null);
     }
 
     if (assignments.length === 0) {
@@ -183,9 +194,9 @@ export class SchedulerJobRunRepository {
       INSERT INTO scheduler_job_runs(
         run_id, job_id, trigger, status, command_id,
         scheduled_for, started_at, finished_at,
-        skip_reason, error_code, error_message, result_json, created_at
+        skip_reason, error_code, error_message, result_json, eval_run_json, created_at
       )
-      SELECT ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?
+      SELECT ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM scheduler_job_runs
         WHERE job_id = ? AND status = 'running'
@@ -202,6 +213,7 @@ export class SchedulerJobRunRepository {
       input.errorCode ?? "",
       input.errorMessage ?? "",
       input.resultJson ?? null,
+      input.evalRunJson ?? null,
       now,
       input.jobId,
     );
@@ -220,6 +232,20 @@ export class SchedulerJobRunRepository {
         LIMIT -1 OFFSET ?
       )
     `).run(jobId, normalizedKeep).changes;
+  }
+
+  private ensureCanonicalColumns(): void {
+    const columnNames = new Set(
+      this.db
+        .query("PRAGMA table_info(scheduler_job_runs)")
+        .all()
+        .map((row: any) => String(row.name)),
+    );
+    if (!columnNames.has("eval_run_json")) {
+      this.db.exec(
+        "ALTER TABLE scheduler_job_runs ADD COLUMN eval_run_json TEXT",
+      );
+    }
   }
 }
 

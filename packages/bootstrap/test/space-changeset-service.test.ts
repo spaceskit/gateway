@@ -13,8 +13,11 @@ import {
   SpaceRepository,
   SpaceShareInviteRepository,
   SpaceResourceRepository,
+  RunRepository,
+  RunStepRepository,
   SpaceUsageCounterRepository,
   SpaceWorkspaceRepository,
+  UsageRecordRepository,
   UsageAnalyticsRepository,
   AgentUsageSessionRepository,
   initDatabase,
@@ -55,9 +58,70 @@ function createContext() {
     participantQuotaPolicies: new ParticipantQuotaPolicyRepository(db.db),
     spaceUsageCounters: new SpaceUsageCounterRepository(db.db),
     participantUsageCounters: new ParticipantUsageCounterRepository(db.db),
+    runs: new RunRepository(db.db),
+    runSteps: new RunStepRepository(db.db),
+    usageRecords: new UsageRecordRepository(db.db),
     usageAnalytics: new UsageAnalyticsRepository(db.db),
     agentUsageSessions: new AgentUsageSessionRepository(db.db),
   };
+}
+
+function createQuotaService(context: ReturnType<typeof createContext>): SpaceQuotaService {
+  return new SpaceQuotaService({
+    spaces: context.spaces,
+    spaceQuotaPolicies: context.spaceQuotaPolicies,
+    participantQuotaPolicies: context.participantQuotaPolicies,
+    spaceUsageCounters: context.spaceUsageCounters,
+    participantUsageCounters: context.participantUsageCounters,
+    changeSets: context.changeSets,
+    changeSetFiles: context.changeSetFiles,
+    usageAnalytics: context.usageAnalytics,
+    agentUsageSessions: context.agentUsageSessions,
+  });
+}
+
+function recordAgentUsage(
+  context: ReturnType<typeof createContext>,
+  input: {
+    runId: string;
+    stepId: string;
+    usageRecordId: string;
+    agentId: string;
+    createdAt: string;
+    promptTokens: number;
+    completionTokens: number;
+  },
+): void {
+  context.runs.create({
+    runId: input.runId,
+    spaceId: "space-main",
+    targetAgentId: input.agentId,
+    createdAt: input.createdAt,
+  });
+  context.runSteps.create({
+    stepId: input.stepId,
+    runId: input.runId,
+    spaceId: "space-main",
+    agentId: input.agentId,
+    kind: "model_invocation",
+    status: "completed",
+    providerId: "codex",
+    modelId: "codex/gpt-5.1-codex",
+    createdAt: input.createdAt,
+  });
+  context.usageRecords.create({
+    usageRecordId: input.usageRecordId,
+    runId: input.runId,
+    stepId: input.stepId,
+    spaceId: "space-main",
+    providerId: "codex",
+    modelId: "codex/gpt-5.1-codex",
+    promptTokens: input.promptTokens,
+    completionTokens: input.completionTokens,
+    totalTokens: input.promptTokens + input.completionTokens,
+    tokenAccuracy: "reported",
+    createdAt: input.createdAt,
+  });
 }
 
 describe("SpaceChangeSetService", () => {
@@ -156,6 +220,116 @@ describe("SpaceChangeSetService", () => {
     } finally {
       context.db.close();
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("reports agent usage only after the active usage-session boundary", () => {
+    const context = createContext();
+    try {
+      const quotaService = createQuotaService(context);
+      recordAgentUsage(context, {
+        runId: "run-before-reset",
+        stepId: "step-before-reset",
+        usageRecordId: "usage-before-reset",
+        agentId: "agent-main",
+        createdAt: "2026-02-28T08:00:00.000Z",
+        promptTokens: 100,
+        completionTokens: 40,
+      });
+
+      context.agentUsageSessions.resetActive({
+        spaceId: "space-main",
+        agentId: "agent-main",
+        resetBy: "principal-owner",
+        nowIso: "2026-02-28T09:00:00.000Z",
+      });
+
+      recordAgentUsage(context, {
+        runId: "run-after-reset",
+        stepId: "step-after-reset",
+        usageRecordId: "usage-after-reset",
+        agentId: "agent-main",
+        createdAt: "2026-02-28T09:05:00.000Z",
+        promptTokens: 7,
+        completionTokens: 3,
+      });
+
+      const usage = quotaService.getUsage("space-main", "principal-owner", {
+        includeAgentSessions: true,
+      });
+      expect(usage.agentSessions?.length).toBe(1);
+      expect(usage.agentSessions?.[0]?.agentId).toBe("agent-main");
+      expect(usage.agentSessions?.[0]?.startedAt).toBe("2026-02-28T09:00:00.000Z");
+      expect(usage.agentSessions?.[0]?.turnCount).toBe(1);
+      expect(usage.agentSessions?.[0]?.inputTokens).toBe(7);
+      expect(usage.agentSessions?.[0]?.outputTokens).toBe(3);
+      expect(usage.agentSessions?.[0]?.totalTokens).toBe(10);
+    } finally {
+      context.db.close();
+    }
+  });
+
+  test("keeps existing ledger usage when first creating an active agent session", () => {
+    const context = createContext();
+    try {
+      const quotaService = createQuotaService(context);
+      recordAgentUsage(context, {
+        runId: "run-before-session-row",
+        stepId: "step-before-session-row",
+        usageRecordId: "usage-before-session-row",
+        agentId: "agent-main",
+        createdAt: "2026-02-28T08:00:00.000Z",
+        promptTokens: 11,
+        completionTokens: 4,
+      });
+
+      const usage = quotaService.getUsage("space-main", "principal-owner", {
+        includeAgentSessions: true,
+      });
+      expect(usage.agentSessions?.length).toBe(1);
+      expect(usage.agentSessions?.[0]?.startedAt).toBe("2026-02-28T08:00:00.000Z");
+      expect(usage.agentSessions?.[0]?.turnCount).toBe(1);
+      expect(usage.agentSessions?.[0]?.inputTokens).toBe(11);
+      expect(usage.agentSessions?.[0]?.outputTokens).toBe(4);
+      expect(usage.agentSessions?.[0]?.totalTokens).toBe(15);
+    } finally {
+      context.db.close();
+    }
+  });
+
+  test("returns a zero-usage active agent session after reset before the next turn", () => {
+    const context = createContext();
+    try {
+      const quotaService = createQuotaService(context);
+      recordAgentUsage(context, {
+        runId: "run-before-zero-reset",
+        stepId: "step-before-zero-reset",
+        usageRecordId: "usage-before-zero-reset",
+        agentId: "agent-main",
+        createdAt: "2026-02-28T08:00:00.000Z",
+        promptTokens: 50,
+        completionTokens: 20,
+      });
+
+      context.agentUsageSessions.resetActive({
+        spaceId: "space-main",
+        agentId: "agent-main",
+        resetBy: "principal-owner",
+        nowIso: "2026-02-28T09:00:00.000Z",
+      });
+
+      const usage = quotaService.getUsage("space-main", "principal-owner", {
+        includeAgentSessions: true,
+      });
+      expect(usage.agentSessions?.length).toBe(1);
+      expect(usage.agentSessions?.[0]?.agentId).toBe("agent-main");
+      expect(usage.agentSessions?.[0]?.turnCount).toBe(0);
+      expect(usage.agentSessions?.[0]?.inputTokens).toBe(0);
+      expect(usage.agentSessions?.[0]?.outputTokens).toBe(0);
+      expect(usage.agentSessions?.[0]?.totalTokens).toBe(0);
+      expect(usage.agentSessions?.[0]?.lastActivityAt).toBe("2026-02-28T09:00:00.000Z");
+    } finally {
+      context.db.close();
     }
   });
 
