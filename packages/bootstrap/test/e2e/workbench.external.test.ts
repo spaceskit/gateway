@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTestClient, createTestGateway, E2E_TIMEOUT } from "./harness.js";
 
+const TASK_IDS: Record<string, string> = {
+  "td-workbench-verified.md": "spaces/T-0001",
+  "td-workbench-review-only.md": "spaces/T-0002",
+  "td-workbench-conflicting.md": "spaces/T-0003",
+  "td-workbench-verified-second.md": "spaces/T-0004",
+};
+
 function writePlanningTask(
   repoRoot: string,
   fileName: string,
@@ -22,8 +29,12 @@ function writePlanningTask(
     verificationCommands?: string[] | null;
   } = {},
 ): void {
-  const taskPath = join(repoRoot, "_planning", "backlog", "tasks", fileName);
+  const tasksRoot = join(repoRoot, "Documents", "work", "projects", "spaces", "tasks");
+  mkdirSync(tasksRoot, { recursive: true });
+  const taskId = TASK_IDS[fileName] ?? `spaces/T-${String(Object.keys(TASK_IDS).length + 1).padStart(4, "0")}`;
+  const taskPath = join(tasksRoot, `${taskId.split("/")[1]}.md`);
   const goalId = fileName.replace(/\.md$/i, "");
+  const autonomous = delegation === "autonomous" && aiShippable === "yes";
   const verificationSection = verificationCommands === null
     ? ""
     : `
@@ -54,10 +65,23 @@ ${verificationCommands && verificationCommands.length > 0 ? `  commands:\n${veri
 blockers: []
 \`\`\`
 `;
-  writeFileSync(taskPath, `<!-- planning_classification: canonical -->
-<!-- planning_last_reviewed: 2026-04-10 -->
+  writeFileSync(taskPath, `---
+id: ${taskId}
+title: "${goalId}"
+status: ready
+owner: agent
+autonomous: ${autonomous ? "true" : "false"}
+priority: medium
+created: 2026-04-10
+updated: 2026-04-10
+depends-on: []
+source-file: ${join(repoRoot, "_planning", "backlog", "tasks", fileName)}
+spaces-item-type: TD
+---
 
 # Task: ${fileName.replace(/\.md$/i, "")}
+
+Next action: Exercise the workbench control plane.
 
 ## Metadata
 - Priority: P1
@@ -141,7 +165,7 @@ function createWorkbenchFixtureRepo(): string {
     products: "gateway",
     verificationCommands: [
       "printf 'verified-e2e'",
-      "test -f _planning/WHAT-TO-DO-NEXT.md",
+      "pwd >/dev/null",
     ],
   });
   writePlanningTask(repoRoot, "td-workbench-review-only.md", {
@@ -159,6 +183,13 @@ function createWorkbenchFixtureRepo(): string {
     verificationCommands: [
       "cd gateway && bun test ./packages/server/test/message-router.workbench.test.ts",
     ],
+  });
+  writePlanningTask(repoRoot, "td-workbench-verified-second.md", {
+    delegation: "autonomous",
+    parallel: "independent-verified",
+    aiShippable: "yes",
+    products: "gateway",
+    verificationCommands: ["printf 'verified-e2e-second'"],
   });
   writeUserStory(repoRoot, "US-75-unified-rich-content-contract-and-rendering.md");
   initializeGitRepository(repoRoot);
@@ -218,6 +249,8 @@ describe("external workbench control plane", () => {
         env: {
           SPACESKIT_SECRET_REF_MASTER_KEY: "test-workbench-e2e-master-key",
           SPACESKIT_WORKBENCH_REPO_ROOT: repoRoot,
+          SPACESKIT_WORKBENCH_PROJECTS_ROOT: join(repoRoot, "Documents", "work", "projects"),
+          SPACESKIT_WORKBENCH_PROJECT_SLUG: "spaces",
           SPACESKIT_WORKBENCH_AGENT_LOOP: "false",
         },
       });
@@ -225,13 +258,14 @@ describe("external workbench control plane", () => {
 
       const queue = await client.listWorkbenchQueue();
       expect(queue.map((item) => item.queueItemId)).toEqual([
-        "td-workbench-verified.md",
-        "td-workbench-review-only.md",
-        "td-workbench-conflicting.md",
+        "spaces/T-0001",
+        "spaces/T-0002",
+        "spaces/T-0003",
+        "spaces/T-0004",
       ]);
 
-      const verified = queue.find((item) => item.queueItemId === "td-workbench-verified.md");
-      const reviewOnly = queue.find((item) => item.queueItemId === "td-workbench-review-only.md");
+      const verified = queue.find((item) => item.queueItemId === "spaces/T-0001");
+      const reviewOnly = queue.find((item) => item.queueItemId === "spaces/T-0002");
       expect(verified).toMatchObject({
         verificationMode: "machine_readable",
         executionModeBlockers: [],
@@ -241,17 +275,44 @@ describe("external workbench control plane", () => {
         executionModeBlockers: ["No machine-readable verification declared."],
       });
 
+      await expect(client.createWorkbenchBatch({
+        name: "Conflicting autonomous batch",
+        queueItemIds: ["spaces/T-0001", "spaces/T-0003"],
+        executionMode: "autonomous",
+      })).rejects.toThrow("Queue items conflict and cannot share a batch");
+
+      await expect(client.createWorkbenchBatch({
+        name: "Review-only autonomous batch",
+        queueItemIds: ["spaces/T-0001", "spaces/T-0002"],
+        executionMode: "autonomous",
+      })).rejects.toThrow("No machine-readable verification declared");
+
+      const supervisedBatch = await client.createWorkbenchBatch({
+        name: "Supervised mixed batch",
+        queueItemIds: ["spaces/T-0001", "spaces/T-0002"],
+        executionMode: "supervised",
+      });
+      expect(supervisedBatch.executionMode).toBe("supervised");
+      expect(supervisedBatch.queueItemIds).toEqual([
+        "spaces/T-0001",
+        "spaces/T-0002",
+      ]);
+
+      await expect(client.setWorkbenchMode({
+        batchId: supervisedBatch.batchId,
+        executionMode: "autonomous",
+      })).rejects.toThrow("No machine-readable verification declared");
+
       const verifiedSupervisedRun = await client.startWorkbenchRun({
-        queueItemId: "td-workbench-verified.md",
+        queueItemId: "spaces/T-0001",
         executionMode: "supervised",
       });
       expect(verifiedSupervisedRun.verificationMode).toBe("machine_readable");
 
-      const upgradedRun = await client.setWorkbenchMode({
+      await expect(client.setWorkbenchMode({
         runId: verifiedSupervisedRun.runId,
         executionMode: "autonomous",
-      });
-      expect(upgradedRun.run?.executionMode).toBe("autonomous");
+      })).rejects.toThrow("Task status is in-progress, not ready");
 
       const cancelledVerifiedRun = await client.cancelWorkbenchRun({
         runId: verifiedSupervisedRun.runId,
@@ -259,7 +320,7 @@ describe("external workbench control plane", () => {
       expect(cancelledVerifiedRun.status).toBe("cancelled");
 
       const reviewRun = await client.startWorkbenchRun({
-        queueItemId: "td-workbench-review-only.md",
+        queueItemId: "spaces/T-0002",
         executionMode: "supervised",
       });
       expect(reviewRun.verificationMode).toBe("review_only");
@@ -280,7 +341,7 @@ describe("external workbench control plane", () => {
       await expect(client.setWorkbenchMode({
         runId: reviewRun.runId,
         executionMode: "autonomous",
-      })).rejects.toThrow("No machine-readable verification declared");
+      })).rejects.toThrow("Task status is in-progress, not ready");
 
       const rejectedReviewRun = await client.rejectWorkbenchStage({
         runId: reviewRun.runId,
@@ -290,7 +351,7 @@ describe("external workbench control plane", () => {
       expect(rejectedReviewRun.status).toBe("cancelled");
 
       const approvedReviewRun = await client.startWorkbenchRun({
-        queueItemId: "td-workbench-review-only.md",
+        queueItemId: "spaces/T-0002",
         executionMode: "supervised",
       });
       const approvedAfterGate = await client.approveWorkbenchStage({
@@ -301,12 +362,12 @@ describe("external workbench control plane", () => {
       expect(approvedAfterGate.currentStage).toBe("execute");
 
       await expect(client.startWorkbenchRun({
-        queueItemId: "td-workbench-review-only.md",
+        queueItemId: "spaces/T-0002",
         executionMode: "autonomous",
-      })).rejects.toThrow("No machine-readable verification declared");
+      })).rejects.toThrow("Task status is in-progress, not ready");
 
       const autonomousVerifiedRun = await client.startWorkbenchRun({
-        queueItemId: "td-workbench-verified.md",
+        queueItemId: "spaces/T-0004",
         executionMode: "autonomous",
       });
       expect(autonomousVerifiedRun.executionMode).toBe("autonomous");
@@ -320,36 +381,8 @@ describe("external workbench control plane", () => {
       const autonomousArtifacts = await client.listWorkbenchArtifacts({ runId: autonomousVerifiedRun.runId });
       expect(autonomousArtifacts.find((artifact) => artifact.kind === "docs")?.contentText).toContain("Status: `not_available`");
       expect(autonomousArtifacts.some((artifact) =>
-        artifact.kind === "verification_log" && artifact.contentText.includes("verified-e2e"),
+        artifact.kind === "verification_log" && artifact.contentText.includes("verified-e2e-second"),
       )).toBe(true);
-
-      await expect(client.createWorkbenchBatch({
-        name: "Conflicting autonomous batch",
-        queueItemIds: ["td-workbench-verified.md", "td-workbench-conflicting.md"],
-        executionMode: "autonomous",
-      })).rejects.toThrow("Queue items conflict and cannot share a batch");
-
-      await expect(client.createWorkbenchBatch({
-        name: "Review-only autonomous batch",
-        queueItemIds: ["td-workbench-verified.md", "td-workbench-review-only.md"],
-        executionMode: "autonomous",
-      })).rejects.toThrow("No machine-readable verification declared");
-
-      const supervisedBatch = await client.createWorkbenchBatch({
-        name: "Supervised mixed batch",
-        queueItemIds: ["td-workbench-verified.md", "td-workbench-review-only.md"],
-        executionMode: "supervised",
-      });
-      expect(supervisedBatch.executionMode).toBe("supervised");
-      expect(supervisedBatch.queueItemIds).toEqual([
-        "td-workbench-verified.md",
-        "td-workbench-review-only.md",
-      ]);
-
-      await expect(client.setWorkbenchMode({
-        batchId: supervisedBatch.batchId,
-        executionMode: "autonomous",
-      })).rejects.toThrow("No machine-readable verification declared");
     } finally {
       try {
         await client?.disconnect();

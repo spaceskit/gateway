@@ -82,6 +82,8 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
       artifacts: state.workbenchArtifactRepo,
       policy: state.workbenchPolicyRepo,
       repoRoot: Bun.env.SPACESKIT_WORKBENCH_REPO_ROOT ?? process.cwd(),
+      workProjectsRoot: Bun.env.SPACESKIT_WORKBENCH_PROJECTS_ROOT,
+      workbenchProjectSlug: Bun.env.SPACESKIT_WORKBENCH_PROJECT_SLUG,
       logger: logger.child({ module: "workbench" }),
       ...(workbenchAgentLoopEnabled
         ? {

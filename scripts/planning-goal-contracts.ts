@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import {
   auditWorkbenchOpenBacklog,
   auditWorkbenchPlanningRepo,
@@ -7,68 +7,36 @@ import {
   type WorkbenchPlanningAuditIssue,
   type WorkbenchPlanningAuditReport,
 } from "../packages/bootstrap/src/services/workbench-service.js";
-import {
-  buildDraftGoalContractMarkdown,
-  deriveDraftGoalContractInput,
-  insertDraftGoalContract,
-  parseGoalContractBlock,
-} from "../packages/bootstrap/src/services/planning-goal-contract.js";
 
 interface ScriptOptions {
   repoRoot: string;
+  workProjectsRoot: string;
+  projectSlug: string;
   check: boolean;
-  writeDrafts: boolean;
   scope: AuditScope;
 }
 
 type AuditScope = "active-queue" | "open-tasks";
 
-interface QueueRow {
-  item: string;
-}
-
 function main(): void {
   const options = parseArgs(process.argv.slice(2));
-  if (!options.check && !options.writeDrafts) {
-    throw new Error("Pass --check or --write-drafts.");
-  }
-  if (options.writeDrafts && options.scope !== "active-queue") {
-    throw new Error("--write-drafts is only supported with --scope active-queue.");
-  }
-
-  const taskPaths = indexTaskFiles(options.repoRoot);
-  let written = 0;
-  let skippedExisting = 0;
-  let skippedNonExecutable = 0;
-
-  if (options.writeDrafts) {
-    const queuePath = join(options.repoRoot, "_planning", "WHAT-TO-DO-NEXT.md");
-    for (const row of parseActiveQueueRows(readFileSync(queuePath, "utf8"))) {
-      const taskPath = taskPaths.get(row.item.toLowerCase());
-      if (!taskPath) {
-        skippedNonExecutable += 1;
-        continue;
-      }
-      const markdown = readFileSync(taskPath, "utf8");
-      if (parseGoalContractBlock(markdown).state !== "missing") {
-        skippedExisting += 1;
-        continue;
-      }
-      const draft = buildDraftGoalContractMarkdown(deriveDraftGoalContractInput(markdown, basename(taskPath)));
-      writeFileSync(taskPath, insertDraftGoalContract(markdown, draft));
-      written += 1;
-    }
+  if (!options.check) {
+    throw new Error("Pass --check. Draft goal_contract generation is no longer supported from the central queue.");
   }
 
   const audit = options.scope === "open-tasks"
-    ? auditWorkbenchOpenBacklog(options.repoRoot)
-    : auditWorkbenchPlanningRepo(options.repoRoot);
+    ? auditWorkbenchOpenBacklog(options.repoRoot, {
+      workProjectsRoot: options.workProjectsRoot,
+      projectSlug: options.projectSlug,
+    })
+    : auditWorkbenchPlanningRepo(options.repoRoot, {
+      workProjectsRoot: options.workProjectsRoot,
+      projectSlug: options.projectSlug,
+    });
   const summary = {
     repoRoot: options.repoRoot,
+    centralTasks: audit.queuePath,
     scope: options.scope,
-    written,
-    skippedExisting,
-    skippedNonExecutable,
     ...openBacklogSummary(audit),
     executableQueueItemCount: audit.executableQueueItemCount,
     nonExecutableRows: audit.nonExecutableRows.length,
@@ -90,8 +58,9 @@ function main(): void {
 
 function parseArgs(argv: string[]): ScriptOptions {
   let repoRoot = findRepoRoot(resolve(join(import.meta.dir, "..", "..")));
+  let workProjectsRoot = process.env.WORK_PROJECTS_ROOT || "/Users/caruso/Documents/work/projects";
+  let projectSlug = process.env.WORKBENCH_PROJECT_SLUG || "spaces";
   let check = false;
-  let writeDrafts = false;
   let scope: AuditScope = "active-queue";
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -108,8 +77,19 @@ function parseArgs(argv: string[]): ScriptOptions {
         check = true;
         break;
       case "--write-drafts":
-        writeDrafts = true;
+        throw new Error("--write-drafts was retired with the central queue cutover.");
+      case "--work-projects-root": {
+        const value = inlineValue ?? argv[++index];
+        if (!value?.trim()) throw new Error("--work-projects-root requires a value.");
+        workProjectsRoot = resolve(value);
         break;
+      }
+      case "--project": {
+        const value = inlineValue ?? argv[++index];
+        if (!value?.trim()) throw new Error("--project requires a value.");
+        projectSlug = value.trim();
+        break;
+      }
       case "--scope": {
         const value = inlineValue ?? argv[++index];
         if (value !== "active-queue" && value !== "open-tasks") {
@@ -123,7 +103,7 @@ function parseArgs(argv: string[]): ScriptOptions {
     }
   }
 
-  return { repoRoot, check, writeDrafts, scope };
+  return { repoRoot, workProjectsRoot, projectSlug, check, scope };
 }
 
 function openBacklogSummary(audit: WorkbenchPlanningAuditReport) {
@@ -139,7 +119,6 @@ function openBacklogSummary(audit: WorkbenchPlanningAuditReport) {
 function collectBlockingIssues(audit: WorkbenchPlanningAuditReport): WorkbenchPlanningAuditIssue[] {
   const issues = [
     ...audit.nonExecutableRows,
-    ...audit.missingMachineReadableVerification,
     ...audit.malformedVerificationBlocks,
     ...audit.goalContractErrors,
   ];
@@ -157,57 +136,10 @@ function isOpenBacklogAudit(audit: WorkbenchPlanningAuditReport): audit is Workb
   return "openTaskCount" in audit;
 }
 
-function parseActiveQueueRows(markdown: string): QueueRow[] {
-  const activeSection = extractSection(markdown, "Active Queue");
-  if (!activeSection) return [];
-  return activeSection
-    .split("\n")
-    .filter((line) => /^\|\s*\d+\s*\|/.test(line))
-    .map((line) => {
-      const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
-      return { item: stripCodeTicks(cells[1] ?? "") };
-    });
-}
-
-function extractSection(content: string, headingTitle: string): string | null {
-  const lines = content.split("\n");
-  const headingIndex = lines.findIndex((line) => line.startsWith("## ") && line.slice(3).trim() === headingTitle);
-  if (headingIndex === -1) return null;
-  const sectionLines: string[] = [];
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (line.startsWith("## ")) break;
-    sectionLines.push(line);
-  }
-  return sectionLines.join("\n").trim() || null;
-}
-
-function indexTaskFiles(repoRoot: string): Map<string, string> {
-  const tasksRoot = join(repoRoot, "_planning", "backlog", "tasks");
-  const result = new Map<string, string>();
-  if (!existsSync(tasksRoot)) return result;
-  const stack = [tasksRoot];
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    for (const entry of readdirSync(current)) {
-      const fullPath = join(current, entry);
-      const stat = statSync(fullPath);
-      if (stat.isDirectory()) {
-        stack.push(fullPath);
-        continue;
-      }
-      if (entry.endsWith(".md")) {
-        result.set(entry.toLowerCase(), fullPath);
-      }
-    }
-  }
-  return result;
-}
-
 function findRepoRoot(startPath: string): string {
   let current = startPath;
   while (true) {
-    if (existsSync(join(current, "_planning", "WHAT-TO-DO-NEXT.md"))) {
+    if (existsSync(join(current, ".git")) || existsSync(join(current, "gateway", "package.json"))) {
       return current;
     }
     const parent = dirname(current);
@@ -224,10 +156,6 @@ function splitInlineFlag(arg: string): [string, string | undefined] {
     return [arg, undefined];
   }
   return [arg.slice(0, equalsIndex), arg.slice(equalsIndex + 1)];
-}
-
-function stripCodeTicks(value: string): string {
-  return value.replace(/^`/, "").replace(/`$/, "").trim();
 }
 
 main();

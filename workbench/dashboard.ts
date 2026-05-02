@@ -14,6 +14,7 @@ import type { WorkbenchLiveMessage } from "./runner-protocol.js";
 import type { WorkbenchRunnerService } from "./runner-service.js";
 
 const REPORTS_DIR = join(import.meta.dir, "reports");
+const PLANNING_TASKS_DIR = "/Users/caruso/Documents/work/projects/spaces/tasks";
 const PORT = 19321;
 const HOST = "127.0.0.1";
 
@@ -41,6 +42,7 @@ interface DashboardOptions {
   runner?: WorkbenchRunnerService;
   analyst?: WorkbenchAnalystService;
   planningRepoRoot?: string;
+  planningTasksRoot?: string;
   port?: number;
   host?: string;
 }
@@ -127,11 +129,11 @@ async function loadReport(filename: string, reportsDir: string): Promise<Workben
 }
 
 async function loadPlanningTask(
-  repoRoot: string,
+  tasksRoot: string,
   queueItemId: string,
 ): Promise<{ queueItemId: string; taskFilePath: string; markdown: string } | null> {
-  if (queueItemId.includes("..") || queueItemId.includes("/")) return null;
-  const taskPaths = await indexPlanningTaskFiles(repoRoot);
+  if (isPathTraversalId(queueItemId)) return null;
+  const taskPaths = await indexPlanningTaskFiles(tasksRoot);
   const taskFilePath = taskPaths.get(queueItemId.toLowerCase());
   if (!taskFilePath) return null;
   try {
@@ -145,8 +147,24 @@ async function loadPlanningTask(
   }
 }
 
-async function indexPlanningTaskFiles(repoRoot: string): Promise<Map<string, string>> {
-  const tasksRoot = join(repoRoot, "_planning", "backlog", "tasks");
+function isPathTraversalId(queueItemId: string): boolean {
+  return queueItemId
+    .split(/[\\/]+/)
+    .some((segment) => segment === "..");
+}
+
+function parsePlanningTaskId(markdown: string): string | null {
+  const frontmatter = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!frontmatter) return null;
+  for (const line of frontmatter[1].split(/\r?\n/)) {
+    const match = line.match(/^id:\s*(.+?)\s*$/);
+    if (!match) continue;
+    return match[1].replace(/^['"]|['"]$/g, "").trim() || null;
+  }
+  return null;
+}
+
+async function indexPlanningTaskFiles(tasksRoot: string): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   const stack = [tasksRoot];
   while (stack.length > 0) {
@@ -170,7 +188,14 @@ async function indexPlanningTaskFiles(repoRoot: string): Promise<Map<string, str
         continue;
       }
       if (entry.endsWith(".md")) {
-        result.set(entry.toLowerCase(), fullPath);
+        try {
+          const taskId = parsePlanningTaskId(await readFile(fullPath, "utf8"));
+          if (taskId) {
+            result.set(taskId.toLowerCase(), fullPath);
+          }
+        } catch {
+          continue;
+        }
       }
     }
   }
@@ -1738,6 +1763,7 @@ export function startDashboard(input: string | DashboardOptions = REPORTS_DIR): 
   const runner = options.runner;
   const analyst = options.analyst;
   const planningRepoRoot = resolve(options.planningRepoRoot ?? join(import.meta.dir, "..", ".."));
+  const planningTasksRoot = resolve(options.planningTasksRoot ?? PLANNING_TASKS_DIR);
   const port = options.port ?? PORT;
   const host = options.host ?? HOST;
 
@@ -1766,7 +1792,10 @@ export function startDashboard(input: string | DashboardOptions = REPORTS_DIR): 
 
       if (url.pathname === "/api/planning/audit" && req.method === "GET") {
         try {
-          return Response.json(auditWorkbenchPlanningRepo(planningRepoRoot));
+          return Response.json(auditWorkbenchPlanningRepo(planningRepoRoot, {
+            workProjectsRoot: resolve(planningTasksRoot, "..", ".."),
+            projectSlug: resolve(planningTasksRoot, "..").split(/[\\/]/).pop() ?? "spaces",
+          }));
         } catch (error) {
           return responseError(error, 500);
         }
@@ -1774,7 +1803,7 @@ export function startDashboard(input: string | DashboardOptions = REPORTS_DIR): 
 
       if (url.pathname.startsWith("/api/planning/tasks/") && req.method === "GET") {
         const queueItemId = decodeURIComponent(url.pathname.slice("/api/planning/tasks/".length));
-        const task = await loadPlanningTask(planningRepoRoot, queueItemId);
+        const task = await loadPlanningTask(planningTasksRoot, queueItemId);
         if (!task) {
           return Response.json({ error: "Planning task not found" }, { status: 404 });
         }

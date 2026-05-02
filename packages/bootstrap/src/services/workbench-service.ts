@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -74,7 +74,17 @@ type WorkbenchServiceErrorCode =
   | "PERMISSION_DENIED";
 
 interface ParsedTaskMetadata {
+  id: string;
   title: string;
+  status: string;
+  priority?: string;
+  owner?: string;
+  autonomous: boolean;
+  dependsOn: string[];
+  summary?: string;
+  sourceFile?: string;
+  claimedAt?: string;
+  claimExpiresAt?: string;
   delegation: string;
   hasExplicitDelegationMetadata: boolean;
   parallelKeys: string[];
@@ -88,6 +98,13 @@ interface ParsedTaskMetadata {
   verificationBlockerMessage?: string;
   goalContractErrors: GoalContractIssue[];
   goalContractWarnings: GoalContractIssue[];
+}
+
+interface CentralTaskRecord {
+  path: string;
+  metadata: ParsedTaskMetadata;
+  body: string;
+  frontmatter: Map<string, string>;
 }
 
 type WorkbenchExecutionAgent = NonNullable<CreateSpaceInput["initialAgents"]>[number];
@@ -167,6 +184,8 @@ export interface WorkbenchServiceOptions {
   repoRoot: string;
   logger?: Logger;
   now?: () => Date;
+  workProjectsRoot?: string;
+  workbenchProjectSlug?: string;
   worktreeParentRoot?: string;
   verificationCommandTimeoutMs?: number;
   verificationExecutor?: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
@@ -191,6 +210,8 @@ export class WorkbenchService {
   private readonly now: () => Date;
   private readonly logger: Logger | null;
   private readonly repoRoot: string;
+  private readonly workProjectsRoot: string;
+  private readonly workbenchProjectSlug: string;
   private readonly worktreeParentRoot: string;
   private readonly verificationCommandTimeoutMs: number;
   private readonly verificationExecutor: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
@@ -200,6 +221,8 @@ export class WorkbenchService {
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? null;
     this.repoRoot = resolvePlanningRepoRoot(resolve(options.repoRoot), this.logger);
+    this.workProjectsRoot = resolve(options.workProjectsRoot ?? "/Users/caruso/Documents/work/projects");
+    this.workbenchProjectSlug = options.workbenchProjectSlug ?? "spaces";
     this.worktreeParentRoot = resolve(
       options.worktreeParentRoot
         ?? join(dirname(this.repoRoot), ".spaceskit-workbench", basename(this.repoRoot)),
@@ -359,6 +382,7 @@ export class WorkbenchService {
       startedAt: this.now().toISOString(),
     });
 
+    this.updateCentralTaskStatus(queueItem, "in-progress", `Workbench run ${runId} started in ${executionMode} mode.`);
     this.persistRunArtifacts(row, queueItem, worktree, verificationSuites, executionMode);
 
     if (batch && batch.status === "draft") {
@@ -536,6 +560,16 @@ export class WorkbenchService {
         completedAt,
       } satisfies WorkbenchLandingResultPayload),
     });
+    const queueItem = this.resolveQueueItems([run.queue_item_id])[0];
+    if (queueItem) {
+      this.updateCentralTaskStatus(
+        queueItem,
+        failedSuite ? "blocked" : "review",
+        failedSuite
+          ? `Workbench run ${run.run_id} failed verification: ${failedSuite.name}.`
+          : `Workbench run ${run.run_id} completed verification and is ready for review.`,
+      );
+    }
     return updated ?? run;
   }
 
@@ -695,6 +729,10 @@ export class WorkbenchService {
           completedAt: this.now().toISOString(),
         } satisfies WorkbenchLandingResultPayload),
       }) ?? run;
+      const queueItem = this.resolveQueueItems([run.queue_item_id])[0];
+      if (queueItem) {
+        this.updateCentralTaskStatus(queueItem, "blocked", `Workbench run ${run.run_id} failed before verification: ${message}`);
+      }
       this.persistAgentLoopReportArtifact(run.run_id, "failed", message);
       return { row, continueToVerification: false };
     }
@@ -1073,33 +1111,18 @@ export class WorkbenchService {
   }
 
   private loadQueueItems(): WorkbenchQueueItemPayload[] {
-    const queuePath = join(this.repoRoot, "_planning", "WHAT-TO-DO-NEXT.md");
-    if (!existsSync(queuePath)) {
-      this.logger?.warn("Workbench queue file not found", { queuePath });
-      return [];
-    }
-    const markdown = readFileSync(queuePath, "utf8");
-    const taskPaths = this.indexTaskFiles();
+    const tasks = this.loadCentralTasks();
     const items: WorkbenchQueueItemPayload[] = [];
-    for (const row of parseQueueTable(markdown)) {
-      const taskFilePath = taskPaths.get(row.item.toLowerCase());
-      if (!taskFilePath) {
-        this.logger?.warn("Skipping non-executable workbench queue row", {
-          queueItemId: row.item,
-          queueIndex: row.queueIndex,
-          queuePath,
-        });
-        continue;
-      }
-      const taskMetadata = parseTaskFile(taskFilePath);
+    for (const [index, task] of tasks.entries()) {
+      const taskMetadata = task.metadata;
       items.push({
-        queueItemId: row.item,
-        queueIndex: row.queueIndex,
+        queueItemId: taskMetadata.id,
+        queueIndex: index + 1,
         title: taskMetadata.title,
-        type: row.type,
-        status: row.status,
-        nextAction: row.nextAction,
-        taskFilePath,
+        type: task.frontmatter.get("spaces-item-type") ?? taskMetadata.priority ?? "task",
+        status: taskMetadata.status,
+        nextAction: taskMetadata.summary ?? extractNextAction(task.body) ?? taskMetadata.title,
+        taskFilePath: task.path,
         delegation: taskMetadata.delegation,
         parallelKeys: taskMetadata.parallelKeys,
         aiShippable: taskMetadata.aiShippable,
@@ -1116,8 +1139,32 @@ export class WorkbenchService {
     return items;
   }
 
-  private indexTaskFiles(): Map<string, string> {
-    return indexTaskFiles(this.repoRoot);
+  private loadCentralTasks(): CentralTaskRecord[] {
+    return loadCentralTasks(this.workProjectsRoot, this.workbenchProjectSlug, this.now(), this.logger);
+  }
+
+  private updateCentralTaskStatus(
+    queueItem: WorkbenchQueueItemPayload,
+    status: "in-progress" | "review" | "blocked",
+    logMessage: string,
+  ): void {
+    try {
+      updateCentralTaskFile(queueItem.taskFilePath, {
+        status,
+        updated: this.now().toISOString().slice(0, 10),
+        owner: status === "in-progress" ? "agent" : undefined,
+        claimedAt: status === "in-progress" ? this.now().toISOString() : undefined,
+        claimExpiresAt: status === "in-progress" ? new Date(this.now().getTime() + 2 * 60 * 60 * 1000).toISOString() : undefined,
+        logMessage,
+        nowIso: this.now().toISOString(),
+      });
+    } catch (error) {
+      this.logger?.warn("Failed to update central Workbench task status", {
+        queueItemId: queueItem.queueItemId,
+        taskFilePath: queueItem.taskFilePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private assertBatchConflictFree(items: WorkbenchQueueItemPayload[]): void {
@@ -1168,6 +1215,13 @@ export class WorkbenchService {
     }
     if (queueItem.delegation !== "autonomous") {
       throw new WorkbenchServiceError("FAILED_PRECONDITION", `Queue item does not allow autonomous execution: ${queueItem.queueItemId}`);
+    }
+    const centralBlocker = queueItem.executionModeBlockers.find((blocker) =>
+      blocker.startsWith("Task status is ")
+      || blocker.startsWith("Unmet dependencies:")
+      || blocker === "Task has an active unexpired claim.");
+    if (centralBlocker) {
+      throw new WorkbenchServiceError("FAILED_PRECONDITION", centralBlocker);
     }
     if (queueItem.verificationMode !== "machine_readable") {
       throw new WorkbenchServiceError(
@@ -1247,7 +1301,7 @@ export class WorkbenchService {
     verificationSuites: WorkbenchVerificationSuitePayload[],
     executionMode: WorkbenchExecutionMode,
   ): void {
-    const queuePath = join(this.repoRoot, "_planning", "WHAT-TO-DO-NEXT.md");
+    const queuePath = centralTasksRoot(this.workProjectsRoot, this.workbenchProjectSlug);
     this.options.artifacts.create({
       artifactId: `wb-artifact-${randomUUID()}`,
       runId: row.run_id,
@@ -1405,6 +1459,224 @@ function isWorkbenchAgentTurnPaused(value: unknown): value is WorkbenchAgentTurn
     && typeof candidate.reason === "string";
 }
 
+function centralTasksRoot(workProjectsRoot: string, projectSlug: string): string {
+  return join(workProjectsRoot, projectSlug, "tasks");
+}
+
+function loadCentralTasks(
+  workProjectsRoot: string,
+  projectSlug: string,
+  now: Date,
+  logger: Logger | null,
+): CentralTaskRecord[] {
+  const root = centralTasksRoot(workProjectsRoot, projectSlug);
+  if (!existsSync(root)) {
+    logger?.warn("Workbench central task directory not found", { tasksRoot: root });
+    return [];
+  }
+  return readdirSync(root)
+    .filter((entry) => /^T-\d+\.md$/i.test(entry))
+    .sort((left, right) => left.localeCompare(right))
+    .map((entry) => join(root, entry))
+    .map((taskPath) => parseCentralTaskFile(taskPath, projectSlug, now));
+}
+
+function parseCentralTaskFile(taskFilePath: string, projectSlug: string, now: Date): CentralTaskRecord {
+  const content = readFileSync(taskFilePath, "utf8");
+  const frontmatter = parseFrontmatter(content);
+  const body = stripFrontmatter(content);
+  const id = requiredFrontmatter(frontmatter, "id", `${projectSlug}/${basename(taskFilePath, ".md")}`);
+  const title = stripQuotes(requiredFrontmatter(frontmatter, "title", extractTaskTitle(body) ?? basename(taskFilePath, ".md")));
+  const status = normalizeCentralStatus(requiredFrontmatter(frontmatter, "status", "ready"));
+  const autonomous = parseBoolean(frontmatter.get("autonomous"));
+  const verification = extractMachineReadableVerification(body);
+  const dependsOn = parseFrontmatterList(frontmatter.get("depends-on"));
+  const legacyMetadata = collectMetadata(body);
+  const products = splitMetadataList(legacyMetadata.get("products") ?? frontmatter.get("products") ?? frontmatter.get("tags") ?? projectSlug);
+  const parallelKeys = splitMetadataList(legacyMetadata.get("parallel") ?? frontmatter.get("parallel") ?? frontmatter.get("tags") ?? products.join(","));
+  const delegation = autonomous ? "autonomous" : "supervised";
+  const hasActiveClaim = hasUnexpiredClaim(frontmatter.get("claim-expires-at"), now);
+  const unmetDependencies = dependsOn.filter((dependency) => dependency.trim().length > 0);
+  const executionModeBlockers = collectCentralExecutionModeBlockers({
+    status,
+    autonomous,
+    verificationMode: verification.mode,
+    verificationBlockerMessage: verification.blockerMessage,
+    unmetDependencies,
+    hasActiveClaim,
+  });
+  const goalContract = validateGoalContractMarkdown({
+    markdown: body,
+    expectedGoalId: sourceFileGoalId(frontmatter.get("source-file")) ?? (id.includes("/") ? id.split("/").pop()! : id),
+    metadata: {
+      owner: legacyMetadata.get("owner"),
+      status: legacyMetadata.get("status"),
+      delegation: legacyMetadata.get("delegation") ?? delegation,
+      aiShippable: legacyMetadata.has("ai-shippable")
+        ? normalizeMetadataBoolean(legacyMetadata.get("ai-shippable"))
+        : autonomous,
+      products,
+    },
+    verificationCommands: verification.commands,
+  });
+  return {
+    path: taskFilePath,
+    body,
+    frontmatter,
+    metadata: {
+      id,
+      title,
+      status,
+      priority: frontmatter.get("priority"),
+      owner: frontmatter.get("owner"),
+      autonomous,
+      dependsOn,
+      summary: stripQuotes(frontmatter.get("summary") ?? "") || undefined,
+      sourceFile: frontmatter.get("source-file"),
+      claimedAt: frontmatter.get("claimed-at"),
+      claimExpiresAt: frontmatter.get("claim-expires-at"),
+      delegation,
+      hasExplicitDelegationMetadata: true,
+      parallelKeys: parallelKeys.length > 0 ? parallelKeys : [projectSlug],
+      aiShippable: autonomous,
+      hasExplicitAiShippableMetadata: true,
+      products: products.length > 0 ? products : [projectSlug],
+      verificationMode: verification.mode,
+      verificationCommands: verification.commands,
+      executionModeBlockers,
+      malformedVerificationBlock: verification.malformed,
+      verificationBlockerMessage: verification.blockerMessage,
+      goalContractErrors: goalContract.errors.filter((issue) => issue.code === "malformed_contract"),
+      goalContractWarnings: goalContract.warnings,
+    },
+  };
+}
+
+function sourceFileGoalId(sourceFile: string | undefined): string | null {
+  if (!sourceFile) return null;
+  return basename(stripQuotes(sourceFile), ".md");
+}
+
+function normalizeMetadataBoolean(value: string | undefined): boolean {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized === "yes" || normalized === "true";
+}
+
+function parseFrontmatter(content: string): Map<string, string> {
+  const result = new Map<string, string>();
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!match) return result;
+  for (const line of match[1]!.split("\n")) {
+    const keyValue = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!keyValue) continue;
+    result.set(keyValue[1]!.trim(), keyValue[2]!.trim());
+  }
+  return result;
+}
+
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n?/, "");
+}
+
+function requiredFrontmatter(frontmatter: Map<string, string>, key: string, fallback: string): string {
+  return stripQuotes(frontmatter.get(key) ?? fallback).trim();
+}
+
+function stripQuotes(value: string): string {
+  return value.replace(/^["']|["']$/g, "");
+}
+
+function parseBoolean(value: string | undefined): boolean {
+  return (value ?? "").trim().toLowerCase() === "true";
+}
+
+function normalizeCentralStatus(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function parseFrontmatterList(value: string | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (trimmed === "[]") return [];
+  return trimmed
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .split(",")
+    .map((entry) => stripQuotes(entry.trim()))
+    .filter(Boolean);
+}
+
+function hasUnexpiredClaim(claimExpiresAt: string | undefined, now: Date): boolean {
+  if (!claimExpiresAt) return false;
+  const expiresAt = Date.parse(stripQuotes(claimExpiresAt));
+  return Number.isFinite(expiresAt) && expiresAt > now.getTime();
+}
+
+function extractNextAction(body: string): string | null {
+  const match = body.match(/^Next action:\s*(.+)$/im);
+  return match?.[1]?.trim() ?? null;
+}
+
+function collectCentralExecutionModeBlockers(input: {
+  status: string;
+  autonomous: boolean;
+  verificationMode: WorkbenchVerificationModePayload;
+  verificationBlockerMessage?: string;
+  unmetDependencies: string[];
+  hasActiveClaim: boolean;
+}): string[] {
+  const blockers: string[] = [];
+  if (input.status !== "ready") {
+    blockers.push(`Task status is ${input.status}, not ready.`);
+  }
+  if (!input.autonomous) {
+    blockers.push("autonomous is not true.");
+  }
+  if (input.unmetDependencies.length > 0) {
+    blockers.push(`Unmet dependencies: ${input.unmetDependencies.join(", ")}.`);
+  }
+  if (input.hasActiveClaim) {
+    blockers.push("Task has an active unexpired claim.");
+  }
+  if (input.verificationMode !== "machine_readable") {
+    blockers.push(input.verificationBlockerMessage ?? "No machine-readable verification declared.");
+  }
+  return blockers;
+}
+
+function updateCentralTaskFile(taskFilePath: string, input: {
+  status: "in-progress" | "review" | "blocked";
+  updated: string;
+  owner?: string;
+  claimedAt?: string;
+  claimExpiresAt?: string;
+  logMessage: string;
+  nowIso: string;
+}): void {
+  const content = readFileSync(taskFilePath, "utf8");
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!match) return;
+  const body = content.slice(match[0].length);
+  const lines = match[1]!.split("\n");
+  const setLine = (key: string, value: string | undefined) => {
+    if (value === undefined) return;
+    const index = lines.findIndex((line) => line.startsWith(`${key}:`));
+    const next = `${key}: ${value}`;
+    if (index >= 0) lines[index] = next;
+    else lines.push(next);
+  };
+  setLine("status", input.status);
+  setLine("updated", input.updated);
+  setLine("owner", input.owner);
+  setLine("claimed-at", input.claimedAt);
+  setLine("claim-expires-at", input.claimExpiresAt);
+  const logEntry = `- ${input.nowIso} - ${input.logMessage}`;
+  const nextBody = body.includes("\n## Log\n")
+    ? body.replace(/\n## Log\n/, `\n## Log\n\n${logEntry}\n`)
+    : `${body.trimEnd()}\n\n## Log\n\n${logEntry}\n`;
+  writeFileSync(taskFilePath, `---\n${lines.join("\n")}\n---\n\n${nextBody.replace(/^\n+/, "")}`);
+}
+
 function parseTaskFile(taskFilePath: string): ParsedTaskMetadata {
   const content = readFileSync(taskFilePath, "utf8");
   const metadata = collectMetadata(content);
@@ -1435,7 +1707,11 @@ function parseTaskFile(taskFilePath: string): ParsedTaskMetadata {
     verificationBlockerMessage: verification.blockerMessage,
   }).concat(goalContract.errors.map((issue) => `Goal contract: ${issue.message}`));
   return {
+    id: basename(taskFilePath),
     title,
+    status: metadata.get("status") ?? "planned",
+    autonomous: delegation === "autonomous",
+    dependsOn: [],
     delegation,
     hasExplicitDelegationMetadata,
     parallelKeys: parallelKeys.length > 0 ? parallelKeys : products,
@@ -1674,10 +1950,22 @@ function parseJson<T>(raw: string): T | null {
 
 export function auditWorkbenchPlanningRepo(
   startPath: string,
-  logger: Logger | null = null,
+  loggerOrOptions: Logger | null | { logger?: Logger | null; workProjectsRoot?: string; projectSlug?: string; now?: Date } = null,
 ): WorkbenchPlanningAuditReport {
+  const logger = typeof loggerOrOptions === "object" && loggerOrOptions && ("workProjectsRoot" in loggerOrOptions || "projectSlug" in loggerOrOptions || "now" in loggerOrOptions)
+    ? loggerOrOptions.logger ?? null
+    : loggerOrOptions as Logger | null;
+  const workProjectsRoot = typeof loggerOrOptions === "object" && loggerOrOptions && "workProjectsRoot" in loggerOrOptions
+    ? loggerOrOptions.workProjectsRoot ?? "/Users/caruso/Documents/work/projects"
+    : "/Users/caruso/Documents/work/projects";
+  const projectSlug = typeof loggerOrOptions === "object" && loggerOrOptions && "projectSlug" in loggerOrOptions
+    ? loggerOrOptions.projectSlug ?? "spaces"
+    : "spaces";
+  const now = typeof loggerOrOptions === "object" && loggerOrOptions && "now" in loggerOrOptions
+    ? loggerOrOptions.now ?? new Date()
+    : new Date();
   const repoRoot = resolvePlanningRepoRoot(resolve(startPath), logger);
-  const queuePath = join(repoRoot, "_planning", "WHAT-TO-DO-NEXT.md");
+  const queuePath = centralTasksRoot(workProjectsRoot, projectSlug);
   if (!existsSync(queuePath)) {
     return {
       repoRoot,
@@ -1691,55 +1979,72 @@ export function auditWorkbenchPlanningRepo(
     };
   }
 
-  const taskPaths = indexTaskFiles(repoRoot);
+  const tasks = loadCentralTasks(workProjectsRoot, projectSlug, now, logger);
+  const seenIds = new Set<string>();
   const nonExecutableRows: WorkbenchPlanningAuditIssue[] = [];
   const missingMachineReadableVerification: WorkbenchPlanningAuditIssue[] = [];
   const malformedVerificationBlocks: WorkbenchPlanningAuditIssue[] = [];
   const goalContractErrors: WorkbenchPlanningAuditIssue[] = [];
   const goalContractWarnings: WorkbenchPlanningAuditIssue[] = [];
 
-  for (const row of parseQueueTable(readFileSync(queuePath, "utf8"))) {
-    const taskFilePath = taskPaths.get(row.item.toLowerCase());
-    if (!taskFilePath) {
+  for (const [index, task] of tasks.entries()) {
+    const taskMetadata = task.metadata;
+    const queueIndex = index + 1;
+    if (!taskMetadata.id.startsWith(`${projectSlug}/`)) {
       nonExecutableRows.push({
-        queueIndex: row.queueIndex,
-        queueItemId: row.item,
-        message: "Queue row is not an executable task file.",
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
+        message: `Task id must be namespaced as ${projectSlug}/T-NNNN.`,
       });
-      continue;
     }
-
-    const taskMetadata = parseTaskFile(taskFilePath);
+    if (seenIds.has(taskMetadata.id)) {
+      nonExecutableRows.push({
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
+        message: "Duplicate central task id.",
+      });
+    }
+    seenIds.add(taskMetadata.id);
+    if (!["ready", "in-progress", "blocked", "review", "done", "dropped"].includes(taskMetadata.status)) {
+      nonExecutableRows.push({
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
+        message: `Invalid central task status: ${taskMetadata.status}.`,
+      });
+    }
     if (taskMetadata.verificationMode !== "machine_readable") {
       missingMachineReadableVerification.push({
-        queueIndex: row.queueIndex,
-        queueItemId: row.item,
-        taskFilePath,
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
         message: taskMetadata.verificationBlockerMessage ?? "No machine-readable verification declared.",
       });
     }
     if (taskMetadata.malformedVerificationBlock) {
       malformedVerificationBlocks.push({
-        queueIndex: row.queueIndex,
-        queueItemId: row.item,
-        taskFilePath,
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
         message: taskMetadata.verificationBlockerMessage ?? "Machine-readable verification block is malformed.",
       });
     }
     for (const issue of taskMetadata.goalContractErrors) {
       goalContractErrors.push({
-        queueIndex: row.queueIndex,
-        queueItemId: row.item,
-        taskFilePath,
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
         message: issue.message,
         code: issue.code,
       });
     }
     for (const issue of taskMetadata.goalContractWarnings) {
       goalContractWarnings.push({
-        queueIndex: row.queueIndex,
-        queueItemId: row.item,
-        taskFilePath,
+        queueIndex,
+        queueItemId: taskMetadata.id,
+        taskFilePath: task.path,
         message: issue.message,
         code: issue.code,
       });
@@ -1749,9 +2054,7 @@ export function auditWorkbenchPlanningRepo(
   return {
     repoRoot,
     queuePath,
-    executableQueueItemCount: parseQueueTable(readFileSync(queuePath, "utf8"))
-      .filter((row) => taskPaths.has(row.item.toLowerCase()))
-      .length,
+    executableQueueItemCount: tasks.length,
     nonExecutableRows,
     missingMachineReadableVerification,
     malformedVerificationBlocks,
@@ -1762,97 +2065,26 @@ export function auditWorkbenchPlanningRepo(
 
 export function auditWorkbenchOpenBacklog(
   startPath: string,
-  logger: Logger | null = null,
+  loggerOrOptions: Logger | null | { logger?: Logger | null; workProjectsRoot?: string; projectSlug?: string; now?: Date } = null,
 ): WorkbenchOpenBacklogAuditReport {
-  const activeAudit = auditWorkbenchPlanningRepo(startPath, logger);
-  const queueRows = existsSync(activeAudit.queuePath)
-    ? parseQueueTable(readFileSync(activeAudit.queuePath, "utf8"))
-    : [];
-  const queuedTaskIds = new Set(queueRows.map((row) => row.item.toLowerCase()));
-  const openTaskPaths = Array.from(indexOpenTaskFiles(activeAudit.repoRoot).entries())
-    .sort(([left], [right]) => left.localeCompare(right));
-
-  const unqueuedOpenTasks: WorkbenchPlanningAuditIssue[] = [];
-  const missingMachineReadableVerification: WorkbenchPlanningAuditIssue[] = [];
-  const malformedVerificationBlocks: WorkbenchPlanningAuditIssue[] = [];
-  const goalContractErrors: WorkbenchPlanningAuditIssue[] = [];
-  const goalContractWarnings: WorkbenchPlanningAuditIssue[] = [];
-  const missingExplicitDelegationMetadata: WorkbenchPlanningAuditIssue[] = [];
-  const missingExplicitAiShippableMetadata: WorkbenchPlanningAuditIssue[] = [];
-
-  for (const [taskFileName, taskFilePath] of openTaskPaths) {
-    const queueItemId = basename(taskFilePath);
-    const taskMetadata = parseTaskFile(taskFilePath);
-    if (!queuedTaskIds.has(taskFileName)) {
-      unqueuedOpenTasks.push({
-        queueItemId,
-        taskFilePath,
-        message: "Open task file is not present in the active Workbench queue.",
-      });
-    }
-    if (!taskMetadata.hasExplicitDelegationMetadata) {
-      missingExplicitDelegationMetadata.push({
-        queueItemId,
-        taskFilePath,
-        message: "Open task is missing explicit Delegation metadata.",
-      });
-    }
-    if (!taskMetadata.hasExplicitAiShippableMetadata) {
-      missingExplicitAiShippableMetadata.push({
-        queueItemId,
-        taskFilePath,
-        message: "Open task is missing explicit AI-Shippable metadata.",
-      });
-    }
-    if (taskMetadata.verificationMode !== "machine_readable") {
-      missingMachineReadableVerification.push({
-        queueItemId,
-        taskFilePath,
-        message: taskMetadata.verificationBlockerMessage ?? "No machine-readable verification declared.",
-      });
-    }
-    if (taskMetadata.malformedVerificationBlock) {
-      malformedVerificationBlocks.push({
-        queueItemId,
-        taskFilePath,
-        message: taskMetadata.verificationBlockerMessage ?? "Machine-readable verification block is malformed.",
-      });
-    }
-    for (const issue of taskMetadata.goalContractErrors) {
-      goalContractErrors.push({
-        queueItemId,
-        taskFilePath,
-        message: issue.message,
-        code: issue.code,
-      });
-    }
-    for (const issue of taskMetadata.goalContractWarnings) {
-      goalContractWarnings.push({
-        queueItemId,
-        taskFilePath,
-        message: issue.message,
-        code: issue.code,
-      });
-    }
-  }
-
+  const activeAudit = auditWorkbenchPlanningRepo(startPath, loggerOrOptions);
   return {
     ...activeAudit,
-    openTaskCount: openTaskPaths.length,
-    unqueuedOpenTasks,
-    missingMachineReadableVerification,
-    malformedVerificationBlocks,
-    goalContractErrors,
-    goalContractWarnings,
-    missingExplicitDelegationMetadata,
-    missingExplicitAiShippableMetadata,
+    openTaskCount: activeAudit.executableQueueItemCount,
+    unqueuedOpenTasks: [],
+    missingMachineReadableVerification: activeAudit.missingMachineReadableVerification,
+    malformedVerificationBlocks: activeAudit.malformedVerificationBlocks,
+    goalContractErrors: activeAudit.goalContractErrors,
+    goalContractWarnings: activeAudit.goalContractWarnings,
+    missingExplicitDelegationMetadata: [],
+    missingExplicitAiShippableMetadata: [],
   };
 }
 
 function resolvePlanningRepoRoot(startPath: string, logger: Logger | null): string {
   let current = startPath;
   while (true) {
-    if (existsSync(join(current, "_planning", "WHAT-TO-DO-NEXT.md"))) {
+    if (existsSync(join(current, ".git")) || existsSync(join(current, "gateway", "package.json"))) {
       return current;
     }
     const parent = dirname(current);

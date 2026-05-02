@@ -25,13 +25,13 @@ function makeMessage<T>(type: string, payload: T): GatewayMessage<T> {
 
 function makeWorkbenchQueueItem(overrides: Record<string, unknown> = {}): any {
   return {
-    queueItemId: "td-workbench-autonomous.md",
+    queueItemId: "spaces/T-0001",
     queueIndex: 1,
-    title: "td-workbench-autonomous",
+    title: "spaces/T-0001",
     type: "TD",
     status: "Planned",
     nextAction: "Land the first slice.",
-    taskFilePath: "/repo/_planning/backlog/tasks/td-workbench-autonomous.md",
+    taskFilePath: "/Users/caruso/Documents/work/projects/spaces/tasks/T-0001.md",
     delegation: "autonomous",
     parallelKeys: ["gateway"],
     aiShippable: true,
@@ -56,7 +56,7 @@ function makeWorkbenchBatch(overrides: Record<string, unknown> = {}): any {
     name: "Gateway batch",
     status: "draft",
     executionMode: "supervised",
-    queueItemIds: ["td-workbench-autonomous.md"],
+    queueItemIds: ["spaces/T-0001"],
     createdByPrincipalId: "principal-owner",
     createdAt: now,
     updatedAt: now,
@@ -69,15 +69,15 @@ function makeWorkbenchRun(overrides: Record<string, unknown> = {}): any {
   return {
     runId: "run-1",
     batchId: "batch-1",
-    queueItemId: "td-workbench-autonomous.md",
-    queueItemPath: "/repo/_planning/backlog/tasks/td-workbench-autonomous.md",
+    queueItemId: "spaces/T-0001",
+    queueItemPath: "/Users/caruso/Documents/work/projects/spaces/tasks/T-0001.md",
     status: "awaiting_review",
     currentStage: "review_gate",
     executionMode: "supervised",
     approvalState: "pending",
     worktree: {
       path: "/tmp/workbench/run-1",
-      branchName: "workbench/td-workbench-autonomous-run-1",
+      branchName: "workbench/spaces-t-0001-run-1",
       baseBranchName: "main",
       createdAt: now,
     },
@@ -200,7 +200,7 @@ describe("MessageRouter workbench handlers", () => {
         },
         retryRun: async (input: any) => {
           calls.retryRun.push(input);
-          return makeWorkbenchRun({ runId: "run-retry", queueItemId: "td-workbench-autonomous.md" });
+          return makeWorkbenchRun({ runId: "run-retry", queueItemId: "spaces/T-0001" });
         },
         cancelRun: async (input: any) => {
           calls.cancelRun.push(input);
@@ -255,14 +255,14 @@ describe("MessageRouter workbench handlers", () => {
 
     expect((await router.handle(
       client,
-      makeMessage(MessageTypes.WORKBENCH_GET_QUEUE_ITEM, { queueItemId: "td-workbench-autonomous.md" }),
+      makeMessage(MessageTypes.WORKBENCH_GET_QUEUE_ITEM, { queueItemId: "spaces/T-0001" }),
     ))?.type).toBe(MessageTypes.WORKBENCH_GET_QUEUE_ITEM);
 
     expect((await router.handle(
       client,
       makeMessage(MessageTypes.WORKBENCH_CREATE_BATCH, {
         name: "Gateway batch",
-        queueItemIds: ["td-workbench-autonomous.md"],
+        queueItemIds: ["spaces/T-0001"],
         executionMode: "supervised",
       }),
     ))?.type).toBe(MessageTypes.WORKBENCH_CREATE_BATCH);
@@ -279,7 +279,7 @@ describe("MessageRouter workbench handlers", () => {
 
     const startRunResponse = await router.handle(
       client,
-      makeMessage(MessageTypes.WORKBENCH_START_RUN, { queueItemId: "td-workbench-autonomous.md" }),
+      makeMessage(MessageTypes.WORKBENCH_START_RUN, { queueItemId: "spaces/T-0001" }),
     );
     expect(startRunResponse?.type).toBe(MessageTypes.WORKBENCH_START_RUN);
     expect((startRunResponse?.payload as any)?.run).toMatchObject({
@@ -371,7 +371,7 @@ describe("MessageRouter workbench handlers", () => {
 
     const response = await router.handle(
       makeClient({ publicKey: undefined }),
-      makeMessage(MessageTypes.WORKBENCH_START_RUN, { queueItemId: "td-workbench-autonomous.md" }),
+      makeMessage(MessageTypes.WORKBENCH_START_RUN, { queueItemId: "spaces/T-0001" }),
     );
 
     expect(response?.type).toBe(MessageTypes.ERROR);

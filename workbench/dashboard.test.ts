@@ -80,6 +80,7 @@ describe("workbench dashboard", () => {
   let db: Database;
   let reportsDir: string;
   let planningRepoRoot: string;
+  let planningTasksRoot: string;
   let runner: WorkbenchRunnerService;
   let analyst: WorkbenchAnalystService;
   let dashboard: { port: number; stop: () => void } | null;
@@ -88,23 +89,21 @@ describe("workbench dashboard", () => {
     db = new Database(":memory:");
     reportsDir = join(tmpdir(), `workbench-dashboard-test-${crypto.randomUUID()}`);
     planningRepoRoot = join(tmpdir(), `workbench-dashboard-planning-${crypto.randomUUID()}`);
+    planningTasksRoot = join(tmpdir(), `workbench-dashboard-central-tasks-${crypto.randomUUID()}`, "spaces", "tasks");
     await mkdir(reportsDir, { recursive: true });
-    await mkdir(join(planningRepoRoot, "_planning", "backlog", "tasks"), { recursive: true });
-    await writeFile(join(planningRepoRoot, "_planning", "WHAT-TO-DO-NEXT.md"), `<!-- planning_classification: canonical -->
-<!-- planning_last_reviewed: 2026-04-12 -->
+    await mkdir(planningRepoRoot, { recursive: true });
+    await mkdir(planningTasksRoot, { recursive: true });
+    await writeFile(join(planningTasksRoot, "T-0042.md"), `---
+id: spaces/T-0042
+status: ready
+owner: gateway
+title: "Dashboard planning"
+autonomous: true
+priority: medium
+depends-on: []
+---
 
-# What To Do Next
-
-## Active Queue
-
-| # | Item | Type | Status | Next Action |
-|---|---|---|---|---|
-| 1 | \`td-dashboard-planning.md\` | TD | Planned | Inspect in dashboard |
-`);
-    await writeFile(join(planningRepoRoot, "_planning", "backlog", "tasks", "td-dashboard-planning.md"), `<!-- planning_classification: canonical -->
-<!-- planning_last_reviewed: 2026-04-12 -->
-
-# Task: td-dashboard-planning
+# Task: spaces/T-0042
 
 ## Metadata
 - Priority: P1
@@ -118,7 +117,7 @@ describe("workbench dashboard", () => {
 
 \`\`\`yaml goal_contract
 schemaVersion: 1
-goalId: td-dashboard-planning
+goalId: spaces/T-0042
 contractState: reviewed
 owner: gateway
 status: Planned
@@ -196,6 +195,7 @@ blockers: []
       analyst,
       port: randomPort(),
       planningRepoRoot,
+      planningTasksRoot,
     });
   });
 
@@ -206,6 +206,7 @@ blockers: []
     db.close(false);
     await rm(reportsDir, { recursive: true, force: true });
     await rm(planningRepoRoot, { recursive: true, force: true });
+    await rm(planningTasksRoot, { recursive: true, force: true });
   });
 
   test("serves Jobs/Analyst/Reports UI and exposes snapshots + websocket", async () => {
@@ -228,9 +229,13 @@ blockers: []
     expect(planningAudit.executableQueueItemCount).toBe(1);
     expect(planningAudit.goalContractErrors).toEqual([]);
 
-    const planningTask = await fetch(`http://127.0.0.1:${dashboard!.port}/api/planning/tasks/${encodeURIComponent("td-dashboard-planning.md")}`).then((response) => response.json());
-    expect(planningTask.queueItemId).toBe("td-dashboard-planning.md");
+    const planningTask = await fetch(`http://127.0.0.1:${dashboard!.port}/api/planning/tasks/${encodeURIComponent("spaces/T-0042")}`).then((response) => response.json());
+    expect(planningTask.queueItemId).toBe("spaces/T-0042");
+    expect(planningTask.taskFilePath).toBe(join(planningTasksRoot, "T-0042.md"));
     expect(planningTask.markdown).toContain("```yaml goal_contract");
+
+    const traversalResponse = await fetch(`http://127.0.0.1:${dashboard!.port}/api/planning/tasks/${encodeURIComponent("spaces/../T-0042")}`);
+    expect(traversalResponse.status).toBe(404);
 
     const ws = new WebSocket(`ws://127.0.0.1:${dashboard!.port}/api/jobs/ws`);
     await waitForOpen(ws);
