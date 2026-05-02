@@ -181,7 +181,8 @@ export function initializeCollaborationServices(state: BootstrapState): void {
   const deviceIdentityService = state.deviceIdentityRepo
     ? new DeviceIdentityService({
       repository: state.deviceIdentityRepo,
-      requirePreRegistered: Bun.env.SPACESKIT_REQUIRE_PREREGISTERED_DEVICE === "true",
+      requirePreRegistered: Bun.env.SPACESKIT_REQUIRE_PREREGISTERED_DEVICE === "true"
+        || gatewayExternalConnectivityService.isExternallyExposed(),
       onDeviceRevoked: ({ principalId, deviceId }) => {
         state.server?.disconnectSessionsByDevice(deviceId, principalId);
       },

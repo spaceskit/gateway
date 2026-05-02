@@ -255,6 +255,7 @@ export interface ProviderRuntimeConfigPayload {
 
 export type GatewayModelDetectionStatusPayload = "available" | "unavailable" | "error";
 export type GatewayModelCatalogSourcePayload = "detected" | "configured" | "fallback" | "allowlist";
+export type GatewayModelTierPayload = "fast" | "balanced" | "smartest" | "local";
 export type GatewayProviderCatalogGroupPayload = "cloud" | "executor" | "local_runtime";
 export type GatewayIntegrationClassPayload = "cloud" | "executor" | "local_runtime";
 export type GatewayProviderAuthModePayload = "api_key" | "host_login";
@@ -276,6 +277,13 @@ export interface GatewayModelCatalogEntryPayload {
   source: GatewayModelCatalogSourcePayload;
   available: boolean;
   contextWindow?: number;
+  /**
+   * Intent-based tier label assigned by the gateway. Clients render the
+   * picker tier cards from this field. Optional during the rollout — older
+   * gateway builds may omit it; clients must default to `balanced` when
+   * absent. Populated for all entries built by the current gateway.
+   */
+  tier?: GatewayModelTierPayload;
 }
 
 export interface GatewayProviderAuthAccountPayload {

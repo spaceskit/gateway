@@ -4,6 +4,7 @@ import {
   ApprovalRequestRepository,
   ArtifactRepository,
   AuditEventsRepository,
+  AuthKeyRepository,
   ConciergeEscalationRequestRepository,
   ConnectorBindingRepository,
   ConnectorFamilyRepository,
@@ -11,6 +12,7 @@ import {
   ConnectorPolicyRepository,
   ConnectorSecretRefRepository,
   DeviceIdentityRepository,
+  InviteTokenRepository,
   EventLogRepository,
   ExperienceRepository,
   GatewayCapabilityGrantRepository,
@@ -109,6 +111,8 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     agentUsageSessionRepo = null,
     toolApprovalGrantRepo = null,
     deviceIdentityRepo = null,
+    authKeyRepo = null,
+    inviteTokenRepo = null,
     orchestratorCommandRepo = null,
     schedulerJobRepo = null,
     schedulerJobSpaceRepo = null,
@@ -202,6 +206,8 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     agentUsageSessionRepo = new AgentUsageSessionRepository(db.db);
     toolApprovalGrantRepo = new ToolApprovalGrantRepository(db.db);
     deviceIdentityRepo = new DeviceIdentityRepository(db.db);
+    authKeyRepo = new AuthKeyRepository(db.db);
+    inviteTokenRepo = new InviteTokenRepository(db.db);
     orchestratorCommandRepo = new OrchestratorCommandRepository(db.db);
     schedulerJobRepo = new SchedulerJobRepository(db.db);
     schedulerJobSpaceRepo = new SchedulerJobSpaceRepository(db.db);
@@ -317,6 +323,8 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     agentUsageSessionRepo,
     toolApprovalGrantRepo,
     deviceIdentityRepo,
+    authKeyRepo,
+    inviteTokenRepo,
     orchestratorCommandRepo,
     schedulerJobRepo,
     schedulerJobSpaceRepo,

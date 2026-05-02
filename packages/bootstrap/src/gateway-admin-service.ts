@@ -67,6 +67,7 @@ import type {
   GatewayGetToolResponsePayload,
   GatewayRemoveToolResponsePayload,
 } from "@spaceskit/server";
+import { classifyTier } from "@spaceskit/server";
 import {
   ClaudeAgentSdkModelProvider,
   type ClaudeAgentSdkAuthAccount,
@@ -2365,11 +2366,13 @@ export class DefaultGatewayAdminService {
           }
           return;
         }
+        const tier = classifyTier(providerId, id, inferredContextWindow);
         models.push({
           id,
           displayName: id.includes("/") ? id.split("/").slice(1).join("/") : id,
           source,
           available,
+          tier,
           ...(inferredContextWindow !== undefined ? { contextWindow: inferredContextWindow } : {}),
         });
       };
@@ -3432,6 +3435,7 @@ export class DefaultGatewayAdminService {
         providerHintRaw: selectedProvider,
         modelHintRaw: enforcedModelHint || configuredSelection?.model,
         repairIfInvalid: true,
+        allowFallbackRepair: selectedProvider !== "apple",
       });
       if (!resolvedModel.valid || !resolvedModel.providerHint || !resolvedModel.modelHint) {
         throwGatewayError(

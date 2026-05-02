@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@spaceskit/core": "*",
-    "@spaceskit/observability": "*"
+    "@spaceskit/observability": "*",
+    "@spaceskit/policy": "*"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

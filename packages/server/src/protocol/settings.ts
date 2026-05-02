@@ -128,6 +128,7 @@ export interface GatewayGetExternalConnectivityResponsePayload {
 
 export interface GatewaySetExternalConnectivityPayload {
   mode: string;
+  funnelEnabled?: boolean | null;
 }
 
 export interface GatewaySetExternalConnectivityResponsePayload {
@@ -137,7 +138,17 @@ export interface GatewaySetExternalConnectivityResponsePayload {
 
 export interface ExternalConnectivitySettingsPayload {
   mode: string;
+  funnelEnabled?: boolean | null;
   updatedAt: string;
+}
+
+export interface ExternalConnectivityFunnelStatusPayload {
+  state: string;
+  funnelConfigured: boolean;
+  funnelUrl?: string;
+  exposedPaths: string[];
+  summary?: string;
+  remediation?: string;
 }
 
 export interface ExternalConnectivityStatusPayload {
@@ -152,4 +163,5 @@ export interface ExternalConnectivityStatusPayload {
     websocketUrl: string;
     healthUrl: string;
   }>;
+  funnelStatus?: ExternalConnectivityFunnelStatusPayload;
 }

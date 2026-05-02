@@ -41,6 +41,7 @@ export function resolveMainProfileRuntimeSelection(
   providerConfigs: Pick<PublicProviderRuntimeConfig, "providerId" | "model">[],
 ): MainProfileRuntimeSelection {
   const priorityOrder = [
+    "codex-app-server",
     "claude",
     "codex",
     "gemini",

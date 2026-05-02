@@ -405,9 +405,12 @@ export class SpaceWorkspaceService {
     const existingSpaceUid = normalizeOptionalString(
       typeof existingSpaceMeta.spaceUid === "string" ? existingSpaceMeta.spaceUid : undefined,
     );
+    // Explicit folder binding may adopt stale metadata for the same logical space
+    // after a gateway/main-space reset, but managed folders keep UID isolation.
     const hasConflict = Boolean(
       (existingSpaceId && existingSpaceId !== spaceId)
-      || (existingSpaceUid && existingSpaceUid !== spaceUid),
+      || (!existingSpaceId && existingSpaceUid && existingSpaceUid !== spaceUid)
+      || (!explicitRoot && existingSpaceId === spaceId && existingSpaceUid && existingSpaceUid !== spaceUid)
     );
     if (hasConflict) {
       throw new SpaceWorkspaceServiceError(

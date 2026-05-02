@@ -34,6 +34,18 @@ export interface RegisterDeviceInput {
   platform?: string;
 }
 
+export interface RegisterDeviceForInviteInput {
+  /**
+   * Principal id derived from the invite token's `issued_by_principal_id`
+   * — the invite issuer. The fresh device is bound to this principal so
+   * a stolen token cannot register against an arbitrary principal.
+   */
+  invitePrincipalId: string;
+  deviceId: string;
+  publicKey: string;
+  platform?: string;
+}
+
 export interface RotateDeviceKeyInput {
   principalId: string;
   deviceId: string;
@@ -75,6 +87,58 @@ export class DeviceIdentityService {
 
   registerDevice(input: RegisterDeviceInput): { device: DeviceIdentity; created: boolean } {
     const principalId = normalizeRequired(input.principalId, "principalId");
+    const deviceId = normalizeRequired(input.deviceId, "deviceId");
+    const publicKey = normalizeRequired(input.publicKey, "publicKey");
+
+    const existing = this.options.repository.getByPrincipalAndDevice(principalId, deviceId);
+    if (!existing) {
+      const created = this.options.repository.create({
+        principalId,
+        deviceId,
+        publicKey,
+        platform: input.platform,
+      });
+      return { device: this.mapRow(created), created: true };
+    }
+
+    if (normalizeStatus(existing.status) === "revoked") {
+      throw new DeviceLifecycleError(
+        "FAILED_PRECONDITION",
+        `Device is revoked and must be rotated with a new deviceId: ${deviceId}`,
+      );
+    }
+
+    if (existing.public_key !== publicKey) {
+      throw new DeviceLifecycleError(
+        "FAILED_PRECONDITION",
+        `Device key mismatch for ${deviceId}; use auth.rotate_device_key`,
+      );
+    }
+
+    this.options.repository.touchLastSeen(principalId, deviceId);
+    return {
+      device: this.mapRow(this.options.repository.getByPrincipalAndDevice(principalId, deviceId)!),
+      created: false,
+    };
+  }
+
+  /**
+   * Register a fresh device using an invite token. Bypasses the
+   * `requirePreRegistered` policy — this is the *only* path by which a
+   * new device can register without a prior LAN/loopback session.
+   *
+   * The principal is sourced from the invite token (the issuer's
+   * `issued_by_principal_id`), not from caller-provided input, so a
+   * stolen token cannot register against an arbitrary principal.
+   * Slice 4d's funnel-exposed `register_device_via_invite` HTTP route
+   * is the sole expected caller. Atomic invite-consume happens at the
+   * route level (not here) so this method can stay idempotent on
+   * retries that occur after a successful registration.
+   */
+  registerDeviceForInvite(
+    input: RegisterDeviceForInviteInput,
+  ): { device: DeviceIdentity; created: boolean } {
+    const principalId = normalizeRequired(input.invitePrincipalId, "invitePrincipalId");
     const deviceId = normalizeRequired(input.deviceId, "deviceId");
     const publicKey = normalizeRequired(input.publicKey, "publicKey");
 

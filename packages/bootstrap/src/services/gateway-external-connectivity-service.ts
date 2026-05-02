@@ -17,8 +17,23 @@ export type GatewayExternalConnectivityState =
   | "ready"
   | "error";
 
+export type GatewayExternalConnectivityFunnelState =
+  | "disabled"
+  | "unavailable"
+  | "not_configured"
+  | "ready"
+  | "error";
+
+export const FUNNEL_EXPOSED_PATHS: readonly string[] = [
+  "/.well-known/spaces/invite/",
+  "/v1/share/relay/resolve",
+  "/v1/share/relay/join",
+  "/v1/share/relay/register_device_via_invite",
+];
+
 export interface GatewayExternalConnectivitySettings {
   mode: GatewayExternalConnectivityMode;
+  funnelEnabled: boolean | null;
   updatedAt: string;
 }
 
@@ -45,12 +60,22 @@ export interface GatewayExternalConnectivityTailscaleStatus {
   servePort?: number;
 }
 
+export interface GatewayExternalConnectivityFunnelStatus {
+  state: GatewayExternalConnectivityFunnelState;
+  funnelConfigured: boolean;
+  funnelUrl?: string;
+  exposedPaths: string[];
+  summary?: string;
+  remediation?: string;
+}
+
 export interface GatewayExternalConnectivityStatus {
   state: GatewayExternalConnectivityState;
   summary: string;
   remediation?: string;
   advertisedEndpoints: GatewayExternalConnectivityAdvertisedEndpoint[];
   tailscaleStatus?: GatewayExternalConnectivityTailscaleStatus;
+  funnelStatus?: GatewayExternalConnectivityFunnelStatus;
 }
 
 export interface GatewayExternalConnectivitySnapshot {
@@ -61,6 +86,8 @@ export interface GatewayExternalConnectivitySnapshot {
 export interface GatewayExternalConnectivityObservabilitySnapshot {
   mode: GatewayExternalConnectivityMode;
   state: GatewayExternalConnectivityState;
+  funnelState: GatewayExternalConnectivityFunnelState;
+  funnelEnabled: boolean | null;
   updatedAt: string;
   summary: string;
   endpointCount: number;
@@ -92,6 +119,11 @@ interface TailscaleProbe {
   advertisedEndpoints: GatewayExternalConnectivityAdvertisedEndpoint[];
   loggedIn: boolean;
   serveConfigured: boolean;
+  funnelConfigured: boolean;
+  funnelExposedPaths: string[];
+  funnelHostName?: string;
+  funnelProbeOk: boolean;
+  funnelProbeMissingFeature: boolean;
 }
 
 interface TailscaleStatusJson {
@@ -119,6 +151,7 @@ export class GatewayExternalConnectivityService {
     const row = this.options.repo?.get();
     return {
       mode: normalizeMode(row?.mode),
+      funnelEnabled: normalizeFunnelEnabled(row?.funnel_enabled ?? null),
       updatedAt: row?.updated_at ?? new Date().toISOString(),
     };
   }
@@ -139,17 +172,50 @@ export class GatewayExternalConnectivityService {
     return {
       mode: snapshot.settings.mode,
       state: snapshot.status.state,
+      funnelState: snapshot.status.funnelStatus?.state ?? "disabled",
+      funnelEnabled: snapshot.settings.funnelEnabled,
       updatedAt: snapshot.settings.updatedAt,
       summary: snapshot.status.summary,
       endpointCount: snapshot.status.advertisedEndpoints.length,
     };
   }
 
-  async setMode(modeRaw: string): Promise<GatewayExternalConnectivitySnapshot> {
+  /**
+   * True when the gateway is currently exposed beyond the loopback boundary
+   * (mode != DISABLED and the last-observed status reached READY).
+   *
+   * Uses the most recently cached snapshot — callers that need a freshly-probed
+   * answer should `await getSnapshot()` first.
+   */
+  isExternallyExposed(): boolean {
+    const snapshot = this.cachedSnapshot;
+    if (!snapshot) {
+      return false;
+    }
+    return snapshot.settings.mode !== "DISABLED" && snapshot.status.state === "ready";
+  }
+
+  /**
+   * URL of the public Funnel ingress (if currently READY), used by invite
+   * issuance to embed a reachable preview/resolve/join URL in the invite
+   * payload. Returns undefined when funnel is disabled, unavailable, or not yet
+   * probed.
+   */
+  currentFunnelUrl(): string | undefined {
+    return this.cachedSnapshot?.status.funnelStatus?.funnelUrl;
+  }
+
+  async setMode(modeRaw: string, funnelEnabled?: boolean | null): Promise<GatewayExternalConnectivitySnapshot> {
     const mode = normalizeMode(modeRaw);
-    const row = this.options.repo?.set({ mode: mode as GatewayExternalConnectivityModeRowValue });
+    const row = this.options.repo?.set({
+      mode: mode as GatewayExternalConnectivityModeRowValue,
+      funnelEnabled,
+    });
     const settings: GatewayExternalConnectivitySettings = {
       mode,
+      funnelEnabled: normalizeFunnelEnabled(
+        row?.funnel_enabled ?? (funnelEnabled === undefined ? null : funnelEnabled),
+      ),
       updatedAt: row?.updated_at ?? new Date().toISOString(),
     };
 
@@ -162,7 +228,44 @@ export class GatewayExternalConnectivityService {
           stdout: ensured.stdout,
         });
       }
+      if (settings.funnelEnabled !== false) {
+        const funnel = await this.ensureTailscaleFunnel();
+        if (!funnel.ok && !funnel.missingBinary && !looksLikeFunnelUnavailableError(funnel)) {
+          this.options.logger?.warn("Failed to ensure Tailscale Funnel mapping", {
+            code: funnel.code,
+            stderr: funnel.stderr,
+            stdout: funnel.stdout,
+          });
+        }
+      } else {
+        const cleared = await this.disableTailscaleFunnel();
+        if (
+          !cleared.ok
+          && !cleared.missingBinary
+          && !looksLikeLoggedOutError(cleared)
+          && !looksLikeFunnelUnavailableError(cleared)
+        ) {
+          this.options.logger?.warn("Failed to clear Tailscale Funnel mapping", {
+            code: cleared.code,
+            stderr: cleared.stderr,
+            stdout: cleared.stdout,
+          });
+        }
+      }
     } else if (mode === "DISABLED") {
+      const clearedFunnel = await this.disableTailscaleFunnel();
+      if (
+        !clearedFunnel.ok
+        && !clearedFunnel.missingBinary
+        && !looksLikeLoggedOutError(clearedFunnel)
+        && !looksLikeFunnelUnavailableError(clearedFunnel)
+      ) {
+        this.options.logger?.warn("Failed to clear Tailscale Funnel mapping", {
+          code: clearedFunnel.code,
+          stderr: clearedFunnel.stderr,
+          stdout: clearedFunnel.stdout,
+        });
+      }
       const cleared = await this.disableTailscaleServe();
       if (!cleared.ok && !cleared.missingBinary && !looksLikeLoggedOutError(cleared)) {
         this.options.logger?.warn("Failed to disable Tailscale Serve mapping", {
@@ -188,6 +291,7 @@ export class GatewayExternalConnectivityService {
         summary: "Embedded gateways remain loopback-only in v1.",
         remediation: "Run the gateway in external mode on a Mac or host machine to enable WAN access.",
         advertisedEndpoints: [],
+        funnelStatus: disabledFunnelStatus(),
       };
     }
 
@@ -197,6 +301,7 @@ export class GatewayExternalConnectivityService {
         summary: "External connectivity is disabled.",
         remediation: "Enable Tailscale to advertise a tailnet endpoint without opening the gateway to the public internet.",
         advertisedEndpoints: [],
+        funnelStatus: disabledFunnelStatus(),
       };
     }
 
@@ -206,10 +311,11 @@ export class GatewayExternalConnectivityService {
         summary: "Tailscale mode requires the gateway to stay bound to loopback.",
         remediation: "Restart the gateway with SPACESKIT_HOST=127.0.0.1 before enabling Tailscale external access.",
         advertisedEndpoints: [],
+        funnelStatus: disabledFunnelStatus(),
       };
     }
 
-    const probe = await this.probeTailscale();
+    const probe = await this.probeTailscale(settings);
     if (!probe.status.cliAvailable) {
       return {
         state: "missing_dependency",
@@ -217,6 +323,13 @@ export class GatewayExternalConnectivityService {
         remediation: "Install and sign in to Tailscale on the gateway machine, then enable external connectivity again.",
         advertisedEndpoints: [],
         tailscaleStatus: probe.status,
+        funnelStatus: {
+          state: "unavailable",
+          funnelConfigured: false,
+          exposedPaths: [],
+          summary: "Funnel requires the Tailscale CLI.",
+          remediation: "Install Tailscale on the gateway host before enabling Funnel-based invite ingress.",
+        },
       };
     }
 
@@ -227,6 +340,13 @@ export class GatewayExternalConnectivityService {
         remediation: "Open Tailscale on the gateway host, sign in, and confirm the node is running before retrying.",
         advertisedEndpoints: probe.advertisedEndpoints,
         tailscaleStatus: probe.status,
+        funnelStatus: {
+          state: "unavailable",
+          funnelConfigured: false,
+          exposedPaths: [],
+          summary: "Funnel requires Tailscale to be signed in.",
+          remediation: "Sign in to Tailscale on the gateway host, then re-enable external connectivity.",
+        },
       };
     }
 
@@ -237,6 +357,7 @@ export class GatewayExternalConnectivityService {
         remediation: "Save external connectivity again or run tailscale serve for this gateway port.",
         advertisedEndpoints: probe.advertisedEndpoints,
         tailscaleStatus: probe.status,
+        funnelStatus: this.computeFunnelStatusForProbe(settings, probe),
       };
     }
 
@@ -245,10 +366,67 @@ export class GatewayExternalConnectivityService {
       summary: "Gateway is reachable over the tailnet through Tailscale.",
       advertisedEndpoints: probe.advertisedEndpoints,
       tailscaleStatus: probe.status,
+      funnelStatus: this.computeFunnelStatusForProbe(settings, probe),
     };
   }
 
-  private async probeTailscale(): Promise<TailscaleProbe> {
+  private computeFunnelStatusForProbe(
+    settings: GatewayExternalConnectivitySettings,
+    probe: TailscaleProbe,
+  ): GatewayExternalConnectivityFunnelStatus {
+    if (settings.funnelEnabled === false) {
+      return {
+        state: "disabled",
+        funnelConfigured: probe.funnelConfigured,
+        exposedPaths: probe.funnelExposedPaths,
+        summary: "Public invite ingress is disabled.",
+        remediation: "Re-enable Funnel to allow off-tailnet invitees to open invite links.",
+      };
+    }
+
+    if (probe.funnelProbeMissingFeature) {
+      return {
+        state: "unavailable",
+        funnelConfigured: false,
+        exposedPaths: [],
+        summary: "Tailscale Funnel is not available for this tailnet.",
+        remediation: "Enable Funnel on your Tailscale account, or keep invites tailnet-scoped.",
+      };
+    }
+
+    if (!probe.funnelProbeOk) {
+      return {
+        state: "error",
+        funnelConfigured: probe.funnelConfigured,
+        exposedPaths: probe.funnelExposedPaths,
+        summary: "Failed to inspect Tailscale Funnel state.",
+        remediation: "Check tailscale CLI permissions on the gateway host.",
+      };
+    }
+
+    if (!probe.funnelConfigured) {
+      return {
+        state: "not_configured",
+        funnelConfigured: false,
+        exposedPaths: probe.funnelExposedPaths,
+        summary: "Funnel is enabled but no invite paths are currently exposed.",
+        remediation: "Save external connectivity again to (re)apply the Funnel mapping for invite endpoints.",
+      };
+    }
+
+    const funnelUrl = probe.funnelHostName ? `https://${probe.funnelHostName}` : undefined;
+    return {
+      state: "ready",
+      funnelConfigured: true,
+      funnelUrl,
+      exposedPaths: probe.funnelExposedPaths,
+      summary: "Invite endpoints are publicly reachable over Tailscale Funnel.",
+    };
+  }
+
+  private async probeTailscale(
+    settings: GatewayExternalConnectivitySettings,
+  ): Promise<TailscaleProbe> {
     const statusResult = await this.runCommand(["status", "--json"]);
     if (statusResult.missingBinary) {
       return {
@@ -261,6 +439,10 @@ export class GatewayExternalConnectivityService {
         advertisedEndpoints: [],
         loggedIn: false,
         serveConfigured: false,
+        funnelConfigured: false,
+        funnelExposedPaths: [],
+        funnelProbeOk: false,
+        funnelProbeMissingFeature: false,
       };
     }
 
@@ -276,6 +458,10 @@ export class GatewayExternalConnectivityService {
         advertisedEndpoints: [],
         loggedIn: false,
         serveConfigured: false,
+        funnelConfigured: false,
+        funnelExposedPaths: [],
+        funnelProbeOk: false,
+        funnelProbeMissingFeature: false,
       };
     }
 
@@ -299,6 +485,25 @@ export class GatewayExternalConnectivityService {
       && hasExpectedServeConfig(serveProbe.stdout, this.options.gatewayPort);
     const serveStatus = serveProbe?.stdout ? parseServeConfigTarget(serveProbe.stdout, this.options.gatewayPort) : null;
 
+    let funnelConfigured = false;
+    let funnelExposedPaths: string[] = [];
+    let funnelProbeOk = false;
+    let funnelProbeMissingFeature = false;
+
+    if (loggedIn && settings.funnelEnabled !== false) {
+      const funnelProbe = await this.runCommand(["funnel", "status", "--json"]);
+      if (funnelProbe.missingBinary) {
+        funnelProbeMissingFeature = true;
+      } else if (looksLikeFunnelUnavailableError(funnelProbe)) {
+        funnelProbeMissingFeature = true;
+      } else if (funnelProbe.ok) {
+        funnelProbeOk = true;
+        const inspected = inspectFunnelConfig(funnelProbe.stdout);
+        funnelConfigured = inspected.configured;
+        funnelExposedPaths = inspected.paths;
+      }
+    }
+
     return {
       status: {
         cliAvailable: true,
@@ -316,6 +521,11 @@ export class GatewayExternalConnectivityService {
       advertisedEndpoints,
       loggedIn,
       serveConfigured,
+      funnelConfigured,
+      funnelExposedPaths,
+      funnelHostName: dnsName,
+      funnelProbeOk,
+      funnelProbeMissingFeature,
     };
   }
 
@@ -337,6 +547,41 @@ export class GatewayExternalConnectivityService {
       "off",
     ]);
   }
+
+  private async ensureTailscaleFunnel(): Promise<CommandResult> {
+    let last: CommandResult = {
+      ok: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+      missingBinary: false,
+    };
+    for (const path of FUNNEL_EXPOSED_PATHS) {
+      last = await this.runCommand([
+        "funnel",
+        "--bg",
+        `--set-path=${path}`,
+        `http://127.0.0.1:${this.options.gatewayPort}${path}`,
+      ]);
+      if (!last.ok) {
+        return last;
+      }
+    }
+    return last;
+  }
+
+  private async disableTailscaleFunnel(): Promise<CommandResult> {
+    return this.runCommand(["funnel", "--https=443", "off"]);
+  }
+}
+
+function disabledFunnelStatus(): GatewayExternalConnectivityFunnelStatus {
+  return {
+    state: "disabled",
+    funnelConfigured: false,
+    exposedPaths: [],
+    summary: "Public invite ingress is disabled.",
+  };
 }
 
 function buildAdvertisedEndpoints(input: {
@@ -375,6 +620,16 @@ function formatHost(host: string): string {
 
 function normalizeMode(mode: string | undefined | null): GatewayExternalConnectivityMode {
   return mode?.trim().toUpperCase() === "TAILSCALE" ? "TAILSCALE" : "DISABLED";
+}
+
+function normalizeFunnelEnabled(value: number | boolean | null | undefined): boolean | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return value !== 0;
 }
 
 function normalizeDnsName(value: string | undefined): string | undefined {
@@ -565,6 +820,66 @@ function looksLikeLoggedOutError(result: CommandResult): boolean {
   return haystack.includes("tailscale is stopped")
     || haystack.includes("not logged in")
     || haystack.includes("needs login");
+}
+
+function looksLikeFunnelUnavailableError(result: CommandResult): boolean {
+  const haystack = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  return haystack.includes("funnel not available")
+    || haystack.includes("funnel is not enabled")
+    || haystack.includes("funnel attribute is not allowed")
+    || haystack.includes("not allowed to use funnel")
+    || haystack.includes("funnel: not available")
+    || haystack.includes("requires funnel");
+}
+
+function inspectFunnelConfig(rawJson: string): { configured: boolean; paths: string[] } {
+  const parsed = parseJson<unknown>(rawJson);
+  if (!parsed || typeof parsed !== "object") {
+    return { configured: false, paths: [] };
+  }
+  const paths = collectFunnelPaths(parsed);
+  return {
+    configured: paths.length > 0,
+    paths,
+  };
+}
+
+function collectFunnelPaths(node: unknown): string[] {
+  const found = new Set<string>();
+  walkFunnelTree(node, found);
+  return [...found];
+}
+
+function walkFunnelTree(node: unknown, found: Set<string>): void {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      walkFunnelTree(entry, found);
+    }
+    return;
+  }
+  if (!node || typeof node !== "object") {
+    return;
+  }
+  const record = node as Record<string, unknown>;
+  const web = record.Web;
+  if (web && typeof web === "object") {
+    for (const hostValue of Object.values(web as Record<string, unknown>)) {
+      if (!hostValue || typeof hostValue !== "object") {
+        continue;
+      }
+      const handlers = (hostValue as { Handlers?: unknown }).Handlers;
+      if (handlers && typeof handlers === "object") {
+        for (const path of Object.keys(handlers as Record<string, unknown>)) {
+          if (FUNNEL_EXPOSED_PATHS.some((expected) => path === expected || path.startsWith(expected))) {
+            found.add(path);
+          }
+        }
+      }
+    }
+  }
+  for (const value of Object.values(record)) {
+    walkFunnelTree(value, found);
+  }
 }
 
 function defaultCommandRunner(args: string[]): CommandResult {

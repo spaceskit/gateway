@@ -17,6 +17,7 @@ import type { ServerWebSocket } from "bun";
 import { randomUUID, randomBytes } from "node:crypto";
 import type { EventBus, GatewayEvent } from "@spaceskit/core";
 import type { Logger } from "@spaceskit/observability";
+import { isLoopbackHost } from "@spaceskit/policy";
 import { deterministicUuid, normalizeUuid } from "./uuid.js";
 import {
   MessageTypes,
@@ -174,6 +175,12 @@ export interface GatewayServerOptions {
   maxPayloadLength?: number;
   /** Optional hook called when a client successfully subscribes to a space, for pre-warming. */
   onSpaceSubscribed?: (spaceId: string) => void;
+  /**
+   * Optional override for client IP detection on incoming WebSocket upgrades.
+   * Defaults to `server.requestIP(req)?.address` with `x-forwarded-for` fallback.
+   * Tests use this to simulate remote (non-loopback) origins.
+   */
+  resolveClientIp?: (req: Request, requestIp: string | undefined) => string;
 }
 
 export interface HealthStatus {
@@ -403,7 +410,10 @@ export class GatewayServer {
         }
 
         // Per-IP connection cap enforcement
-        const wsClientIp = server.requestIP(req)?.address ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+        const detectedIp = server.requestIP(req)?.address ?? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+        const wsClientIp = self.options.resolveClientIp
+          ? self.options.resolveClientIp(req, detectedIp)
+          : detectedIp;
         const maxConns = self.options.maxConnectionsPerIp ?? 10;
         if ((self.connectionsPerIp.get(wsClientIp) ?? 0) >= maxConns) {
           return self.withCors(req, new Response("Too many connections from this IP", { status: 429 }));
@@ -1140,7 +1150,12 @@ export class GatewayServer {
       const devicePublicKey = payload.devicePublicKey?.trim() || undefined;
       const deviceProofSignature = payload.deviceProofSignature?.trim() || undefined;
       const hasAnyDeviceAuth = Boolean(deviceId || devicePublicKey || deviceProofSignature);
-      const requiresDeviceValidation = typeof this.options.validateDeviceIdentity === "function";
+      const wsClientIp = (ws.data as WSData).clientIp;
+      const originIsRemote = !isLoopbackHost(wsClientIp);
+      // Remote origins must always present a full device proof — secure-by-default
+      // when the gateway is reachable beyond loopback (Tailscale Serve, Funnel, etc.).
+      const requiresDeviceValidation = originIsRemote
+        || typeof this.options.validateDeviceIdentity === "function";
       let effectiveDeviceId = deviceId;
       let effectiveDevicePublicKey = devicePublicKey;
       let effectiveDeviceProofSignature = deviceProofSignature;

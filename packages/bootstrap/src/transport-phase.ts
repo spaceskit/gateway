@@ -222,6 +222,12 @@ export function initializeTransportServices(state: BootstrapState): void {
       maxClockSkewSeconds: config.httpPrincipalAuthMaxClockSkewSeconds,
     },
     requireAuthenticatedPrincipal: config.gatewayProfile === "external",
+    inviteTokens: state.inviteTokenRepo ?? undefined,
+    authKeys: state.authKeyRepo ?? undefined,
+    currentFunnelUrl: state.gatewayExternalConnectivityService
+      ? () => state.gatewayExternalConnectivityService.currentFunnelUrl()
+      : undefined,
+    deviceIdentityService: state.deviceIdentityService ?? undefined,
   });
   const gatewayObservabilityApiService = new GatewayObservabilityApiService({
     observabilityService: state.gatewayObservabilityService,

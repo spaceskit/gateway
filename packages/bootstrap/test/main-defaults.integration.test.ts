@@ -410,10 +410,11 @@ describe("bootstrap main defaults", () => {
       ).get(mainProfileId) as { provider_hint: string; model_hint: string } | undefined;
 
       expect(row).toBeDefined();
-      // CLI providers (claude, codex, gemini) are auto-seeded when detected on PATH
-      // and take priority over API-key providers. On machines with claude installed,
-      // claude is selected; otherwise openrouter (seeded via API key) wins.
-      const validProviders = ["claude", "codex", "gemini", "openrouter"];
+      // CLI/app-server providers are auto-seeded when detected on PATH
+      // and take priority over API-key providers. Codex app server is preferred
+      // when available; otherwise the resolver falls through to the next
+      // detected CLI or configured API-key provider.
+      const validProviders = ["codex-app-server", "claude", "codex", "gemini", "openrouter"];
       expect(validProviders).toContain(row?.provider_hint);
       expect(row!.model_hint).toStartWith(`${row!.provider_hint}/`);
     } finally {

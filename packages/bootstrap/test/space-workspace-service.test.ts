@@ -283,4 +283,38 @@ describe("SpaceWorkspaceService", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("adopts a folder-bound root already marked with the same space id and a stale uid", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-stale-uid-"));
+    const explicitRoot = join(tempRoot, "same-space-root");
+
+    try {
+      await mkdir(join(explicitRoot, ".space"), { recursive: true });
+      await writeFile(join(explicitRoot, ".space", "space.json"), JSON.stringify({
+        spaceId: "space-main",
+        spaceUid: "22222222-2222-2222-8222-222222222222",
+        mode: "folder_bound",
+        effectiveWorkspaceRoot: explicitRoot,
+      }), "utf8");
+
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: join(tempRoot, "gateway-spaces"),
+      });
+
+      const workspace = await service.setWorkspace("space-main", explicitRoot);
+      const metadata = JSON.parse(await readFile(join(explicitRoot, ".space", "space.json"), "utf8"));
+
+      expect(workspace.mode).toBe("folder_bound");
+      expect(workspace.explicitWorkspaceRoot).toBe(explicitRoot);
+      expect(metadata.spaceId).toBe("space-main");
+      expect(metadata.spaceUid).toBe(TEST_SPACE_UID);
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

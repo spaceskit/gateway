@@ -290,6 +290,7 @@ export async function handleSpaceSetWorkspace(
     payload.spaceId,
     payload.workspaceRoot ?? null,
   );
+  context.spaceManager.invalidateCache(payload.spaceId);
   return context.response(msg.id, MessageTypes.SPACE_SET_WORKSPACE, {
     workspace,
   } satisfies SpaceSetWorkspaceResponsePayload);

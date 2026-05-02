@@ -1,0 +1,9 @@
+{
+  "defaults": {
+    "retentionDays": 30,
+    "quotaProfile": "standard"
+  },
+  "workspaceRoot": "/Users/caruso/code/spaces/gateway/spaces/external-concierge--6a5ff831",
+  "spaceDirPath": "/Users/caruso/code/spaces/gateway/spaces/external-concierge--6a5ff831/.space",
+  "gitRepoDetected": false
+}

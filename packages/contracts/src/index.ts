@@ -14,3 +14,5 @@ export * from "./generated/spaceskit/v2/runtime_service_pb.js";
 export { RuntimeService as RuntimeServiceClient } from "./generated/spaceskit/v2/runtime_service_connect.js";
 export * from "./generated/spaceskit/v2/integration_service_pb.js";
 export { IntegrationService as IntegrationServiceClient } from "./generated/spaceskit/v2/integration_service_connect.js";
+export * from "./generated/spaceskit/v2/sharing_service_pb.js";
+export { SharingService as SharingServiceClient } from "./generated/spaceskit/v2/sharing_service_connect.js";

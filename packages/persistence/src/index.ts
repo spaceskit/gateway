@@ -470,6 +470,19 @@ export type {
   CreateDeviceIdentityInput,
 } from "./repositories/device-identities.js";
 
+export { AuthKeyRepository } from "./repositories/auth-keys.js";
+export type {
+  AuthKeyAlgorithm,
+  AuthKeyRow,
+  CreateAuthKeyInput,
+} from "./repositories/auth-keys.js";
+
+export { InviteTokenRepository } from "./repositories/invite-tokens.js";
+export type {
+  InviteTokenRow,
+  CreateInviteTokenInput,
+} from "./repositories/invite-tokens.js";
+
 export { SpacePresetApplicationRepository } from "./repositories/space-preset-applications.js";
 export type {
   SpacePresetApplicationRow,

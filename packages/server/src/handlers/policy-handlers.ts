@@ -326,7 +326,10 @@ export async function handleGatewaySetExternalConnectivity(
     return context.errorResponse(msg.id, "INVALID_ARGUMENT", "mode is required");
   }
 
-  const snapshot = await context.gatewayExternalConnectivityService.setMode(payload.mode);
+  const snapshot = await context.gatewayExternalConnectivityService.setMode(
+    payload.mode,
+    payload.funnelEnabled,
+  );
   return context.response(msg.id, MessageTypes.GATEWAY_SET_EXTERNAL_CONNECTIVITY, {
     settings: snapshot.settings,
     status: snapshot.status,

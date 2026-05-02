@@ -560,8 +560,12 @@ export interface GatewayWorkspaceDefaultsService {
 
 export interface GatewayExternalConnectivityService {
   getSnapshot: () => Promise<GatewayGetExternalConnectivityResponsePayload>;
-  setMode: (mode: GatewaySetExternalConnectivityPayload["mode"]) =>
-    Promise<GatewaySetExternalConnectivityResponsePayload>;
+  setMode: (
+    mode: GatewaySetExternalConnectivityPayload["mode"],
+    funnelEnabled?: boolean | null,
+  ) => Promise<GatewaySetExternalConnectivityResponsePayload>;
+  isExternallyExposed?: () => boolean;
+  currentFunnelUrl?: () => string | undefined;
 }
 
 export interface OrchestratorCommandService {
