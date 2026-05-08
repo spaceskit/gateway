@@ -1,6 +1,6 @@
 import type { EventBus } from "@spaceskit/core";
 import { ConciergeCallService, ConciergeCallServiceError, normalizeTtsMode } from "@spaceskit/core";
-import type { SpaceManager } from "@spaceskit/core";
+import type { AppleNotificationLifecycleService, SpaceManager } from "@spaceskit/core";
 import type { Logger } from "@spaceskit/observability";
 import type {
   ConciergeCallAnswerPayload,
@@ -85,6 +85,7 @@ export class ConciergeCallRuntimeService {
       eventBus: EventBus;
       logger: Logger;
       spaceManager: SpaceManager;
+      appleNotificationService?: Pick<AppleNotificationLifecycleService, "registerDevice"> | null;
       now?: () => Date;
     },
   ) {
@@ -302,7 +303,18 @@ export class ConciergeCallRuntimeService {
     input: ConciergeCallRegisterPushPayload & { principalId?: string; deviceId?: string },
   ): ConciergeVoipPushRegistrationPayload {
     try {
-      return this.callService.registerPush(input);
+      const registration = this.callService.registerPush(input);
+      if (registration.principalId) {
+        void this.options.appleNotificationService?.registerDevice({
+          principalId: registration.principalId,
+          deviceId: registration.deviceId,
+          platform: registration.platform === "macos" ? "macos" : "ios",
+          tokenKind: "voip",
+          pushToken: registration.pushToken,
+          topic: registration.voipTopic,
+        });
+      }
+      return registration;
     } catch (error) {
       throw this.normalizeError(error);
     }

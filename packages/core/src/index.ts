@@ -400,6 +400,33 @@ export type {
   NotificationStats,
 } from "./notifications/types.js";
 export { DefaultNotificationService } from "./notifications/notification-service.js";
+export {
+  AppleNotificationLifecycleService,
+  InMemoryAppleNotificationLifecycleRepository,
+} from "./notifications/apple-notification-lifecycle.js";
+export type {
+  AppleAlertDeliveryDecision,
+  AppleAlertDeliveryPlanInput,
+  AppleAlertPushInput,
+  AppleApnsPushRequest,
+  AppleNotificationAction,
+  AppleNotificationDelivery,
+  AppleNotificationDeliveryChannel,
+  AppleNotificationDeliveryStatus,
+  AppleNotificationLifecycleRepository,
+  AppleNotificationPreferences,
+  AppleNotificationQuietHours,
+  ApplePushDeviceRegistration,
+  ApplePushEnvironment,
+  ApplePushPlatform,
+  ApplePushTokenKind,
+  AppleVoipPushInput,
+  BackgroundFeedbackActionResult,
+  BackgroundFeedbackResolveInput,
+  PatchAppleNotificationPreferencesInput,
+  RecordAppleNotificationDeliveryInput,
+  RegisterApplePushDeviceInput,
+} from "./notifications/apple-notification-lifecycle.js";
 
 // Experiences (extended)
 export { ExperienceGenerator } from "./experiences/experience-generator.js";

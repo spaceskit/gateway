@@ -2,6 +2,7 @@ import {
   AccessGrantRepository,
   AgentUsageSessionRepository,
   ApprovalRequestRepository,
+  AppleNotificationRepository,
   ArtifactRepository,
   AuditEventsRepository,
   AuthKeyRepository,
@@ -145,6 +146,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     runStepRepo = null,
     invocationRecordRepo = null,
     approvalRequestRepo = null,
+    appleNotificationRepo = null,
     conciergeEscalationRequestRepo = null,
     usageRecordRepo = null,
     integrationRequestRepo = null,
@@ -240,6 +242,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     runStepRepo = new RunStepRepository(db.db);
     invocationRecordRepo = new InvocationRecordRepository(db.db);
     approvalRequestRepo = new ApprovalRequestRepository(db.db);
+    appleNotificationRepo = new AppleNotificationRepository(db.db);
     conciergeEscalationRequestRepo = new ConciergeEscalationRequestRepository(db.db);
     usageRecordRepo = new UsageRecordRepository(db.db);
     integrationRequestRepo = new IntegrationRequestRepository(db.db);
@@ -357,6 +360,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     runStepRepo,
     invocationRecordRepo,
     approvalRequestRepo,
+    appleNotificationRepo,
     conciergeEscalationRequestRepo,
     usageRecordRepo,
     integrationRequestRepo,

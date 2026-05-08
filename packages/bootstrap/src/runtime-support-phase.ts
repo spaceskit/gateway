@@ -1,5 +1,6 @@
 import {
   AgentVersionManager,
+  AppleNotificationLifecycleService,
   ConfigHotReloader,
   DefaultNotificationService,
   DefaultToolExecutor,
@@ -79,6 +80,28 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
       logger: logger.child({ module: "concierge-escalation" }),
     })
     : null;
+  const appleNotificationService = new AppleNotificationLifecycleService({
+    repository: state.appleNotificationRepo ?? undefined,
+    feedbackResolver: conciergeEscalationService
+      ? async (input) => {
+        const status = await conciergeEscalationService.resolveRequest({
+          requestId: input.feedbackId,
+          status: "ok",
+          payload: {
+            action: input.action,
+            message: input.message,
+            ...(input.payload ?? {}),
+          },
+        });
+        return {
+          requestId: status.requestId,
+          status: status.status,
+          deliveryChannel: status.deliveryChannel,
+          response: status.response,
+        };
+      }
+      : undefined,
+  });
 
   const checkpointManager = db ? new SQLiteCheckpointManager(db.db) : null;
   if (checkpointManager) {
@@ -385,6 +408,7 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
     memoryRegistry,
     modelRouter,
     notificationService,
+    appleNotificationService,
     conciergeEscalationService,
     pluginSystem,
     sessionContinuityManager,

@@ -9,6 +9,7 @@ import {
 import type { BootstrapState } from "./bootstrap-state.js";
 import { GatewayObservabilityApiService } from "./services/gateway-observability-api-service.js";
 import { issueHttpPrincipalToken } from "./services/http-principal-auth.js";
+import { AppleNotificationApiService } from "./services/apple-notification-api-service.js";
 import { ShareRelayApiService } from "./services/share-relay-api-service.js";
 import { SpacesAdminMcpFacadeService } from "./services/spaces-admin-mcp-facade-service.js";
 import { createGatewayMcpHttpHandler } from "@spaceskit/mcp-runtime";
@@ -229,6 +230,15 @@ export function initializeTransportServices(state: BootstrapState): void {
       : undefined,
     deviceIdentityService: state.deviceIdentityService ?? undefined,
   });
+  const appleNotificationApiService = new AppleNotificationApiService({
+    notificationLifecycleService: state.appleNotificationService ?? undefined,
+    principalAuth: {
+      strictVerification: config.httpPrincipalAuthStrict,
+      hs256Secret: config.httpPrincipalAuthHs256Secret,
+      maxClockSkewSeconds: config.httpPrincipalAuthMaxClockSkewSeconds,
+    },
+    requireAuthenticatedPrincipal: true,
+  });
   const gatewayObservabilityApiService = new GatewayObservabilityApiService({
     observabilityService: state.gatewayObservabilityService,
     principalAuth: {
@@ -394,6 +404,7 @@ export function initializeTransportServices(state: BootstrapState): void {
   Object.assign(state, {
     a2aHandler,
     a2aPush,
+    appleNotificationApiService,
     diagramHandler,
     gatewayMcpHandler,
     gatewayObservabilityApiService,

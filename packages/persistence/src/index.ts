@@ -201,6 +201,13 @@ export type {
   UpdateConciergeEscalationRequestInput,
 } from "./repositories/concierge-escalation-requests.js";
 
+export { AppleNotificationRepository } from "./repositories/apple-notifications.js";
+export type {
+  AppleNotificationDeliveryRow,
+  AppleNotificationPreferencesRow,
+  ApplePushDeviceRegistrationRow,
+} from "./repositories/apple-notifications.js";
+
 export { UsageRecordRepository } from "./repositories/usage-records.js";
 export type { UsageRecordRow, CreateUsageRecordInput } from "./repositories/usage-records.js";
 

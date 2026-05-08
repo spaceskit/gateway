@@ -130,6 +130,7 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
     eventBus: state.eventBus,
     logger: logger.child({ module: "concierge-call-runtime" }),
     spaceManager: state.spaceManager,
+    appleNotificationService: state.appleNotificationService ?? undefined,
   });
   state.conciergeEscalationService?.setConciergeCallRuntimeService(conciergeCallRuntimeService);
 

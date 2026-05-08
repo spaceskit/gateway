@@ -36,6 +36,8 @@ export async function startGatewayServer(state: BootstrapState): Promise<void> {
         }
         const relayResponse = await state.shareRelayApiService.handleRequest(req, url);
         if (relayResponse) return relayResponse;
+        const notificationResponse = await state.appleNotificationApiService.handleRequest(req, url);
+        if (notificationResponse) return notificationResponse;
         return state.spacesRestApiService.handleRequest(req, url);
       },
       validateDeviceIdentity: state.deviceIdentityService
