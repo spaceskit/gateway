@@ -10,7 +10,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { appendFile, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -48,6 +48,55 @@ export interface FileLoggerOptions {
   filePath: string;
   /** Also write to stdout/stderr. Default: true. */
   tee?: boolean;
+  /**
+   * Rotate the file when its size reaches this many bytes.
+   * Falsy (0 / undefined) disables rotation. Defaults read from
+   * SPACESKIT_LOG_MAX_SIZE_MB; explicit option wins.
+   */
+  maxSizeBytes?: number;
+  /**
+   * Number of rotated files to keep (.1 .. .N). Older are deleted
+   * during rotation. Defaults to 5 when rotation is enabled. Reads
+   * SPACESKIT_LOG_RETENTION_COUNT; explicit option wins.
+   */
+  retentionCount?: number;
+}
+
+interface ResolvedRotation {
+  maxSizeBytes: number;
+  retentionCount: number;
+}
+
+const DEFAULT_RETENTION_COUNT = 5;
+
+function resolveRotationFromEnv(options: FileLoggerOptions): ResolvedRotation {
+  const envMaxMb = process.env.SPACESKIT_LOG_MAX_SIZE_MB;
+  const envRetention = process.env.SPACESKIT_LOG_RETENTION_COUNT;
+
+  let maxSizeBytes = options.maxSizeBytes ?? 0;
+  if (maxSizeBytes === 0 && envMaxMb !== undefined) {
+    const parsed = Number.parseFloat(envMaxMb);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      maxSizeBytes = Math.ceil(parsed * 1024 * 1024);
+    }
+  }
+
+  let retentionCount = options.retentionCount ?? 0;
+  if (retentionCount === 0 && envRetention !== undefined) {
+    const parsed = Number.parseInt(envRetention, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      retentionCount = parsed;
+    }
+  }
+  if (retentionCount === 0 && maxSizeBytes > 0) {
+    retentionCount = DEFAULT_RETENTION_COUNT;
+  }
+
+  return { maxSizeBytes, retentionCount };
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: string }).code === "ENOENT";
 }
 
 export interface BufferedFileOutput {
@@ -66,6 +115,7 @@ export interface BufferedFileOutput {
  */
 export function createFileOutput(options: FileLoggerOptions): BufferedFileOutput {
   const { filePath, tee = true } = options;
+  const rotation = resolveRotationFromEnv(options);
 
   // Ensure parent directory exists
   const dir = dirname(filePath);
@@ -86,6 +136,44 @@ export function createFileOutput(options: FileLoggerOptions): BufferedFileOutput
     }
   };
 
+  const maybeRotate = async (): Promise<void> => {
+    if (rotation.maxSizeBytes <= 0) return;
+
+    let size: number;
+    try {
+      const s = await stat(filePath);
+      size = s.size;
+    } catch (err) {
+      if (isEnoent(err)) return;
+      throw err;
+    }
+
+    if (size < rotation.maxSizeBytes) return;
+
+    // Cascade .N -> drop, .N-1 -> .N, ..., .1 -> .2, primary -> .1
+    for (let i = rotation.retentionCount; i >= 1; i -= 1) {
+      const src = `${filePath}.${i}`;
+      try {
+        if (i === rotation.retentionCount) {
+          await unlink(src);
+        } else {
+          await rename(src, `${filePath}.${i + 1}`);
+        }
+      } catch (err) {
+        if (!isEnoent(err)) {
+          process.stderr.write(`[log-rotate-error] Could not rotate ${src}: ${String(err)}\n`);
+        }
+      }
+    }
+    try {
+      await rename(filePath, `${filePath}.1`);
+    } catch (err) {
+      if (!isEnoent(err)) {
+        process.stderr.write(`[log-rotate-error] Could not rotate ${filePath}: ${String(err)}\n`);
+      }
+    }
+  };
+
   const flushNow = async (): Promise<void> => {
     flushScheduled = false;
     if (pendingLines.length === 0) {
@@ -99,6 +187,7 @@ export function createFileOutput(options: FileLoggerOptions): BufferedFileOutput
 
     try {
       await appendFile(filePath, chunk, "utf-8");
+      await maybeRotate();
     } catch {
       process.stderr.write(`[log-file-error] Could not write to ${filePath}\n`);
     } finally {
