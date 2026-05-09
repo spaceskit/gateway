@@ -215,6 +215,13 @@ export interface SpaceAdminServiceOptions {
     responsePayload: string;
   }) => Promise<void>;
   idempotencyPrincipalId?: string;
+  /**
+   * Optional callback invoked when a request is missing `idempotencyKey`
+   * while idempotency support is otherwise wired (load + save). Use this
+   * to forward to a structured logger or telemetry channel. Defaults to a
+   * no-op so test runs and production are silent unless explicitly opted in.
+   */
+  onMissingIdempotencyKey?: (endpoint: string) => void;
 
   now?: () => Date;
 }
@@ -1439,7 +1446,7 @@ export class SpaceAdminService {
 
     if (!normalizedKey || !loadRecord || !saveRecord) {
       if (!normalizedKey && loadRecord && saveRecord) {
-        console.warn(`[SpaceAdminService] Missing idempotencyKey for ${endpoint} — request is not replay-safe`);
+        this.options.onMissingIdempotencyKey?.(endpoint);
       }
       return execute();
     }
