@@ -577,6 +577,7 @@ describe("DefaultAgentRuntime streaming text deltas", () => {
       }),
     };
 
+    const promptBridgeWarnings: Record<string, unknown>[] = [];
     const runtime = new DefaultAgentRuntime({
       config: {
         id: "agent-1",
@@ -590,35 +591,27 @@ describe("DefaultAgentRuntime streaming text deltas", () => {
       modelProvider: provider,
       toolExecutor,
       eventBus: new EventBus(),
+      onPromptBridgeWarning: (payload) => {
+        promptBridgeWarnings.push(payload);
+      },
     });
 
-    const warnings: unknown[] = [];
-    const originalWarn = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args);
-    };
-    try {
-      const events = await collectEvents(runtime);
-      const completion = events.find(isTurnCompleted);
-      const malformedToolMessages = capturedSecondCallMessages.filter((message) => (
-        message.role === "tool" && !message.toolCallId?.trim()
-      ));
-      const fallbackAssistantMessage = capturedSecondCallMessages.find((message) => (
-        message.role === "assistant" && message.content.includes("[tool-result-unlinked]")
-      ));
+    const events = await collectEvents(runtime);
+    const completion = events.find(isTurnCompleted);
+    const malformedToolMessages = capturedSecondCallMessages.filter((message) => (
+      message.role === "tool" && !message.toolCallId?.trim()
+    ));
+    const fallbackAssistantMessage = capturedSecondCallMessages.find((message) => (
+      message.role === "assistant" && message.content.includes("[tool-result-unlinked]")
+    ));
 
-      expect(provider.generateCalls).toBe(2);
-      expect(malformedToolMessages).toHaveLength(0);
-      expect(fallbackAssistantMessage).toBeDefined();
-      expect(completion?.result.finalMessage.content).toContain("Recovered from malformed tool call id.");
-      expect(
-        warnings.some((entry) => (
-          JSON.stringify(entry).includes("prompt_bridge_tool_missing_tool_call_id")
-        )),
-      ).toBe(true);
-    } finally {
-      console.warn = originalWarn;
-    }
+    expect(provider.generateCalls).toBe(2);
+    expect(malformedToolMessages).toHaveLength(0);
+    expect(fallbackAssistantMessage).toBeDefined();
+    expect(completion?.result.finalMessage.content).toContain("Recovered from malformed tool call id.");
+    expect(
+      promptBridgeWarnings.some((payload) => payload.code === "prompt_bridge_tool_missing_tool_call_id"),
+    ).toBe(true);
   });
 
   test("falls back to generate() when stream fails before first chunk", async () => {

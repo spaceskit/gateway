@@ -95,6 +95,12 @@ export interface AgentTurnLoopDeps {
     providerId: string;
     modelId: string;
   }) => Promise<CliExecutionObserver | undefined> | CliExecutionObserver | undefined;
+  /**
+   * Forwards informational prompt-bridge warnings (such as malformed
+   * tool-call ids that are coerced into assistant fallback notes) to the
+   * caller. Default is silent.
+   */
+  onPromptBridgeWarning?: (payload: Record<string, unknown>) => void;
 }
 
 export async function* runAgentTurnCoreLoop(
@@ -542,6 +548,7 @@ export async function* runAgentTurnCoreLoop(
           agentId: deps.agentId,
           providerId: deps.config.modelProvider,
           modelId: deps.config.modelId,
+          onPromptBridgeWarning: deps.onPromptBridgeWarning,
         });
         yield { type: "tool_result", result: errorResult };
       }
@@ -569,6 +576,7 @@ export async function* runAgentTurnCoreLoop(
             agentId: deps.agentId,
             providerId: deps.config.modelProvider,
             modelId: deps.config.modelId,
+            onPromptBridgeWarning: deps.onPromptBridgeWarning,
           });
           yield { type: "tool_result", result: toolResult };
         }
@@ -609,6 +617,7 @@ export async function* runAgentTurnCoreLoop(
             agentId: deps.agentId,
             providerId: deps.config.modelProvider,
             modelId: deps.config.modelId,
+            onPromptBridgeWarning: deps.onPromptBridgeWarning,
           });
           yield { type: "tool_result", result: deniedResult };
           continue;
@@ -627,6 +636,7 @@ export async function* runAgentTurnCoreLoop(
           agentId: deps.agentId,
           providerId: deps.config.modelProvider,
           modelId: deps.config.modelId,
+          onPromptBridgeWarning: deps.onPromptBridgeWarning,
         });
         yield { type: "tool_result", result: toolResult };
       }

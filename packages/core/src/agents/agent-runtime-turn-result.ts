@@ -16,6 +16,11 @@ interface AppendToolResultMessageArgs {
   agentId: string;
   providerId: string;
   modelId: string;
+  /**
+   * Optional sink for prompt-bridge warnings (for example a malformed
+   * tool-call id coerced into an assistant fallback note). Default silent.
+   */
+  onPromptBridgeWarning?: (payload: Record<string, unknown>) => void;
 }
 
 export function appendToolResultMessage({
@@ -26,13 +31,20 @@ export function appendToolResultMessage({
   agentId,
   providerId,
   modelId,
+  onPromptBridgeWarning,
 }: AppendToolResultMessageArgs): void {
   const toolCallId = typeof toolCall.id === "string" ? toolCall.id.trim() : "";
   const content = stringifyToolMessageContent(rawResult);
   if (!toolCallId) {
-    emitPromptBridgeWarning("prompt_bridge_tool_missing_tool_call_id", context, agentId, providerId, modelId, {
-      toolName: toolCall.name,
-    });
+    emitPromptBridgeWarning(
+      "prompt_bridge_tool_missing_tool_call_id",
+      context,
+      agentId,
+      providerId,
+      modelId,
+      { toolName: toolCall.name },
+      onPromptBridgeWarning,
+    );
     messages.push({
       role: "assistant",
       content: `[tool-result-unlinked] ${toolCall.name}: ${content}`,
@@ -63,13 +75,14 @@ function stringifyToolMessageContent(value: unknown): string {
   }
 }
 
-function emitPromptBridgeWarning(
+export function emitPromptBridgeWarning(
   code: string,
   context: TurnContext,
   agentId: string,
   providerId: string,
   modelId: string,
   details?: Record<string, unknown>,
+  onWarning?: (payload: Record<string, unknown>) => void,
 ): void {
   const payload = {
     code,
@@ -80,7 +93,7 @@ function emitPromptBridgeWarning(
     modelId,
     ...(details ?? {}),
   };
-  console.warn("[spaceskit][default-agent-runtime] prompt bridge warning", payload);
+  onWarning?.(payload);
 }
 
 interface BuildTurnResultArgs {

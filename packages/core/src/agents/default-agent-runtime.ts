@@ -64,6 +64,13 @@ export interface DefaultAgentRuntimeOptions {
     providerId: string;
     modelId: string;
   }) => Promise<CliExecutionObserver | undefined> | CliExecutionObserver | undefined;
+  /**
+   * Called when the runtime emits an informational prompt-bridge warning
+   * (for example a malformed tool-call id coerced into an assistant
+   * fallback note). Receives the structured payload built inside
+   * `emitPromptBridgeWarning`. Default is silent.
+   */
+  onPromptBridgeWarning?: (payload: Record<string, unknown>) => void;
 }
 
 export class DefaultAgentRuntime implements AgentRuntime {
@@ -88,6 +95,7 @@ export class DefaultAgentRuntime implements AgentRuntime {
     providerId: string;
     modelId: string;
   }) => Promise<CliExecutionObserver | undefined> | CliExecutionObserver | undefined;
+  private onPromptBridgeWarning?: (payload: Record<string, unknown>) => void;
   private abortController: AbortController | null = null;
 
   /**
@@ -111,6 +119,7 @@ export class DefaultAgentRuntime implements AgentRuntime {
     this.eventBus = options.eventBus;
     this.resolveApprovalBypass = options.resolveApprovalBypass;
     this.createCliExecutionObserver = options.createCliExecutionObserver;
+    this.onPromptBridgeWarning = options.onPromptBridgeWarning;
   }
 
   get state(): AgentState {
@@ -292,6 +301,7 @@ export class DefaultAgentRuntime implements AgentRuntime {
         waitForFeedback: (turnId) => this.waitForFeedback(turnId),
         resolveApprovalBypass: this.resolveApprovalBypass,
         createCliExecutionObserver: this.createCliExecutionObserver,
+        onPromptBridgeWarning: this.onPromptBridgeWarning,
       },
       context,
       messages,

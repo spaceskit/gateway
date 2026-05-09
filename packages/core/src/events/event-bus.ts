@@ -13,9 +13,24 @@ export interface GatewayEvent {
 
 export type EventHandler = (event: GatewayEvent) => void | Promise<void>;
 
+export interface EventBusOptions {
+  /**
+   * Called when a subscriber handler throws. Default behavior is silent
+   * (errors are swallowed) — pass a logger.error binding or telemetry
+   * forwarder when you want visibility. The hook receives the eventType
+   * separately so you can route or aggregate by event.
+   */
+  onHandlerError?: (err: unknown, eventType: string, isWildcard: boolean) => void;
+}
+
 export class EventBus {
   private handlers = new Map<string, Set<EventHandler>>();
   private wildcardHandlers = new Set<EventHandler>();
+  private readonly onHandlerError?: (err: unknown, eventType: string, isWildcard: boolean) => void;
+
+  constructor(options: EventBusOptions = {}) {
+    this.onHandlerError = options.onHandlerError;
+  }
 
   /** Subscribe to a specific event type. */
   on(eventType: string, handler: EventHandler): () => void {
@@ -46,7 +61,7 @@ export class EventBus {
         try {
           handler(event);
         } catch (err) {
-          console.error(`Event handler error for ${event.type}:`, err);
+          this.onHandlerError?.(err, event.type, false);
         }
       }
     }
@@ -55,7 +70,7 @@ export class EventBus {
       try {
         handler(event);
       } catch (err) {
-        console.error(`Wildcard event handler error for ${event.type}:`, err);
+        this.onHandlerError?.(err, event.type, true);
       }
     }
   }

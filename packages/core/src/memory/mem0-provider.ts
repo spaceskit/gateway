@@ -34,6 +34,12 @@ export interface Mem0ProviderOptions {
   defaultUserId?: string;
   /** Organization ID for multi-tenant. */
   orgId?: string;
+  /**
+   * Called when the optional SDK package cannot be loaded during
+   * initialize(). Receives the original import error. Default is silent —
+   * pass a logger.warn binding to surface install hints.
+   */
+  onSdkUnavailable?: (err: unknown) => void;
 }
 
 export class Mem0Provider implements MemoryProvider {
@@ -60,7 +66,7 @@ export class Mem0Provider implements MemoryProvider {
       });
       this.available = true;
     } catch (err) {
-      console.warn("Mem0 SDK not available. Install with: npm install mem0ai", err);
+      this.config.onSdkUnavailable?.(err);
       this.available = false;
     }
   }

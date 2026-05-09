@@ -31,6 +31,12 @@ export interface LettaProviderOptions {
   apiKey?: string;
   /** Default agent ID in Letta. */
   defaultAgentId?: string;
+  /**
+   * Called when the optional SDK package cannot be loaded during
+   * initialize(). Receives the original import error. Default is silent —
+   * pass a logger.warn binding to surface install hints.
+   */
+  onSdkUnavailable?: (err: unknown) => void;
 }
 
 export class LettaProvider implements MemoryProvider {
@@ -57,7 +63,7 @@ export class LettaProvider implements MemoryProvider {
       });
       this.available = true;
     } catch (err) {
-      console.warn("Letta SDK not available. Install with: npm install @letta-ai/letta-client", err);
+      this.config.onSdkUnavailable?.(err);
       this.available = false;
     }
   }
