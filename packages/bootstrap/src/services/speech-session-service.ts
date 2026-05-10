@@ -198,6 +198,13 @@ export interface SpeechSessionServiceOptions {
   voiceRoutingService?: VoiceRoutingService;
   defaultVoiceRoute?: VoiceRoutePreferences;
   now?: () => Date;
+  /**
+   * Called when an executeTurn invocation throws or resolves to a
+   * failure. Default is silent (the failure is still surfaced through
+   * the session state). Pass a logger.error binding when you want
+   * stderr/log telemetry.
+   */
+  onTurnFailure?: (info: { sessionId: string; spaceId: string; err: unknown }) => void;
 }
 
 export class SpeechSessionError extends Error {
@@ -390,9 +397,11 @@ export class SpeechSessionService {
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
           turnError = message;
-          console.error(
-            `[SpeechSession] executeTurn failed for session=${session.sessionId} space=${session.spaceId}: ${message}`,
-          );
+          this.options.onTurnFailure?.({
+            sessionId: session.sessionId,
+            spaceId: session.spaceId,
+            err: error,
+          });
         }
       }
 

@@ -543,6 +543,76 @@ describe("SpeechSessionService", () => {
     }
   });
 
+  test("onTurnFailure callback fires when executeTurn fails", async () => {
+    const failures: Array<{ sessionId: string; spaceId: string; err: unknown }> = [];
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => {
+          throw new Error("provider unavailable");
+        },
+      } as any,
+      onTurnFailure: (info) => {
+        failures.push(info);
+      },
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-on-turn-failure",
+      autoSubmitTurns: true,
+    });
+
+    await service.appendAudioChunk({
+      sessionId: "speech-on-turn-failure",
+      sequence: 1,
+      audioBase64: "AAAA",
+      transcriptText: "hello failure",
+      isFinal: true,
+    });
+
+    expect(failures.length).toBe(1);
+    expect(failures[0].sessionId).toBe("speech-on-turn-failure");
+    expect(failures[0].spaceId).toBe("main-space");
+    expect(failures[0].err).toBeInstanceOf(Error);
+    expect((failures[0].err as Error).message).toBe("provider unavailable");
+  });
+
+  test("default (no onTurnFailure callback) does NOT write to console.error", async () => {
+    const service = new SpeechSessionService({
+      spaceManager: {
+        executeTurn: async () => {
+          throw new Error("provider unavailable");
+        },
+      } as any,
+    });
+
+    service.startSession({
+      spaceId: "main-space",
+      sessionId: "speech-default-silent",
+      autoSubmitTurns: true,
+    });
+
+    const originalError = console.error;
+    const errors: unknown[][] = [];
+    console.error = ((...args: unknown[]) => {
+      errors.push(args);
+    }) as typeof console.error;
+
+    try {
+      await service.appendAudioChunk({
+        sessionId: "speech-default-silent",
+        sequence: 1,
+        audioBase64: "AAAA",
+        transcriptText: "hello silent",
+        isFinal: true,
+      });
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(errors).toEqual([]);
+  });
+
   test("reroutes TTS independently from STT when only managed TTS usage is locked", async () => {
     const db = initDatabase({
       path: ":memory:",

@@ -645,6 +645,130 @@ describe("TaskOrchestrationService", () => {
     await waitForState(service, result.taskId, "completed");
   });
 
+  test("onTaskDescriptionTruncated callback fires when input description exceeds the budget", async () => {
+    const eventBus = new EventBus();
+    const taskRecordRepo = new FakeTaskRecordRepo();
+    const { repo: profileRepo } = createProfileRepo();
+    const truncations: Array<{ from: number; to: number }> = [];
+
+    const service = new TaskOrchestrationService({
+      eventBus,
+      taskRecordRepo: taskRecordRepo as never,
+      spaceTemplateRepo: { getActiveRevision: () => undefined, list: () => [] } as never,
+      profileRepo,
+      spaceAdminService: {
+        async createSpace() { return { id: "space-trunc-cb" }; },
+        async addAgent() { return {}; },
+      } as never,
+      spaceManager: { async executeTurn() { return { turnId: "turn-trunc-cb" }; } } as never,
+      onTaskDescriptionTruncated: (info) => truncations.push(info),
+    });
+
+    const longDesc = "B".repeat(2500);
+    const result = await service.orchestrate({
+      taskDescription: longDesc,
+      requestedBy: "user-1",
+      templateHint: "research",
+    });
+
+    expect(truncations).toEqual([{ from: 2500, to: 2000 }]);
+
+    eventBus.emit({
+      type: "space.orchestrator_event",
+      timestamp: new Date(),
+      spaceId: "space-trunc-cb",
+      correlationId: result.rootTurnId,
+      eventType: "summary.completed",
+      event: { summary: { finalSummaryText: "done" } },
+    });
+    await waitForState(service, result.taskId, "completed");
+  });
+
+  test("default (no onTaskDescriptionTruncated callback) does NOT write to console.warn", async () => {
+    const eventBus = new EventBus();
+    const taskRecordRepo = new FakeTaskRecordRepo();
+    const { repo: profileRepo } = createProfileRepo();
+
+    const service = new TaskOrchestrationService({
+      eventBus,
+      taskRecordRepo: taskRecordRepo as never,
+      spaceTemplateRepo: { getActiveRevision: () => undefined, list: () => [] } as never,
+      profileRepo,
+      spaceAdminService: {
+        async createSpace() { return { id: "space-trunc-silent" }; },
+        async addAgent() { return {}; },
+      } as never,
+      spaceManager: { async executeTurn() { return { turnId: "turn-trunc-silent" }; } } as never,
+    });
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = ((...args: unknown[]) => {
+      warnings.push(args);
+    }) as typeof console.warn;
+
+    let result: Awaited<ReturnType<typeof service.orchestrate>>;
+    try {
+      result = await service.orchestrate({
+        taskDescription: "C".repeat(2500),
+        requestedBy: "user-1",
+        templateHint: "research",
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warnings).toEqual([]);
+
+    eventBus.emit({
+      type: "space.orchestrator_event",
+      timestamp: new Date(),
+      spaceId: "space-trunc-silent",
+      correlationId: result.rootTurnId,
+      eventType: "summary.completed",
+      event: { summary: { finalSummaryText: "done" } },
+    });
+    await waitForState(service, result.taskId, "completed");
+  });
+
+  test("onTaskDescriptionTruncated callback does NOT fire when description is within budget", async () => {
+    const eventBus = new EventBus();
+    const taskRecordRepo = new FakeTaskRecordRepo();
+    const { repo: profileRepo } = createProfileRepo();
+    const truncations: Array<{ from: number; to: number }> = [];
+
+    const service = new TaskOrchestrationService({
+      eventBus,
+      taskRecordRepo: taskRecordRepo as never,
+      spaceTemplateRepo: { getActiveRevision: () => undefined, list: () => [] } as never,
+      profileRepo,
+      spaceAdminService: {
+        async createSpace() { return { id: "space-no-trunc" }; },
+        async addAgent() { return {}; },
+      } as never,
+      spaceManager: { async executeTurn() { return { turnId: "turn-no-trunc" }; } } as never,
+      onTaskDescriptionTruncated: (info) => truncations.push(info),
+    });
+
+    const result = await service.orchestrate({
+      taskDescription: "Short enough description for the budget",
+      requestedBy: "user-1",
+      templateHint: "research",
+    });
+
+    expect(truncations).toEqual([]);
+
+    eventBus.emit({
+      type: "space.orchestrator_event",
+      timestamp: new Date(),
+      spaceId: "space-no-trunc",
+      correlationId: result.rootTurnId,
+      eventType: "summary.completed",
+      event: { summary: { finalSummaryText: "done" } },
+    });
+    await waitForState(service, result.taskId, "completed");
+  });
+
   test("rejects agentCount greater than 10", async () => {
     const eventBus = new EventBus();
     const taskRecordRepo = new FakeTaskRecordRepo();

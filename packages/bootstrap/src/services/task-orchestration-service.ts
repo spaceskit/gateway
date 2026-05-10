@@ -88,6 +88,12 @@ export interface TaskOrchestrationServiceOptions {
     } | undefined;
     create(input: CreateProfileInput): unknown;
   };
+  /**
+   * Called when a task description is truncated to fit the configured
+   * length budget. Receives the original and truncated lengths. Default
+   * is silent — pass a logger.warn binding when you want telemetry.
+   */
+  onTaskDescriptionTruncated?: (info: { from: number; to: number }) => void;
 }
 
 type TaskOutcome =
@@ -106,6 +112,7 @@ export class TaskOrchestrationService {
   private readonly taskRecordRepo: TaskRecordRepository;
   private readonly spaceTemplateRepo: SpaceTemplateRepository;
   private readonly profileRepo: TaskOrchestrationServiceOptions["profileRepo"];
+  private readonly onTaskDescriptionTruncated?: (info: { from: number; to: number }) => void;
 
   constructor(options: TaskOrchestrationServiceOptions) {
     this.spaceAdminService = options.spaceAdminService;
@@ -114,6 +121,7 @@ export class TaskOrchestrationService {
     this.taskRecordRepo = options.taskRecordRepo;
     this.spaceTemplateRepo = options.spaceTemplateRepo;
     this.profileRepo = options.profileRepo;
+    this.onTaskDescriptionTruncated = options.onTaskDescriptionTruncated;
   }
 
   /**
@@ -132,9 +140,7 @@ export class TaskOrchestrationService {
       );
     }
     if (trimmedDescription.length > 2000) {
-      console.warn(
-        `[TaskOrchestration] Task description truncated from ${trimmedDescription.length} to 2000 characters.`,
-      );
+      this.onTaskDescriptionTruncated?.({ from: trimmedDescription.length, to: 2000 });
       input = { ...input, taskDescription: trimmedDescription.substring(0, 2000) };
     } else if (trimmedDescription !== input.taskDescription) {
       input = { ...input, taskDescription: trimmedDescription };
