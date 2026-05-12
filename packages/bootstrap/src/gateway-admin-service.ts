@@ -59,10 +59,6 @@ import type {
   GatewayGetToolResponsePayload,
   GatewayRemoveToolResponsePayload,
 } from "@spaceskit/server";
-import {
-  ClaudeAgentSdkModelProvider,
-  CodexAppServerModelProvider,
-} from "@spaceskit/provider-runtime";
 import type {
   ProviderSecretRefService,
   ProviderSecretRefSummary,
@@ -86,14 +82,9 @@ import {
   type CodexAppServerTelemetryResult,
 } from "./services/codex-app-server-telemetry.js";
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
   isLocalProvider,
   keyFromEnvironment,
   LOCAL_PROVIDER_MODEL_MANIFEST,
-  providerDisplayName,
-  providerInstallHint,
-  providerRecommended,
-  resolveProviderAuthMode,
 } from "./services/provider-catalog-support.js";
 import type { LocalExecutableResolver } from "./execution/local-executable-resolver.js";
 import {
@@ -109,19 +100,14 @@ import {
   normalizeSelectionMode,
   parseModelConfig,
   parseStringArray,
-  providerIntegrationClass,
   resolveOpenAICompatibleModelsEndpoint,
   throwGatewayError,
   uniqueModelIds,
   withProviderPrefix,
 } from "./gateway-admin-model-normalizers.js";
-import {
-  cloneClaudeAgentSdkCatalogProbe,
-  cloneCodexAppServerCatalogProbe,
-  mapClaudeAgentSdkProbeResult,
-  mapCodexAppServerProbeResult,
-  type ClaudeAgentSdkCatalogProbe,
-  type CodexAppServerCatalogProbe,
+import type {
+  ClaudeAgentSdkCatalogProbe,
+  CodexAppServerCatalogProbe,
 } from "./gateway-admin-telemetry-normalizers.js";
 import {
   applyProviderConfigToEnvironment,
@@ -168,7 +154,8 @@ import {
 import { GatewayAdminToolIntegrationService } from "./gateway-admin-tool-integration-service.js";
 import { GatewayAdminProviderTelemetryService } from "./gateway-admin-provider-telemetry-service.js";
 import { GatewayAdminProviderCatalogService } from "./gateway-admin-provider-catalog-service.js";
-import { runCachedCatalogProbe } from "./gateway-admin-cached-probe.js";
+import { GatewayAdminCatalogDetectionService } from "./gateway-admin-catalog-detection-service.js";
+import { GatewayAdminManagedAgentRuntimeService } from "./gateway-admin-managed-agent-runtime-service.js";
 import { OpenAICompatibleModelDiscoveryService } from "./services/openai-compatible-model-discovery-service.js";
 import {
   GatewayAdminProviderPolicyService,
@@ -300,8 +287,6 @@ interface ResolvedProviderModelHint {
   reason?: string;
 }
 
-const CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS = 30_000;
-
 export class DefaultGatewayAdminService {
   private readonly logger: Logger;
   private readonly profileRepo: ProfileRepository | null;
@@ -333,19 +318,9 @@ export class DefaultGatewayAdminService {
   private readonly providerCatalogService: GatewayAdminProviderCatalogService;
   private readonly openAICompatibleModelDiscoveryService: OpenAICompatibleModelDiscoveryService;
   private readonly localAgentDiscoveryService: LocalAgentDiscoveryService;
-  private readonly claudeAgentSdkMetadataProbe?: GatewayAdminServiceOptions["claudeAgentSdkMetadataProbe"];
-  private readonly codexAppServerMetadataProbe?: GatewayAdminServiceOptions["codexAppServerMetadataProbe"];
+  private readonly catalogDetectionService: GatewayAdminCatalogDetectionService;
+  private readonly managedAgentRuntimeService: GatewayAdminManagedAgentRuntimeService;
   private readonly providerConfigs = new Map<string, ProviderRuntimeConfig>();
-  private readonly claudeAgentSdkDetectionCache = new Map<string, {
-    expiresAt: number;
-    value: ClaudeAgentSdkCatalogProbe;
-  }>();
-  private readonly claudeAgentSdkDetectionInFlight = new Map<string, Promise<ClaudeAgentSdkCatalogProbe>>();
-  private readonly codexAppServerDetectionCache = new Map<string, {
-    expiresAt: number;
-    value: CodexAppServerCatalogProbe;
-  }>();
-  private readonly codexAppServerDetectionInFlight = new Map<string, Promise<CodexAppServerCatalogProbe>>();
   constructor(options: GatewayAdminServiceOptions) {
     this.logger = options.logger;
     this.profileRepo = options.profileRepo;
@@ -437,8 +412,12 @@ export class DefaultGatewayAdminService {
       fetchClaudeOAuthUsage: (accessToken) =>
         this.fetchClaudeOAuthUsage(accessToken),
     });
-    this.claudeAgentSdkMetadataProbe = options.claudeAgentSdkMetadataProbe;
-    this.codexAppServerMetadataProbe = options.codexAppServerMetadataProbe;
+    this.catalogDetectionService = new GatewayAdminCatalogDetectionService({
+      claudeAgentSdkMetadataProbe: options.claudeAgentSdkMetadataProbe,
+      codexAppServerMetadataProbe: options.codexAppServerMetadataProbe,
+      resolveConfiguredProviderApiKey: (providerId, config) =>
+        this.resolveConfiguredProviderApiKey(providerId, config),
+    });
 
     seedGatewayAdminProvidersFromEnvironment({
       logger: this.logger,
@@ -1786,80 +1765,14 @@ export class DefaultGatewayAdminService {
     config?: ProviderRuntimeConfig,
     forceRefresh = false,
   ): Promise<ClaudeAgentSdkCatalogProbe> {
-    const providerId = "claude-agent-sdk";
-    return runCachedCatalogProbe({
-      cache: this.claudeAgentSdkDetectionCache,
-      inFlight: this.claudeAgentSdkDetectionInFlight,
-      cacheKey: providerId,
-      forceRefresh,
-      ttlMs: CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
-      cloneValue: cloneClaudeAgentSdkCatalogProbe,
-      buildValue: async () => {
-        const model = withProviderPrefix(
-          providerId,
-          config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
-        );
-        const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "api_key";
-        if (this.claudeAgentSdkMetadataProbe) {
-          return await this.claudeAgentSdkMetadataProbe({
-            providerId,
-            model,
-            authMode,
-            apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-          });
-        }
-
-        const provider = new ClaudeAgentSdkModelProvider({
-          id: providerId,
-          name: providerDisplayName(providerId),
-          model,
-          apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-          authMode: authMode as "api_key" | "host_login",
-        });
-        const probe = await provider.probeMetadata();
-        return mapClaudeAgentSdkProbeResult(probe);
-      },
-    });
+    return this.catalogDetectionService.detectClaudeAgentSdkCatalog(config, forceRefresh);
   }
 
   private async detectCodexAppServerCatalog(
     config?: ProviderRuntimeConfig,
     forceRefresh = false,
   ): Promise<CodexAppServerCatalogProbe> {
-    const providerId = "codex-app-server";
-    return runCachedCatalogProbe({
-      cache: this.codexAppServerDetectionCache,
-      inFlight: this.codexAppServerDetectionInFlight,
-      cacheKey: providerId,
-      forceRefresh,
-      ttlMs: CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
-      cloneValue: cloneCodexAppServerCatalogProbe,
-      buildValue: async () => {
-        const model = withProviderPrefix(
-          providerId,
-          config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
-        );
-        const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "host_login";
-        if (this.codexAppServerMetadataProbe) {
-          return await this.codexAppServerMetadataProbe({
-            providerId,
-            model,
-            authMode,
-            apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-          });
-        }
-
-        const provider = new CodexAppServerModelProvider({
-          id: providerId,
-          name: providerDisplayName(providerId),
-          model,
-          apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-          authMode: authMode as "api_key" | "host_login",
-        });
-        const probe = await provider.probeMetadata();
-        return mapCodexAppServerProbeResult(probe);
-      },
-    });
+    return this.catalogDetectionService.detectCodexAppServerCatalog(config, forceRefresh);
   }
 
   private resolveConfiguredProviderApiKey(
@@ -1883,15 +1796,7 @@ export class DefaultGatewayAdminService {
   private invalidateProviderRuntimeCaches(providerId: string): void {
     this.localAgentDiscoveryService.invalidate();
     this.providerCatalogService.invalidate();
-    if (providerId === "claude-agent-sdk") {
-      this.claudeAgentSdkDetectionCache.delete(providerId);
-      this.claudeAgentSdkDetectionInFlight.delete(providerId);
-      return;
-    }
-    if (providerId === "codex-app-server") {
-      this.codexAppServerDetectionCache.delete(providerId);
-      this.codexAppServerDetectionInFlight.delete(providerId);
-    }
+    this.catalogDetectionService.invalidate(providerId);
   }
 
   private findExecutable(commands: string[]): string | null {
