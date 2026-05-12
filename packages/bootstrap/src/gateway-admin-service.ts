@@ -358,9 +358,9 @@ export class DefaultGatewayAdminService {
       detectOpenAICompatibleModels: (baseURL, detectionOptions) =>
         this.detectOpenAICompatibleModels(baseURL, detectionOptions),
       detectClaudeAgentSdkCatalog: (config, forceRefresh) =>
-        this.detectClaudeAgentSdkCatalog(config, forceRefresh),
+        this.catalogDetectionService.detectClaudeAgentSdkCatalog(config, forceRefresh),
       detectCodexAppServerCatalog: (config, forceRefresh) =>
-        this.detectCodexAppServerCatalog(config, forceRefresh),
+        this.catalogDetectionService.detectCodexAppServerCatalog(config, forceRefresh),
       providerPolicyRestrictionReason: (providerId) =>
         this.providerPolicyRestrictionReason(providerId),
       appleProviderRuntimeEligibleSync: () => this.appleProviderRuntimeEligibleSync(),
@@ -375,17 +375,9 @@ export class DefaultGatewayAdminService {
         this.resolveProviderBaseURL(providerId, configuredBaseURL),
       detectOpenAICompatibleModels: (baseURL) =>
         this.detectOpenAICompatibleModels(baseURL),
-      queryCodexAppServer: (executablePath) => queryCodexAppServerTelemetry(executablePath),
-      readClaudeOAuthAccessToken: async () => {
-        const fromKeychain = readClaudeOAuthAccessTokenFromKeychainPayload();
-        if (fromKeychain.accessToken) return fromKeychain;
-        const fromFile = readClaudeOAuthAccessTokenFromCredentialsFilePayload();
-        if (fromFile.accessToken) return fromFile;
-        return {
-          message: "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
-        };
-      },
-      fetchClaudeOAuthUsage: (accessToken) => fetchClaudeOAuthUsageWindowPayloads(accessToken),
+      queryCodexAppServer: (executablePath) => this.queryCodexAppServer(executablePath),
+      readClaudeOAuthAccessToken: () => this.readClaudeOAuthAccessToken(),
+      fetchClaudeOAuthUsage: (accessToken) => this.fetchClaudeOAuthUsage(accessToken),
     });
     this.catalogDetectionService = new GatewayAdminCatalogDetectionService({
       claudeAgentSdkMetadataProbe: options.claudeAgentSdkMetadataProbe,
@@ -816,6 +808,36 @@ export class DefaultGatewayAdminService {
     validateGatewayAdminProfileModelSelection(this.profileRuntimeContext(), input);
   }
 
+  private async queryCodexAppServer(executablePath: string) {
+    return queryCodexAppServerTelemetry(executablePath);
+  }
+
+  private async readClaudeOAuthAccessToken() {
+    const fromKeychain = this.readClaudeOAuthAccessTokenFromKeychain();
+    if (fromKeychain.accessToken) {
+      return fromKeychain;
+    }
+    const fromFile = this.readClaudeOAuthAccessTokenFromCredentialsFile();
+    if (fromFile.accessToken) {
+      return fromFile;
+    }
+    return {
+      message: "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
+    };
+  }
+
+  private readClaudeOAuthAccessTokenFromKeychain() {
+    return readClaudeOAuthAccessTokenFromKeychainPayload();
+  }
+
+  private readClaudeOAuthAccessTokenFromCredentialsFile() {
+    return readClaudeOAuthAccessTokenFromCredentialsFilePayload();
+  }
+
+  private async fetchClaudeOAuthUsage(accessToken: string) {
+    return fetchClaudeOAuthUsageWindowPayloads(accessToken);
+  }
+
   private mergeAllowedModels(providerId: string, model: string, modelIds: string[]): string[] {
     return mergeAllowedProviderModels({
       providerId,
@@ -881,20 +903,6 @@ export class DefaultGatewayAdminService {
     },
   ): Promise<OpenAICompatibleDetectionResult> {
     return this.openAICompatibleModelDiscoveryService.detectModels(baseURLRaw, options);
-  }
-
-  private async detectClaudeAgentSdkCatalog(
-    config?: ProviderRuntimeConfig,
-    forceRefresh = false,
-  ): Promise<ClaudeAgentSdkCatalogProbe> {
-    return this.catalogDetectionService.detectClaudeAgentSdkCatalog(config, forceRefresh);
-  }
-
-  private async detectCodexAppServerCatalog(
-    config?: ProviderRuntimeConfig,
-    forceRefresh = false,
-  ): Promise<CodexAppServerCatalogProbe> {
-    return this.catalogDetectionService.detectCodexAppServerCatalog(config, forceRefresh);
   }
 
   private resolveConfiguredProviderApiKey(
