@@ -1,9 +1,0 @@
-{
-  "defaults": {
-    "retentionDays": 30,
-    "quotaProfile": "standard"
-  },
-  "workspaceRoot": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--8aecc1be",
-  "spaceDirPath": "/Users/caruso/code/spaces/gateway/spaces/external-main-space--8aecc1be/.space",
-  "gitRepoDetected": false
-}

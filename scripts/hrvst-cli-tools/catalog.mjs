@@ -575,7 +575,19 @@ export function buildHrvstCliManifest(tool, input = {}) {
   const fixedCwd = resolveRequiredAbsolutePath(input.fixedCwd ?? dirname(wrapperPath), "fixedCwd");
   const now = input.now ?? new Date().toISOString();
   const enabled = input.enabled ?? true;
-  return {
+  const existingManifest =
+    input.existingManifest && typeof input.existingManifest === "object" ? input.existingManifest : null;
+  const existingCreatedAt =
+    existingManifest && typeof existingManifest.createdAt === "string" && existingManifest.createdAt
+      ? existingManifest.createdAt
+      : null;
+  const existingUpdatedAt =
+    existingManifest && typeof existingManifest.updatedAt === "string" && existingManifest.updatedAt
+      ? existingManifest.updatedAt
+      : null;
+  const createdAt = existingCreatedAt ?? now;
+
+  const candidate = {
     schemaVersion: HRVST_CLI_TOOL_SCHEMA_VERSION,
     id: tool.id,
     displayName: tool.displayName,
@@ -598,9 +610,33 @@ export function buildHrvstCliManifest(tool, input = {}) {
     outputMode: "json",
     dangerLevel: tool.dangerLevel,
     enabled,
-    createdAt: now,
+    createdAt,
     updatedAt: now,
   };
+
+  if (existingUpdatedAt !== null) {
+    const candidateForCompare = canonicalizeForCompare(candidate);
+    const existingForCompare = canonicalizeForCompare(existingManifest);
+    if (candidateForCompare === existingForCompare) {
+      candidate.updatedAt = existingUpdatedAt;
+    }
+  }
+
+  return candidate;
+}
+
+function canonicalizeForCompare(value) {
+  return JSON.stringify(deepSortKeys({ ...value, updatedAt: "" }));
+}
+
+function deepSortKeys(value) {
+  if (Array.isArray(value)) return value.map(deepSortKeys);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const k of Object.keys(value).sort()) out[k] = deepSortKeys(value[k]);
+    return out;
+  }
+  return value;
 }
 
 export function buildHrvstCliToolReadme(tool) {

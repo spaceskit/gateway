@@ -96,11 +96,11 @@ describe("managed cli bundle contract audit", () => {
 
   test("keeps checked-in Jira list docs and manifests free of inline ORDER BY JQL examples", () => {
     const readme = readFileSync(
-      new URL("../../../cli-tools/jira.issue.list/README.md", import.meta.url),
+      new URL("../../../workbench/cli-tools/jira.issue.list/README.md", import.meta.url),
       "utf8",
     );
     const manifest = readFileSync(
-      new URL("../../../cli-tools/jira.issue.list/manifest.json", import.meta.url),
+      new URL("../../../workbench/cli-tools/jira.issue.list/manifest.json", import.meta.url),
       "utf8",
     );
 
@@ -112,7 +112,6 @@ describe("managed cli bundle contract audit", () => {
 
   test("keeps checked-in fruitmail manifests loadable by the CLI tool service", () => {
     const manifestRoots = [
-      "../../../cli-tools",
       "../../../workbench/cli-tools",
     ];
 

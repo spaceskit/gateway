@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
 import {
   ArtifactRepository,
   SyncRuntimeRepository,
-  SpaceRepository,
   type ArtifactRow,
   type SpaceRow,
 } from "@spaceskit/persistence";
@@ -13,173 +11,66 @@ import {
   getSpaceIdFromBasicArtifactId,
   isGeneratedBasicArtifact,
 } from "./basic-space-export.js";
+import {
+  asNonEmptyString,
+  clampLimit,
+  coerceContentJson,
+  computeSyncRefVersionHash,
+  decodeCursor,
+  dedupeRefs,
+  deterministicImportArtifactId,
+  encodeCursor,
+  ensureTrailingSlash,
+  hashJson,
+  hashSecret,
+  isRecord,
+  mapRemoteStatusToError,
+  normalizeApiVersion,
+  normalizeAuthHash,
+  normalizeHttpBaseUrl,
+  parsePullResponse,
+  parseTags,
+  parseUnknownTags,
+  sanitizeStrings,
+} from "./sync-service-normalizers.js";
+import { GatewaySyncError } from "./sync-service-types.js";
+import type {
+  AnnouncePeerInput,
+  AnnouncePeerResult,
+  GatewaySyncServiceOptions,
+  PullResourcesInput,
+  PullResourcesResult,
+  QueryResourcesInput,
+  QueryResourcesResult,
+  SyncFromPeerInput,
+  SyncFromPeerResult,
+  SyncPolicyContext,
+  SyncPolicyDecision,
+  SyncProvenance,
+  SyncResourceDenied,
+  SyncResourcePayload,
+  SyncResourceRef,
+} from "./sync-service-types.js";
 
-export interface SyncResourceRef {
-  type?: string;
-  id?: string;
-  versionHash?: string;
-  resourceType: string;
-  resourceId: string;
-  title?: string;
-  updatedAt?: string;
-  tags?: string[];
-}
-
-export interface SyncResourcePayload {
-  ref: SyncResourceRef;
-  content: Record<string, unknown>;
-}
-
-export interface SyncResourceDenied {
-  ref: SyncResourceRef;
-  reason: string;
-}
-
-export interface SyncProvenance {
-  peerId: string;
-  ref: SyncResourceRef;
-  action: string;
-  status: string;
-  reason?: string;
-  pulledAt: string;
-}
-
-export interface QueryResourcesInput {
-  apiVersion?: string;
-  peerId: string;
-  resourceId?: string;
-  types?: string[];
-  tags?: string[];
-  updatedAfter?: string;
-  cursor?: string;
-  limit?: number;
-}
-
-export interface QueryResourcesResult {
-  resources: SyncResourceRef[];
-  nextCursor?: string;
-  apiVersion: string;
-}
-
-export interface PullResourcesInput {
-  apiVersion?: string;
-  peerId: string;
-  idempotencyKey: string;
-  refs: SyncResourceRef[];
-}
-
-export interface PullResourcesResult {
-  resources: SyncResourcePayload[];
-  denied: SyncResourceDenied[];
-  provenance: SyncProvenance[];
-  appliedCount: number;
-  skippedCount: number;
-  apiVersion: string;
-}
-
-export interface AnnouncePeerInput {
-  apiVersion?: string;
-  peerId: string;
-  resourceId: string;
-  gatewayVersion: string;
-  endpointUrl?: string;
-  authSecretHash?: string;
-  skillCount?: number;
-  actionCount?: number;
-  experienceCount?: number;
-  profileCount?: number;
-}
-
-export interface AnnouncePeerResult {
-  peerId: string;
-  resourceId: string;
-  gatewayVersion: string;
-  syncEnabled: boolean;
-  announcedAt: string;
-  apiVersion: string;
-}
-
-export interface SyncFromPeerInput {
-  peerId: string;
-  targetSpaceId: string;
-  resourceId?: string;
-  types?: string[];
-  tags?: string[];
-  limit?: number;
-  maxPages?: number;
-  idempotencyKeyPrefix?: string;
-}
-
-export interface SyncFromPeerResult {
-  peerId: string;
-  targetSpaceId: string;
-  pages: number;
-  queriedCount: number;
-  pulledCount: number;
-  importedCount: number;
-  skippedCount: number;
-  deniedCount: number;
-  nextCursor?: string;
-}
-
-export interface SyncServiceLogger {
-  info?: (message: string, fields?: Record<string, unknown>) => void;
-  warn?: (message: string, fields?: Record<string, unknown>) => void;
-  error?: (message: string, error?: unknown, fields?: Record<string, unknown>) => void;
-}
-
-export interface SyncPolicyDecision {
-  allowed: boolean;
-  reason?: string;
-}
-
-export interface SyncPolicyContext {
-  peerId: string;
-  resourceType: string;
-  resourceId: string;
-  artifactType?: string;
-  title?: string;
-  tags?: string[];
-  isGeneratedBasic?: boolean;
-}
-
-export interface GatewaySyncServiceOptions {
-  /** Optional repo used when importing resources from peers. */
-  spaceRepo?: SpaceRepository;
-  /** Default local peer ID used for outbound peer calls. */
-  localPeerId?: string;
-  /** Resolve plaintext shared secret for outbound requests to a specific peer. */
-  resolvePeerSecret?: (peerId: string) => string | undefined;
-  /** Injected fetch implementation for tests. */
-  fetchImpl?: typeof fetch;
-  /** Remote request timeout in milliseconds. */
-  remoteTimeoutMs?: number;
-  /** Enable background pull when peers announce themselves. */
-  autoPullOnAnnounce?: boolean;
-  /** Default target space used by auto pull. */
-  autoPullTargetSpaceId?: string;
-  /** Optional policy hook for query responses. */
-  evaluateQueryPolicy?: (context: SyncPolicyContext) => SyncPolicyDecision;
-  /** Optional policy hook for pull responses. */
-  evaluatePullPolicy?: (context: SyncPolicyContext) => SyncPolicyDecision;
-  logger?: SyncServiceLogger;
-}
-
-export class GatewaySyncError extends Error {
-  readonly code:
-    | "INVALID_ARGUMENT"
-    | "NOT_FOUND"
-    | "FAILED_PRECONDITION"
-    | "PERMISSION_DENIED";
-
-  constructor(
-    code: GatewaySyncError["code"],
-    message: string,
-  ) {
-    super(message);
-    this.code = code;
-  }
-}
+export { GatewaySyncError } from "./sync-service-types.js";
+export type {
+  AnnouncePeerInput,
+  AnnouncePeerResult,
+  GatewaySyncServiceOptions,
+  PullResourcesInput,
+  PullResourcesResult,
+  QueryResourcesInput,
+  QueryResourcesResult,
+  SyncFromPeerInput,
+  SyncFromPeerResult,
+  SyncPolicyContext,
+  SyncPolicyDecision,
+  SyncProvenance,
+  SyncResourceDenied,
+  SyncResourcePayload,
+  SyncResourceRef,
+  SyncServiceLogger,
+} from "./sync-service-types.js";
 
 export class DefaultGatewaySyncService {
   private readonly options: Required<Pick<GatewaySyncServiceOptions, "fetchImpl" | "remoteTimeoutMs">> & Omit<GatewaySyncServiceOptions, "fetchImpl" | "remoteTimeoutMs">;
@@ -969,227 +860,4 @@ export class DefaultGatewaySyncService {
       clearTimeout(timeout);
     }
   }
-}
-
-function parseTags(raw: string): string[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return parsed
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean);
-    }
-  } catch {
-    // Ignore parse errors.
-  }
-  return [];
-}
-
-function parseUnknownTags(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  return Array.from(
-    new Set(
-      raw
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean),
-    ),
-  );
-}
-
-function sanitizeStrings(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  return Array.from(
-    new Set(
-      input
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
-        .filter(Boolean),
-    ),
-  );
-}
-
-function dedupeRefs(refs: SyncResourceRef[]): SyncResourceRef[] {
-  const map = new Map<string, SyncResourceRef>();
-  for (const ref of refs) {
-    const key = `${ref.resourceType}:${ref.resourceId}`;
-    if (!map.has(key)) {
-      map.set(key, ref);
-    }
-  }
-  return Array.from(map.values());
-}
-
-function clampLimit(limit: number, min: number, max: number): number {
-  if (!Number.isFinite(limit)) return min;
-  return Math.min(max, Math.max(min, Math.floor(limit)));
-}
-
-function decodeCursor(cursor: string | undefined): number {
-  if (!cursor) return 0;
-  try {
-    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-    const parsed = Number.parseInt(decoded, 10);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function encodeCursor(offset: number): string {
-  return Buffer.from(String(offset), "utf8").toString("base64url");
-}
-
-function computeSyncRefVersionHash(input: {
-  resourceType: string;
-  resourceId: string;
-  updatedAt?: string;
-  tags?: string[];
-}): string {
-  return hashJson({
-    resourceType: input.resourceType,
-    resourceId: input.resourceId,
-    updatedAt: input.updatedAt ?? "",
-    tags: input.tags ?? [],
-  });
-}
-
-function hashJson(value: unknown): string {
-  return createHash("sha256")
-    .update(JSON.stringify(value))
-    .digest("hex");
-}
-
-function hashSecret(value: string): string {
-  return createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
-
-function normalizeAuthHash(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function parsePullResponse(raw: string): PullResourcesResult {
-  try {
-    const parsed = JSON.parse(raw);
-    if (isRecord(parsed)) {
-      return {
-        resources: Array.isArray(parsed.resources)
-          ? (parsed.resources as SyncResourcePayload[])
-          : [],
-        denied: Array.isArray(parsed.denied)
-          ? (parsed.denied as SyncResourceDenied[])
-          : [],
-        provenance: Array.isArray(parsed.provenance)
-          ? (parsed.provenance as SyncProvenance[])
-          : [],
-        appliedCount: asNumber(parsed.appliedCount),
-        skippedCount: asNumber(parsed.skippedCount),
-        apiVersion: normalizeApiVersion(asNonEmptyString(parsed.apiVersion)),
-      };
-    }
-  } catch {
-    // Ignore and fallback.
-  }
-
-  return {
-    resources: [],
-    denied: [],
-    provenance: [],
-    appliedCount: 0,
-    skippedCount: 0,
-    apiVersion: "v2",
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function asNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  return 0;
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeApiVersion(value: string | undefined): string {
-  const normalized = value?.trim();
-  return normalized && normalized.length > 0 ? normalized : "v2";
-}
-
-function coerceContentJson(value: unknown, fallback: Record<string, unknown>): string {
-  if (typeof value === "string") {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value ?? fallback);
-  } catch {
-    return JSON.stringify({ value: String(value ?? "") });
-  }
-}
-
-function deterministicImportArtifactId(
-  peerId: string,
-  targetSpaceId: string,
-  resourceType: string,
-  resourceId: string,
-): string {
-  const digest = hashJson({
-    peerId,
-    targetSpaceId,
-    resourceType,
-    resourceId,
-  }).slice(0, 24);
-
-  return `artifact-sync-${digest}`;
-}
-
-function normalizeHttpBaseUrl(raw: string): string | undefined {
-  const normalized = raw.trim();
-  if (!normalized) return undefined;
-
-  // Accept ws/wss endpoints and map them to http/https for sync HTTP routes.
-  const endpoint = normalized
-    .replace(/^ws:\/\//i, "http://")
-    .replace(/^wss:\/\//i, "https://");
-
-  try {
-    const url = new URL(endpoint);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return undefined;
-    }
-    return `${url.protocol}//${url.host}${url.pathname}`.replace(/\/$/, "");
-  } catch {
-    return undefined;
-  }
-}
-
-function ensureTrailingSlash(url: string): string {
-  return url.endsWith("/") ? url : `${url}/`;
-}
-
-function mapRemoteStatusToError(status: number, message: string): GatewaySyncError {
-  if (status === 400) {
-    return new GatewaySyncError("INVALID_ARGUMENT", message);
-  }
-  if (status === 403) {
-    return new GatewaySyncError("PERMISSION_DENIED", message);
-  }
-  if (status === 404) {
-    return new GatewaySyncError("NOT_FOUND", message);
-  }
-
-  return new GatewaySyncError("FAILED_PRECONDITION", message);
 }

@@ -36,8 +36,13 @@ export async function materializeHrvstCliTools(input) {
     const toolDir = join(targetDir, tool.id);
     const manifestPath = join(toolDir, "manifest.json");
     const readmePath = join(toolDir, "README.md");
-    const existingEnabled = await readExistingEnabled(manifestPath);
-    const manifest = buildHrvstCliManifest(tool, { wrapperPath, fixedCwd, enabled: existingEnabled });
+    const existing = await readExistingManifest(manifestPath);
+    const manifest = buildHrvstCliManifest(tool, {
+      wrapperPath,
+      fixedCwd,
+      enabled: existing?.enabled ?? true,
+      existingManifest: existing?.manifest ?? null,
+    });
     const readme = buildHrvstCliToolReadme(tool);
 
     await mkdir(toolDir, { recursive: true });
@@ -61,16 +66,16 @@ export async function materializeHrvstCliTools(input) {
   };
 }
 
-async function readExistingEnabled(manifestPath) {
+async function readExistingManifest(manifestPath) {
   try {
     const raw = JSON.parse(await readFile(manifestPath, "utf8"));
-    if (typeof raw?.enabled === "boolean") {
-      return raw.enabled;
-    }
+    return {
+      enabled: typeof raw?.enabled === "boolean" ? raw.enabled : true,
+      manifest: raw,
+    };
   } catch {
-    // Preserve the default enabled state on fresh or unreadable manifests.
+    return null;
   }
-  return true;
 }
 
 function normalizeToolIdFilter(values) {

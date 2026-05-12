@@ -200,7 +200,7 @@ Connectors integrate external services (messaging platforms, native OS framework
 
 - **Capability connectors**: Provide tools to agents (Apple Calendar, Reminders, Contacts)
 - **Channel connectors**: Messaging channels for inbound/outbound communication (Discord, WhatsApp)
-- **CLI tool bundles**: Gateway-managed CLI tools (Jira, Harvest, 1Password) — see `cli-tools/`
+- **CLI tool bundles**: Gateway-managed CLI tools (Jira, Harvest, 1Password) — see `workbench/cli-tools/`
 
 Connector families are defined in `@spaceskit/bootstrap` and enforced via space-level security policies (`connector_family:` selectors). See [`connectors/`](connectors/) for the full guide on creating new connectors.
 

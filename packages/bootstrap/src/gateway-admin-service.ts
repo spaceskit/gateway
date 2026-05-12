@@ -1,8 +1,3 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Logger } from "@spaceskit/observability";
 import type {
   GatewayRuntimeDefaultsRepository,
@@ -10,11 +5,10 @@ import type {
   ProfileModelConfig,
   ProfileRepository,
   ProviderConfigRepository,
-  ProviderConfigRow,
   SpaceRepository,
 } from "@spaceskit/persistence";
 import type { SpaceAdminService } from "@spaceskit/core";
-import { inferContextWindow, USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
+import { USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
 import type { GatewayCoreProfileId } from "@spaceskit/gateway-core";
 import type {
   GatewayConciergeAgentStatePayload,
@@ -37,7 +31,6 @@ import type {
   GatewayListIntegrationRequestsPayload,
   GatewayListIntegrationRequestsResponsePayload,
   GatewayMainAgentStatePayload,
-  GatewayRuntimeDefaultSelectionPayload,
   GatewayRuntimeDefaultsPayload,
   GatewaySetConciergeAgentPayload,
   GatewayRegisterToolPayload,
@@ -62,19 +55,13 @@ import type {
   ProviderTelemetryPayload,
   ProviderTelemetrySourcePayload,
   ProviderTelemetryWindowPayload,
-  ProviderUsageSnapshotPayload,
   ProviderRuntimeConfigPayload,
   GatewayGetToolResponsePayload,
   GatewayRemoveToolResponsePayload,
 } from "@spaceskit/server";
-import { classifyTier } from "@spaceskit/server";
 import {
   ClaudeAgentSdkModelProvider,
-  type ClaudeAgentSdkAuthAccount,
   CodexAppServerModelProvider,
-  type CodexAppServerAuthAccount,
-  type CodexAppServerProbeResult,
-  type ClaudeAgentSdkProbeResult,
 } from "@spaceskit/provider-runtime";
 import type {
   ProviderSecretRefService,
@@ -88,45 +75,115 @@ import type { CliToolService } from "./services/cli-tool-service.js";
 import type { AccessGrantService } from "./services/access-grant-service.js";
 import type { ToolApprovalGrantService } from "./services/tool-approval-grant-service.js";
 import {
-  API_KEY_ENV_BY_PROVIDER,
+  fetchClaudeOAuthUsage as fetchClaudeOAuthUsageWindowPayloads,
+  readClaudeOAuthAccessTokenFromCredentialsFile as readClaudeOAuthAccessTokenFromCredentialsFilePayload,
+  readClaudeOAuthAccessTokenFromKeychain as readClaudeOAuthAccessTokenFromKeychainPayload,
+  type ClaudeOAuthAccessTokenResult,
+  type ClaudeOAuthUsageResult,
+} from "./services/claude-oauth-telemetry.js";
+import {
+  queryCodexAppServerTelemetry,
+  type CodexAppServerTelemetryResult,
+} from "./services/codex-app-server-telemetry.js";
+import {
   DEFAULT_MODEL_BY_PROVIDER,
-  inferDefaultProviderAuthStatus,
-  isCliExecutorProvider,
-  isLikelyLocalBaseURL,
   isLocalProvider,
-  isOpenAICompatibleProvider,
   keyFromEnvironment,
-  LMSTUDIO_BASE_URL_ENV,
-  LOCAL_PROVIDER_IDS,
   LOCAL_PROVIDER_MODEL_MANIFEST,
-  normalizeProviderAuthMode,
-  OLLAMA_BASE_URL_ENV,
-  OPENAI_BASE_URL_ENV,
   providerDisplayName,
   providerInstallHint,
   providerRecommended,
-  providerRequiresApiKey,
-  providerSupportedAuthModes,
   resolveProviderAuthMode,
-  resolveRequestedProviderAuthMode,
 } from "./services/provider-catalog-support.js";
-import { classifyExecutionAdapter, mapExecutionClassToCatalogGroup } from "./execution/execution-adapter-factory.js";
-import { LocalExecutableResolver } from "./execution/local-executable-resolver.js";
+import type { LocalExecutableResolver } from "./execution/local-executable-resolver.js";
+import {
+  LocalAgentDiscoveryService,
+  type DiscoveredLocalAgent,
+  type OpenAICompatibleDetectionResult,
+} from "./services/local-agent-discovery-service.js";
+import {
+  deriveProviderFromModel,
+  isSpaceAdminErrorLike,
+  mergeSkillIds,
+  normalizeProviderId,
+  normalizeSelectionMode,
+  parseModelConfig,
+  parseStringArray,
+  providerIntegrationClass,
+  resolveOpenAICompatibleModelsEndpoint,
+  throwGatewayError,
+  uniqueModelIds,
+  withProviderPrefix,
+} from "./gateway-admin-model-normalizers.js";
+import {
+  cloneClaudeAgentSdkCatalogProbe,
+  cloneCodexAppServerCatalogProbe,
+  mapClaudeAgentSdkProbeResult,
+  mapCodexAppServerProbeResult,
+  type ClaudeAgentSdkCatalogProbe,
+  type CodexAppServerCatalogProbe,
+} from "./gateway-admin-telemetry-normalizers.js";
+import {
+  applyProviderConfigToEnvironment,
+  mergeAllowedProviderModels,
+  providerRuntimeConfigToPayload,
+} from "./gateway-admin-provider-config-support.js";
+import {
+  ensureGatewayAdminConciergeSpace,
+  ensureGatewayAdminMainSpace,
+  type GatewayAdminManagedSpaceRepairContext,
+} from "./gateway-admin-managed-space-repair.js";
+import {
+  applyManagedAgentDefinitionSelection,
+  applyManagedAgentProviderModelSelection,
+  type ManagedAgentSelectionContext,
+} from "./gateway-admin-managed-agent-selection.js";
+import {
+  loadGatewayAdminProfileRuntime,
+  provisionGatewayAdminLocalProfile,
+  resolveGatewayAdminExactProviderRuntimeConfig,
+  resolveGatewayAdminProviderForProfile,
+  validateGatewayAdminProfileModelSelection,
+  type ExactProviderRuntimeSelection,
+  type GatewayAdminProfileRuntimeContext,
+  type ProfileRuntimeContext,
+  type ProvisionLocalProfileInput,
+  type ProvisionLocalProfileResult,
+} from "./gateway-admin-profile-runtime.js";
+import {
+  resolveGatewayAdminRuntimeDefaults,
+  updateGatewayAdminManagedRuntimeProfile,
+  validateGatewayAdminRuntimeDefaultSelection,
+  type GatewayAdminRuntimeDefaultsContext,
+} from "./gateway-admin-runtime-defaults.js";
+import {
+  deleteGatewayAdminSecretRef,
+  getGatewayAdminProviderSettings,
+  listGatewayAdminSecretRefs,
+  putGatewayAdminSecretRef,
+  removeGatewayAdminProviderConfig,
+  setGatewayAdminProviderConfig,
+  type GatewayAdminProviderSettingsContext,
+} from "./gateway-admin-provider-settings.js";
+import { GatewayAdminToolIntegrationService } from "./gateway-admin-tool-integration-service.js";
+import { GatewayAdminProviderTelemetryService } from "./gateway-admin-provider-telemetry-service.js";
+import { GatewayAdminProviderCatalogService } from "./gateway-admin-provider-catalog-service.js";
+import { runCachedCatalogProbe } from "./gateway-admin-cached-probe.js";
+import { OpenAICompatibleModelDiscoveryService } from "./services/openai-compatible-model-discovery-service.js";
+import {
+  GatewayAdminProviderPolicyService,
+  type AppleFoundationAvailabilitySnapshot,
+} from "./gateway-admin-provider-policy-service.js";
+import { seedGatewayAdminProvidersFromEnvironment } from "./gateway-admin-provider-env-seeder.js";
 
-export interface DiscoveredLocalAgent {
-  id: string;
-  name: string;
-  detected: boolean;
-  executablePath?: string;
-  appPath?: string;
-  serviceReachable?: boolean;
-  recommendedProviderId: string;
-  recommendedModel: string;
-  requiresApiKey: boolean;
-  availableModels?: string[];
-  detectionError?: string;
-  notes?: string;
-}
+export type { DiscoveredLocalAgent } from "./services/local-agent-discovery-service.js";
+export type { AppleFoundationAvailabilitySnapshot } from "./gateway-admin-provider-policy-service.js";
+export type {
+  ExactProviderRuntimeSelection,
+  ProfileRuntimeContext,
+  ProvisionLocalProfileInput,
+  ProvisionLocalProfileResult,
+} from "./gateway-admin-profile-runtime.js";
 
 export type GatewayModelDetectionStatus = GatewayModelDetectionStatusPayload;
 export type GatewayModelCatalogSource = GatewayModelCatalogSourcePayload;
@@ -139,11 +196,6 @@ export type GatewayProviderAuthAccount = GatewayProviderAuthAccountPayload;
 export type GatewayModelCatalogEntry = GatewayModelCatalogEntryPayload;
 export type GatewayModelProviderCatalog = GatewayModelProviderCatalogPayload;
 export type GatewayRuntimeDefaults = GatewayRuntimeDefaultsPayload;
-
-interface OpenAICompatibleDetectedModel {
-  id: string;
-  contextWindow?: number;
-}
 
 export interface ProviderRuntimeConfig {
   providerId: string;
@@ -164,17 +216,6 @@ export type ProviderTelemetry = ProviderTelemetryPayload;
 export type ProviderTelemetrySource = ProviderTelemetrySourcePayload;
 export type ProviderTelemetryWindow = ProviderTelemetryWindowPayload;
 
-export interface ExactProviderRuntimeSelection {
-  providerId: string;
-  model: string;
-  apiKey?: string;
-  apiKeySecretRef?: string;
-  authMode?: GatewayProviderAuthMode;
-  baseURL?: string;
-  isLocal: boolean;
-  nativeCliToolsEnabled: boolean;
-}
-
 export interface PutSecretRefInput {
   secretRef?: string;
   providerId: string;
@@ -188,36 +229,9 @@ export interface PutSecretRefResult {
   created: boolean;
 }
 
-export interface ProvisionLocalProfileInput {
-  localClientId: string;
-  profileId?: string;
-  profileName?: string;
-  agentId?: string;
-  spaceId?: string;
-}
-
-export interface ProvisionLocalProfileResult {
-  profileId: string;
-  profileName: string;
-  created: boolean;
-  providerId: string;
-  model: string;
-  agentId?: string;
-  assignmentCreated?: boolean;
-}
-
 export interface GetMainAgentInput extends GatewayGetMainAgentPayload {}
 
 export interface SetMainAgentInput extends GatewaySetMainAgentPayload {}
-
-export interface ProfileRuntimeContext {
-  profileId: string;
-  systemPrompt: string;
-  defaultSkillIds: string[];
-  providerHint?: string;
-  modelHint?: string;
-  modelConfig?: ProfileModelConfig;
-}
 
 export interface GatewayAdminServiceOptions {
   logger: Logger;
@@ -271,48 +285,6 @@ export interface GatewayAdminServiceOptions {
   }) => Promise<CodexAppServerCatalogProbe>;
 }
 
-export interface AppleFoundationAvailabilitySnapshot {
-  available: boolean;
-  reason: string;
-}
-
-interface LocalClientTemplate {
-  id: string;
-  name: string;
-  commands: string[];
-  appPath?: string;
-  recommendedProviderId: string;
-  recommendedModel: string;
-  requiresApiKey: boolean;
-  defaultProfileName: string;
-  defaultPersonalityPrompt: string;
-  notes?: string;
-}
-
-interface ResolvedProviderSelection extends ExactProviderRuntimeSelection {}
-
-interface ClaudeAgentSdkCatalogProbe {
-  authStatus: GatewayProviderAuthStatus;
-  authAccount?: GatewayProviderAuthAccount;
-  models: Array<{
-    id: string;
-    displayName: string;
-    contextWindow?: number;
-  }>;
-  detectionError?: string;
-}
-
-interface CodexAppServerCatalogProbe {
-  authStatus: GatewayProviderAuthStatus;
-  authAccount?: GatewayProviderAuthAccount;
-  models: Array<{
-    id: string;
-    displayName: string;
-    contextWindow?: number;
-  }>;
-  detectionError?: string;
-}
-
 interface ProviderRuntimeValidationResult {
   valid: boolean;
   reason?: string;
@@ -328,90 +300,7 @@ interface ResolvedProviderModelHint {
   reason?: string;
 }
 
-interface LocalProviderTelemetryProbeResult {
-  source: ProviderTelemetrySource;
-  status: ProviderUsageSnapshotPayload["status"];
-  message?: string;
-  accountLabel?: string;
-  windows?: ProviderTelemetryWindow[];
-}
-
-interface ClaudeOAuthAccessTokenResult {
-  accessToken?: string;
-  source?: "keychain" | "credentials_file";
-  message?: string;
-}
-
-interface ClaudeOAuthUsageResult {
-  windows: ProviderTelemetryWindow[];
-  accountLabel?: string;
-  message?: string;
-}
-
-const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
-  {
-    id: "claude",
-    name: "Claude",
-    commands: ["claude"],
-    recommendedProviderId: "claude",
-    recommendedModel: "claude/sonnet",
-    requiresApiKey: false,
-    defaultProfileName: "Claude Agent",
-    defaultPersonalityPrompt: "You are a Claude-backed agent focused on clear reasoning and safe execution.",
-  },
-  {
-    id: "gemini",
-    name: "Gemini",
-    commands: ["gemini"],
-    recommendedProviderId: "gemini",
-    recommendedModel: "gemini/gemini-2.5-flash",
-    requiresApiKey: false,
-    defaultProfileName: "Gemini Agent",
-    defaultPersonalityPrompt: "You are a Gemini-backed agent focused on concise and grounded responses.",
-  },
-  {
-    id: "codex",
-    name: "Codex",
-    commands: ["codex"],
-    recommendedProviderId: "codex",
-    recommendedModel: "codex/gpt-5.1-codex",
-    requiresApiKey: false,
-    defaultProfileName: "Codex Agent",
-    defaultPersonalityPrompt: "You are a coding-focused assistant optimized for implementation tasks.",
-  },
-  {
-    id: "codex-app-server",
-    name: "Codex App Server",
-    commands: ["codex"],
-    recommendedProviderId: "codex-app-server",
-    recommendedModel: "codex-app-server/gpt-5.4",
-    requiresApiKey: false,
-    defaultProfileName: "Codex App Server Agent",
-    defaultPersonalityPrompt: "You are a coding-focused assistant running through Codex App Server with mediated gateway tools.",
-    notes: "Uses the local codex app-server transport and can authenticate with ChatGPT or OPENAI_API_KEY.",
-  },
-  {
-    id: "lmstudio",
-    name: "LM Studio",
-    commands: ["lms", "lmstudio"],
-    appPath: "/Applications/LM Studio.app",
-    recommendedProviderId: "lmstudio",
-    recommendedModel: "lmstudio/qwen2.5-coder",
-    requiresApiKey: false,
-    defaultProfileName: "LM Studio Agent",
-    defaultPersonalityPrompt: "You are a local model agent running through LM Studio.",
-    notes: "Uses OpenAI-compatible endpoint http://127.0.0.1:1234/v1 by default.",
-  },
-];
-
-const OPENAI_COMPATIBLE_DETECTION_CACHE_TTL_MS = 30_000;
 const CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS = 30_000;
-const LOCAL_AGENT_SNAPSHOT_CACHE_TTL_MS = 10_000;
-const PROVIDER_CATALOG_SNAPSHOT_CACHE_TTL_MS = 10_000;
-const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
-const CLAUDE_OAUTH_KEYCHAIN_SERVICE = "Claude Code-credentials";
-const CLAUDE_OAUTH_TIMEOUT_MS = 10_000;
 
 export class DefaultGatewayAdminService {
   private readonly logger: Logger;
@@ -435,37 +324,18 @@ export class DefaultGatewayAdminService {
   private readonly providerSecretRefService?: ProviderSecretRefService;
   private readonly providerConfigRepo?: ProviderConfigRepository;
   private readonly gatewayRuntimeDefaultsRepo?: GatewayRuntimeDefaultsRepository;
-  private readonly integrationRequestRepo?: IntegrationRequestRepository;
-  private readonly cliToolService?: CliToolService;
-  private readonly interconnectorCatalogService?: InterconnectorCatalogService;
-  private readonly accessGrantService?: AccessGrantService;
-  private readonly toolApprovalGrantService?: ToolApprovalGrantService;
+  private readonly toolIntegrationService: GatewayAdminToolIntegrationService;
+  private readonly providerTelemetryService: GatewayAdminProviderTelemetryService;
   private readonly gatewayProfile: GatewayCoreProfileId;
   private readonly defaultProviderId?: string;
   private readonly defaultModelId?: string;
-  private readonly enableAppleFoundationProvider: boolean;
-  private readonly hostPlatform: string;
-  private readonly hostArch: string;
-  private readonly executableResolver: LocalExecutableResolver;
-  private appleFoundationAvailability?: AppleFoundationAvailabilitySnapshot;
-  private usageSnapshotService?: UsageSnapshotService;
-  private localUsageTelemetryService?: LocalUsageTelemetryService;
+  private readonly providerPolicyService: GatewayAdminProviderPolicyService;
+  private readonly providerCatalogService: GatewayAdminProviderCatalogService;
+  private readonly openAICompatibleModelDiscoveryService: OpenAICompatibleModelDiscoveryService;
+  private readonly localAgentDiscoveryService: LocalAgentDiscoveryService;
   private readonly claudeAgentSdkMetadataProbe?: GatewayAdminServiceOptions["claudeAgentSdkMetadataProbe"];
   private readonly codexAppServerMetadataProbe?: GatewayAdminServiceOptions["codexAppServerMetadataProbe"];
   private readonly providerConfigs = new Map<string, ProviderRuntimeConfig>();
-  private readonly openAICompatibleDetectionCache = new Map<string, {
-    expiresAt: number;
-    value: {
-      serviceReachable: boolean;
-      models: OpenAICompatibleDetectedModel[];
-      detectionError?: string;
-    };
-  }>();
-  private readonly openAICompatibleDetectionInFlight = new Map<string, Promise<{
-    serviceReachable: boolean;
-    models: OpenAICompatibleDetectedModel[];
-    detectionError?: string;
-  }>>();
   private readonly claudeAgentSdkDetectionCache = new Map<string, {
     expiresAt: number;
     value: ClaudeAgentSdkCatalogProbe;
@@ -476,17 +346,6 @@ export class DefaultGatewayAdminService {
     value: CodexAppServerCatalogProbe;
   }>();
   private readonly codexAppServerDetectionInFlight = new Map<string, Promise<CodexAppServerCatalogProbe>>();
-  private localAgentSnapshotCache?: {
-    expiresAt: number;
-    value: DiscoveredLocalAgent[];
-  };
-  private localAgentSnapshotInFlight?: Promise<DiscoveredLocalAgent[]>;
-  private readonly providerCatalogSnapshotCache = new Map<string, {
-    expiresAt: number;
-    value: GatewayModelProviderCatalog[];
-  }>();
-  private readonly providerCatalogSnapshotInFlight = new Map<string, Promise<GatewayModelProviderCatalog[]>>();
-
   constructor(options: GatewayAdminServiceOptions) {
     this.logger = options.logger;
     this.profileRepo = options.profileRepo;
@@ -515,237 +374,129 @@ export class DefaultGatewayAdminService {
     this.providerSecretRefService = options.providerSecretRefService;
     this.providerConfigRepo = options.providerConfigRepo;
     this.gatewayRuntimeDefaultsRepo = options.gatewayRuntimeDefaultsRepo;
-    this.integrationRequestRepo = options.integrationRequestRepo;
-    this.cliToolService = options.cliToolService;
-    this.interconnectorCatalogService = options.interconnectorCatalogService;
-    this.accessGrantService = options.accessGrantService;
-    this.toolApprovalGrantService = options.toolApprovalGrantService;
+    this.toolIntegrationService = new GatewayAdminToolIntegrationService({
+      integrationRequestRepo: options.integrationRequestRepo,
+      cliToolService: options.cliToolService,
+      interconnectorCatalogService: options.interconnectorCatalogService,
+      accessGrantService: options.accessGrantService,
+      toolApprovalGrantService: options.toolApprovalGrantService,
+    });
     this.gatewayProfile = options.gatewayProfile ?? "external";
     this.defaultProviderId = normalizeProviderId(options.defaultProviderId);
     this.defaultModelId = options.defaultModelId;
-    this.enableAppleFoundationProvider = options.enableAppleFoundationProvider ?? false;
-    this.hostPlatform = options.hostPlatform ?? process.platform;
-    this.hostArch = options.hostArch ?? process.arch;
-    this.executableResolver = options.executableResolver ?? new LocalExecutableResolver();
-    this.appleFoundationAvailability = options.appleFoundationAvailability;
+    this.providerPolicyService = new GatewayAdminProviderPolicyService({
+      gatewayProfile: this.gatewayProfile,
+      enableAppleFoundationProvider: options.enableAppleFoundationProvider ?? false,
+      hostPlatform: options.hostPlatform ?? process.platform,
+      hostArch: options.hostArch ?? process.arch,
+      appleFoundationAvailability: options.appleFoundationAvailability,
+    });
+    this.openAICompatibleModelDiscoveryService = new OpenAICompatibleModelDiscoveryService();
+    this.localAgentDiscoveryService = new LocalAgentDiscoveryService({
+      executableResolver: options.executableResolver,
+      providerConfigs: this.providerConfigs,
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      providerPolicyRestrictionReason: (providerId) =>
+        this.providerPolicyRestrictionReason(providerId),
+      detectOpenAICompatibleModels: (baseURL) =>
+        this.detectOpenAICompatibleModels(baseURL),
+    });
+    this.providerCatalogService = new GatewayAdminProviderCatalogService({
+      providerConfigs: this.providerConfigs,
+      ensureAppleFoundationAvailability: () => this.ensureAppleFoundationAvailability(),
+      providerVisibleInCatalog: (providerId) => this.providerVisibleInCatalog(providerId),
+      isProviderConfigAllowed: (providerId) => this.isProviderConfigAllowed(providerId),
+      loadLocalAgentSnapshot: (forceRefresh) => this.loadLocalAgentSnapshot(forceRefresh),
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      detectOpenAICompatibleModels: (baseURL, detectionOptions) =>
+        this.detectOpenAICompatibleModels(baseURL, detectionOptions),
+      detectClaudeAgentSdkCatalog: (config, forceRefresh) =>
+        this.detectClaudeAgentSdkCatalog(config, forceRefresh),
+      detectCodexAppServerCatalog: (config, forceRefresh) =>
+        this.detectCodexAppServerCatalog(config, forceRefresh),
+      providerPolicyRestrictionReason: (providerId) =>
+        this.providerPolicyRestrictionReason(providerId),
+      appleProviderRuntimeEligibleSync: () => this.appleProviderRuntimeEligibleSync(),
+    });
+    this.providerTelemetryService = new GatewayAdminProviderTelemetryService({
+      logger: this.logger,
+      usageSnapshotService: options.usageSnapshotService,
+      localUsageTelemetryService: options.localUsageTelemetryService,
+      listProviderConfigs: () => this.listProviderConfigs(),
+      findExecutable: (commands) => this.findExecutable(commands),
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      detectOpenAICompatibleModels: (baseURL) =>
+        this.detectOpenAICompatibleModels(baseURL),
+      queryCodexAppServer: (executablePath) =>
+        this.queryCodexAppServer(executablePath),
+      readClaudeOAuthAccessToken: () =>
+        this.readClaudeOAuthAccessToken(),
+      fetchClaudeOAuthUsage: (accessToken) =>
+        this.fetchClaudeOAuthUsage(accessToken),
+    });
     this.claudeAgentSdkMetadataProbe = options.claudeAgentSdkMetadataProbe;
     this.codexAppServerMetadataProbe = options.codexAppServerMetadataProbe;
-    this.usageSnapshotService = options.usageSnapshotService;
-    this.localUsageTelemetryService = options.localUsageTelemetryService;
 
-    this.seedFromEnvironment(options.defaultApiKey);
+    seedGatewayAdminProvidersFromEnvironment({
+      logger: this.logger,
+      providerConfigRepo: this.providerConfigRepo,
+      providerConfigs: this.providerConfigs,
+      defaultProviderId: this.defaultProviderId,
+      defaultModelId: this.defaultModelId,
+      defaultApiKey: options.defaultApiKey,
+      isProviderConfigAllowed: (providerId) => this.isProviderConfigAllowed(providerId),
+      providerVisibleInCatalog: (providerId) => this.providerVisibleInCatalog(providerId),
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      findExecutable: (commands) => this.findExecutable(commands),
+    });
   }
 
   private appleFoundationHostSupported(): boolean {
-    return this.hostPlatform === "darwin" && this.hostArch === "arm64";
+    return this.providerPolicyService.appleFoundationHostSupported();
   }
 
   private async ensureAppleFoundationAvailability(): Promise<AppleFoundationAvailabilitySnapshot> {
-    if (this.appleFoundationAvailability) {
-      return this.appleFoundationAvailability;
-    }
-
-    if (!this.enableAppleFoundationProvider) {
-      this.appleFoundationAvailability = {
-        available: false,
-        reason: "SPACESKIT_ENABLE_APPLE_FOUNDATION_PROVIDER is disabled.",
-      };
-      return this.appleFoundationAvailability;
-    }
-
-    if (!this.appleFoundationHostSupported()) {
-      this.appleFoundationAvailability = {
-        available: false,
-        reason: `Apple Foundation Models require darwin/arm64. Current host: ${this.hostPlatform}/${this.hostArch}.`,
-      };
-      return this.appleFoundationAvailability;
-    }
-
-    this.appleFoundationAvailability = {
-      available: false,
-      reason: "Apple Foundation availability probe did not complete.",
-    };
-    return this.appleFoundationAvailability;
+    return this.providerPolicyService.ensureAppleFoundationAvailability();
   }
 
   private appleProviderEnabledSync(): { enabled: boolean; reason: string } {
-    if (!this.enableAppleFoundationProvider) {
-      return {
-        enabled: false,
-        reason: "SPACESKIT_ENABLE_APPLE_FOUNDATION_PROVIDER is disabled.",
-      };
-    }
-
-    return { enabled: true, reason: "Apple Foundation provider is enabled." };
+    return this.providerPolicyService.appleProviderEnabledSync();
   }
 
   private appleProviderRuntimeEligibleSync(): { eligible: boolean; reason: string } {
-    const enabled = this.appleProviderEnabledSync();
-    if (!enabled.enabled) {
-      return { eligible: false, reason: enabled.reason };
-    }
-
-    if (!this.appleFoundationHostSupported()) {
-      return {
-        eligible: false,
-        reason: `Apple Foundation Models require darwin/arm64. Current host: ${this.hostPlatform}/${this.hostArch}.`,
-      };
-    }
-
-    if (!this.appleFoundationAvailability || this.appleFoundationAvailability.available !== true) {
-      return {
-        eligible: false,
-        reason: this.appleFoundationAvailability?.reason
-          ?? "Apple Intelligence availability check has not passed.",
-      };
-    }
-
-    return { eligible: true, reason: "Apple Intelligence available." };
+    return this.providerPolicyService.appleProviderRuntimeEligibleSync();
   }
 
   private embeddedLocalIntegrationsAllowed(): boolean {
-    return this.gatewayProfile === "embedded"
-      && this.hostPlatform === "darwin"
-      && this.hostArch === "arm64";
+    return this.providerPolicyService.embeddedLocalIntegrationsAllowed();
   }
 
   private ensureAppleProviderEnabledSync(operation: string): void {
-    const enabled = this.appleProviderEnabledSync();
-    if (enabled.enabled) {
-      return;
-    }
-    throwGatewayError(
-      "FAILED_PRECONDITION",
-      `${operation} blocked for provider apple: ${enabled.reason}`,
-    );
+    this.providerPolicyService.ensureAppleProviderEnabledSync(operation);
   }
 
   private ensureAppleProviderRuntimeEligibleSync(operation: string): void {
-    const eligibility = this.appleProviderRuntimeEligibleSync();
-    if (eligibility.eligible) {
-      return;
-    }
-    throwGatewayError(
-      "FAILED_PRECONDITION",
-      `${operation} blocked for provider apple: ${eligibility.reason}`,
-    );
+    this.providerPolicyService.ensureAppleProviderRuntimeEligibleSync(operation);
   }
 
   private providerVisibleInCatalog(providerId: string): boolean {
-    if (providerId !== "apple") {
-      return true;
-    }
-    return this.appleProviderEnabledSync().enabled && this.appleFoundationHostSupported();
+    return this.providerPolicyService.providerVisibleInCatalog(providerId);
   }
 
   private providerPolicyRestrictionReason(providerId: string): string | undefined {
-    if (this.gatewayProfile !== "embedded") {
-      return undefined;
-    }
-    if (providerCatalogGroup(providerId) === "cloud") {
-      return undefined;
-    }
-    if (this.embeddedLocalIntegrationsAllowed()) {
-      return undefined;
-    }
-    return `Provider ${providerId} is disabled in embedded profile on ${this.hostPlatform}/${this.hostArch}. Local executors and local runtimes require embedded macOS on Apple Silicon or an external gateway.`;
+    return this.providerPolicyService.providerPolicyRestrictionReason(providerId);
   }
 
   async discoverLocalAgents(): Promise<DiscoveredLocalAgent[]> {
-    return this.loadLocalAgentSnapshot(false);
+    return this.localAgentDiscoveryService.discoverLocalAgents();
   }
 
   private async loadLocalAgentSnapshot(forceRefresh: boolean): Promise<DiscoveredLocalAgent[]> {
-    const now = Date.now();
-    if (!forceRefresh) {
-      const cached = this.localAgentSnapshotCache;
-      if (cached) {
-        if (cached.expiresAt > now) {
-          return cached.value.map(cloneDiscoveredLocalAgent);
-        }
-        if (!this.localAgentSnapshotInFlight) {
-          this.localAgentSnapshotInFlight = this.computeLocalAgentSnapshot();
-        }
-        return cached.value.map(cloneDiscoveredLocalAgent);
-      }
-      if (this.localAgentSnapshotInFlight) {
-        return (await this.localAgentSnapshotInFlight).map(cloneDiscoveredLocalAgent);
-      }
-    }
-
-    if (!this.localAgentSnapshotInFlight) {
-      this.localAgentSnapshotInFlight = this.computeLocalAgentSnapshot();
-    }
-    return (await this.localAgentSnapshotInFlight).map(cloneDiscoveredLocalAgent);
-  }
-
-  private async computeLocalAgentSnapshot(): Promise<DiscoveredLocalAgent[]> {
-    const lmStudioPolicyReason = this.providerPolicyRestrictionReason("lmstudio");
-    try {
-      const lmStudioDetection = lmStudioPolicyReason
-        ? {
-          serviceReachable: false,
-          models: [] as OpenAICompatibleDetectedModel[],
-          detectionError: lmStudioPolicyReason,
-        }
-        : await this.detectOpenAICompatibleModels(
-          this.resolveProviderBaseURL(
-            "lmstudio",
-            this.providerConfigs.get("lmstudio")?.baseURL,
-          ),
-        );
-      const codexDetectedModels = this.detectCodexCliModels();
-      const codexAppServerDetectedModels = codexDetectedModels.map((modelId) =>
-        modelId.replace(/^codex\//, "codex-app-server/"),
-      );
-
-      const value = LOCAL_CLIENT_TEMPLATES.map((template) => {
-        const executablePath = this.findExecutable(template.commands);
-        const appPath = template.appPath && existsSync(template.appPath) ? template.appPath : undefined;
-        const providerId = template.recommendedProviderId;
-        const policyReason = this.providerPolicyRestrictionReason(providerId);
-        const policyAllowed = !policyReason;
-        const detected = policyAllowed && Boolean(executablePath || appPath);
-        const localManifestModels = LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? [];
-        const availableModels = !policyAllowed
-          ? []
-          : template.id === "lmstudio"
-            ? lmStudioDetection.models.map((model) => withProviderPrefix("lmstudio", model.id))
-            : uniqueModelIds([
-            ...(template.id === "codex" ? codexDetectedModels : []),
-            ...(template.id === "codex-app-server" ? codexAppServerDetectedModels : []),
-            ...localManifestModels,
-          ]);
-        const recommendedModel = availableModels?.[0] ?? template.recommendedModel;
-        const detectionError = policyReason
-          || (template.id === "lmstudio" ? lmStudioDetection.detectionError : undefined);
-
-        return {
-          id: template.id,
-          name: template.name,
-          detected,
-          executablePath: executablePath ?? undefined,
-          appPath,
-          serviceReachable: template.id === "lmstudio"
-            ? (policyAllowed ? lmStudioDetection.serviceReachable : false)
-            : undefined,
-          recommendedProviderId: template.recommendedProviderId,
-          recommendedModel,
-          requiresApiKey: template.requiresApiKey,
-          ...(availableModels && availableModels.length > 0 ? { availableModels } : {}),
-          ...(detectionError ? { detectionError } : {}),
-          notes: template.notes,
-        };
-      });
-
-      this.localAgentSnapshotCache = {
-        expiresAt: Date.now() + LOCAL_AGENT_SNAPSHOT_CACHE_TTL_MS,
-        value,
-      };
-      return value;
-    } finally {
-      this.localAgentSnapshotInFlight = undefined;
-    }
+    return this.localAgentDiscoveryService.loadLocalAgentSnapshot(forceRefresh);
   }
 
   listProviderConfigs(): PublicProviderRuntimeConfig[] {
@@ -767,10 +518,29 @@ export class DefaultGatewayAdminService {
       }));
   }
 
+  private runtimeDefaultsContext(): GatewayAdminRuntimeDefaultsContext {
+    return {
+      profileRepo: this.profileRepo,
+      gatewayRuntimeDefaultsRepo: this.gatewayRuntimeDefaultsRepo,
+      mainProfileId: this.mainProfileId,
+      conciergeProfileId: this.conciergeProfileId,
+      defaultProviderId: this.defaultProviderId,
+      defaultModelId: this.defaultModelId,
+      listProviderConfigs: () => this.listProviderConfigs(),
+      listProviderCatalogs: (input) => this.listProviderCatalogs(input),
+      isProviderConfigAllowed: (providerId) => this.isProviderConfigAllowed(providerId),
+      mergeAllowedModels: (providerId, model, modelIds) =>
+        this.mergeAllowedModels(providerId, model, modelIds),
+      validateProviderRuntimeSelection: (providerId, modelId) =>
+        this.validateProviderRuntimeSelection(providerId, modelId),
+      requireProfileRepo: () => this.requireProfileRepo(),
+    };
+  }
+
   async getRuntimeDefaults(
     _input: GatewayGetRuntimeDefaultsPayload = {},
   ): Promise<GatewayRuntimeDefaultsPayload> {
-    return this.resolveRuntimeDefaults();
+    return resolveGatewayAdminRuntimeDefaults(this.runtimeDefaultsContext());
   }
 
   async setRuntimeDefaults(
@@ -783,12 +553,13 @@ export class DefaultGatewayAdminService {
       );
     }
 
-    const current = await this.resolveRuntimeDefaults();
+    const runtimeDefaultsContext = this.runtimeDefaultsContext();
+    const current = await resolveGatewayAdminRuntimeDefaults(runtimeDefaultsContext);
     const main = input.main
-      ? await this.validateRuntimeDefaultSelection(input.main, "main")
+      ? await validateGatewayAdminRuntimeDefaultSelection(runtimeDefaultsContext, input.main, "main")
       : current.main;
     const concierge = input.concierge
-      ? await this.validateRuntimeDefaultSelection(input.concierge, "concierge")
+      ? await validateGatewayAdminRuntimeDefaultSelection(runtimeDefaultsContext, input.concierge, "concierge")
       : current.concierge;
 
     const persisted = this.gatewayRuntimeDefaultsRepo?.set({
@@ -805,8 +576,20 @@ export class DefaultGatewayAdminService {
     await this.ensureMainSpace(true);
     await this.ensureConciergeSpace(true);
 
-    this.updateManagedRuntimeProfile(this.mainProfileId, main, true, "gateway_runtime_defaults");
-    this.updateManagedRuntimeProfile(this.conciergeProfileId, concierge, false, "gateway_runtime_defaults");
+    updateGatewayAdminManagedRuntimeProfile(
+      runtimeDefaultsContext,
+      this.mainProfileId,
+      main,
+      true,
+      "gateway_runtime_defaults",
+    );
+    updateGatewayAdminManagedRuntimeProfile(
+      runtimeDefaultsContext,
+      this.conciergeProfileId,
+      concierge,
+      false,
+      "gateway_runtime_defaults",
+    );
 
     await this.normalizeMainAssignment(mainSpaceId);
     await this.normalizeConciergeAssignment(conciergeSpaceId);
@@ -881,139 +664,16 @@ export class DefaultGatewayAdminService {
       repairIfMissing: true,
     });
     const profileRepo = this.requireProfileRepo();
+    const selectionContext = this.managedAgentSelectionContext(
+      profileRepo,
+      this.mainProfileId,
+      "gateway_main_agent_swap",
+    );
 
     if (selectionMode === "provider_model") {
-      const providerId = normalizeProviderId(input.providerId);
-      const modelIdRaw = input.modelId?.trim();
-      if (!providerId || !modelIdRaw) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          "providerId and modelId are required for provider_model selection",
-        );
-      }
-
-      const modelProviderPrefix = deriveProviderFromModel(modelIdRaw);
-      if (modelProviderPrefix && modelProviderPrefix !== providerId) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          `modelId provider prefix ${modelProviderPrefix} does not match providerId ${providerId}`,
-        );
-      }
-
-      const providerConfig = this.listProviderConfigs()
-        .find((entry) => entry.providerId.trim().toLowerCase() === providerId);
-      if (!providerConfig) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Provider is not configured: ${providerId}`,
-        );
-      }
-
-      const modelId = withProviderPrefix(providerId, modelIdRaw);
-      const allowedModels = this.mergeAllowedModels(
-        providerId,
-        providerConfig.model,
-        providerConfig.allowedModels,
-      );
-      if (!providerConfig.allowCustomModel && !allowedModels.includes(modelId)) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Model ${modelId} is not allowed for provider ${providerId}.`,
-        );
-      }
-
-      const runtimeValidation = await this.validateProviderRuntimeSelection(providerId, modelId);
-      if (!runtimeValidation.valid) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          runtimeValidation.reason
-            || `Provider runtime rejected model ${modelId} for ${providerId}.`,
-        );
-      }
-
-      profileRepo.update({
-        profileId: this.mainProfileId,
-        providerHint: providerId,
-        modelHint: modelId,
-        defaultSkillIds: mergeSkillIds(
-          parseStringArray(profileRepo.getActiveRevision(this.mainProfileId)?.default_skill_set_ids_json),
-          [USER_ESCALATION_SKILL_ID],
-        ),
-        modelConfig: {
-          preferredModels: [modelId],
-          fallbackModels: [],
-        },
-        source: "gateway_main_agent_swap",
-      });
+      await applyManagedAgentProviderModelSelection(input, selectionContext);
     } else {
-      const sourceAgentDefinitionId = input.sourceAgentDefinitionId?.trim();
-      if (!sourceAgentDefinitionId) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          "sourceAgentDefinitionId is required for agent_definition selection",
-        );
-      }
-
-      const sourceProfile = profileRepo.getActiveById(sourceAgentDefinitionId);
-      if (!sourceProfile) {
-        throwGatewayError("NOT_FOUND", `Agent Definition not found: ${sourceAgentDefinitionId}`);
-      }
-      const sourceRevision = profileRepo.getActiveRevision(sourceAgentDefinitionId);
-      if (!sourceRevision) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Active agent definition revision not found: ${sourceAgentDefinitionId}`,
-        );
-      }
-
-      const applyPersonaInstructions = input.applyPersonaInstructions ?? true;
-      const sourceModelConfig = parseModelConfig(
-        sourceRevision.model_config_json,
-        sourceRevision.model_hint,
-      );
-      const sourceProviderHint = normalizeProviderId(sourceRevision.provider_hint)
-        || deriveProviderFromModel(sourceRevision.model_hint);
-      const sourceModelHint = sourceRevision.model_hint?.trim() || undefined;
-      this.validateProfileModelSelection({
-        providerHint: sourceProviderHint ?? undefined,
-        modelHint: sourceModelHint,
-        modelConfig: sourceModelConfig,
-      });
-      const sourcePinned = this.validatePinnedProviderModel(
-        sourceProviderHint ?? undefined,
-        sourceModelHint,
-      );
-      if (!sourcePinned.valid || !sourcePinned.providerHint || !sourcePinned.modelHint) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          sourcePinned.reason
-            || `Agent Definition ${sourceAgentDefinitionId} is missing a valid runtime/model configuration.`,
-        );
-      }
-      const runtimeValidation = await this.validateProviderRuntimeSelection(
-        sourcePinned.providerHint,
-        sourcePinned.modelHint,
-      );
-      if (!runtimeValidation.valid) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          runtimeValidation.reason
-            || `Agent Definition ${sourceAgentDefinitionId} is pinned to a runtime model that is unavailable.`,
-        );
-      }
-
-      profileRepo.update({
-        profileId: this.mainProfileId,
-        personalityPrompt: applyPersonaInstructions ? sourceRevision.personality_prompt : undefined,
-        defaultSkillIds: mergeSkillIds(
-          parseStringArray(sourceRevision.default_skill_set_ids_json),
-          [USER_ESCALATION_SKILL_ID],
-        ),
-        providerHint: sourceProviderHint ?? undefined,
-        modelHint: sourceModelHint,
-        modelConfig: sourceModelConfig,
-        source: "gateway_main_agent_swap",
-      });
+      await applyManagedAgentDefinitionSelection(input, selectionContext);
     }
 
     await this.normalizeMainAssignment(spaceId);
@@ -1047,139 +707,16 @@ export class DefaultGatewayAdminService {
       repairIfMissing: true,
     });
     const profileRepo = this.requireProfileRepo();
+    const selectionContext = this.managedAgentSelectionContext(
+      profileRepo,
+      this.conciergeProfileId,
+      "gateway_concierge_agent_swap",
+    );
 
     if (selectionMode === "provider_model") {
-      const providerId = normalizeProviderId(input.providerId);
-      const modelIdRaw = input.modelId?.trim();
-      if (!providerId || !modelIdRaw) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          "providerId and modelId are required for provider_model selection",
-        );
-      }
-
-      const modelProviderPrefix = deriveProviderFromModel(modelIdRaw);
-      if (modelProviderPrefix && modelProviderPrefix !== providerId) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          `modelId provider prefix ${modelProviderPrefix} does not match providerId ${providerId}`,
-        );
-      }
-
-      const providerConfig = this.listProviderConfigs()
-        .find((entry) => entry.providerId.trim().toLowerCase() === providerId);
-      if (!providerConfig) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Provider is not configured: ${providerId}`,
-        );
-      }
-
-      const modelId = withProviderPrefix(providerId, modelIdRaw);
-      const allowedModels = this.mergeAllowedModels(
-        providerId,
-        providerConfig.model,
-        providerConfig.allowedModels,
-      );
-      if (!providerConfig.allowCustomModel && !allowedModels.includes(modelId)) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Model ${modelId} is not allowed for provider ${providerId}.`,
-        );
-      }
-
-      const runtimeValidation = await this.validateProviderRuntimeSelection(providerId, modelId);
-      if (!runtimeValidation.valid) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          runtimeValidation.reason
-            || `Provider runtime rejected model ${modelId} for ${providerId}.`,
-        );
-      }
-
-      profileRepo.update({
-        profileId: this.conciergeProfileId,
-        providerHint: providerId,
-        modelHint: modelId,
-        defaultSkillIds: mergeSkillIds(
-          parseStringArray(profileRepo.getActiveRevision(this.conciergeProfileId)?.default_skill_set_ids_json),
-          [USER_ESCALATION_SKILL_ID],
-        ),
-        modelConfig: {
-          preferredModels: [modelId],
-          fallbackModels: [],
-        },
-        source: "gateway_concierge_agent_swap",
-      });
+      await applyManagedAgentProviderModelSelection(input, selectionContext);
     } else {
-      const sourceAgentDefinitionId = input.sourceAgentDefinitionId?.trim();
-      if (!sourceAgentDefinitionId) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          "sourceAgentDefinitionId is required for agent_definition selection",
-        );
-      }
-
-      const sourceProfile = profileRepo.getActiveById(sourceAgentDefinitionId);
-      if (!sourceProfile) {
-        throwGatewayError("NOT_FOUND", `Agent Definition not found: ${sourceAgentDefinitionId}`);
-      }
-      const sourceRevision = profileRepo.getActiveRevision(sourceAgentDefinitionId);
-      if (!sourceRevision) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Active agent definition revision not found: ${sourceAgentDefinitionId}`,
-        );
-      }
-
-      const applyPersonaInstructions = input.applyPersonaInstructions ?? true;
-      const sourceModelConfig = parseModelConfig(
-        sourceRevision.model_config_json,
-        sourceRevision.model_hint,
-      );
-      const sourceProviderHint = normalizeProviderId(sourceRevision.provider_hint)
-        || deriveProviderFromModel(sourceRevision.model_hint);
-      const sourceModelHint = sourceRevision.model_hint?.trim() || undefined;
-      this.validateProfileModelSelection({
-        providerHint: sourceProviderHint ?? undefined,
-        modelHint: sourceModelHint,
-        modelConfig: sourceModelConfig,
-      });
-      const sourcePinned = this.validatePinnedProviderModel(
-        sourceProviderHint ?? undefined,
-        sourceModelHint,
-      );
-      if (!sourcePinned.valid || !sourcePinned.providerHint || !sourcePinned.modelHint) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          sourcePinned.reason
-            || `Agent Definition ${sourceAgentDefinitionId} is missing a valid runtime/model configuration.`,
-        );
-      }
-      const runtimeValidation = await this.validateProviderRuntimeSelection(
-        sourcePinned.providerHint,
-        sourcePinned.modelHint,
-      );
-      if (!runtimeValidation.valid) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          runtimeValidation.reason
-            || `Agent Definition ${sourceAgentDefinitionId} is pinned to a runtime model that is unavailable.`,
-        );
-      }
-
-      profileRepo.update({
-        profileId: this.conciergeProfileId,
-        personalityPrompt: applyPersonaInstructions ? sourceRevision.personality_prompt : undefined,
-        defaultSkillIds: mergeSkillIds(
-          parseStringArray(sourceRevision.default_skill_set_ids_json),
-          [USER_ESCALATION_SKILL_ID],
-        ),
-        providerHint: sourceProviderHint ?? undefined,
-        modelHint: sourceModelHint,
-        modelConfig: sourceModelConfig,
-        source: "gateway_concierge_agent_swap",
-      });
+      await applyManagedAgentDefinitionSelection(input, selectionContext);
     }
 
     await this.normalizeConciergeAssignment(spaceId);
@@ -1224,18 +761,30 @@ export class DefaultGatewayAdminService {
     return this.profileRepo;
   }
 
-  private requireCliToolService(): CliToolService {
-    if (!this.cliToolService) {
-      throwGatewayError("FAILED_PRECONDITION", "CLI tool service unavailable");
-    }
-    return this.cliToolService;
-  }
-
-  private requireToolApprovalGrantService(): ToolApprovalGrantService {
-    if (!this.toolApprovalGrantService) {
-      throwGatewayError("FAILED_PRECONDITION", "Tool approval grant service unavailable");
-    }
-    return this.toolApprovalGrantService;
+  private managedAgentSelectionContext(
+    profileRepo: ProfileRepository,
+    profileId: string,
+    updateSource: string,
+  ): ManagedAgentSelectionContext {
+    return {
+      profileRepo,
+      profileId,
+      updateSource,
+      listProviderConfigs: () => this.listProviderConfigs(),
+      mergeAllowedModels: (providerId, model, modelIds) => this.mergeAllowedModels(
+        providerId,
+        model,
+        modelIds,
+      ),
+      validateProviderRuntimeSelection: (providerId, modelId) => (
+        this.validateProviderRuntimeSelection(providerId, modelId)
+      ),
+      validateProfileModelSelection: (input) => this.validateProfileModelSelection(input),
+      validatePinnedProviderModel: (providerHint, modelHint) => this.validatePinnedProviderModel(
+        providerHint,
+        modelHint,
+      ),
+    };
   }
 
   private async ensureMainProfileActive(
@@ -1403,352 +952,36 @@ export class DefaultGatewayAdminService {
   private async ensureMainSpace(
     repairIfMissing: boolean,
   ): Promise<{ spaceUid: string; repaired: boolean; assignedProfileId?: string; updatedAt: string }> {
-    let space = await this.spaceAdminService.getSpace(this.mainSpaceId);
-    let repaired = false;
-
-    if (!space) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Main space is missing: ${this.mainSpaceId}`,
-        );
-      }
-      space = await this.spaceAdminService.createSpace({
-        spaceId: this.mainSpaceId,
-        resourceId: this.mainSpaceResourceId,
-        spaceType: "main",
-        name: this.mainSpaceName,
-        goal: this.mainSpaceGoal,
-        turnModel: "sequential_all",
-        visibility: "shared",
-        initialAgents: [
-          {
-            agentId: this.mainAgentId,
-            profileId: this.mainProfileId,
-            role: "global_coordinator",
-            turnOrder: 0,
-            isPrimary: true,
-          },
-        ],
-      });
-      repaired = true;
-    }
-
-    const mainAssignment = space.agents.find((assignment) => assignment.agentId === this.mainAgentId);
-    if (!mainAssignment) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Main agent assignment is missing: ${this.mainAgentId}`,
-        );
-      }
-      await this.spaceAdminService.addAgent({
-        spaceId: this.mainSpaceId,
-        agentId: this.mainAgentId,
-        profileId: this.mainProfileId,
-        role: "global_coordinator",
-        turnOrder: 0,
-        isPrimary: true,
-      });
-      repaired = true;
-    } else {
-      const requiresNormalization = (
-        mainAssignment.profileId !== this.mainProfileId
-        || mainAssignment.role !== "global_coordinator"
-        || mainAssignment.turnOrder !== 0
-        || !mainAssignment.isPrimary
-      );
-      if (requiresNormalization) {
-        if (!repairIfMissing) {
-          throwGatewayError(
-            "FAILED_PRECONDITION",
-            `Main assignment is out of policy for agent ${this.mainAgentId}`,
-          );
-        }
-        await this.spaceAdminService.updateAgentAssignment({
-          spaceId: this.mainSpaceId,
-          agentId: this.mainAgentId,
-          profileId: this.mainProfileId,
-          role: "global_coordinator",
-          turnOrder: 0,
-          isPrimary: true,
-        });
-        repaired = true;
-      }
-    }
-
-    let refreshed = await this.spaceAdminService.getSpace(this.mainSpaceId);
-    if (!refreshed) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Unable to load main space after repair: ${this.mainSpaceId}`,
-      );
-    }
-    let refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.mainAgentId);
-    if (!refreshedAssignment) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Unable to load canonical main assignment after repair: ${this.mainSpaceId}/${this.mainAgentId}`,
-      );
-    }
-
-    // Existing spaces may contain stale duplicate primary/coordinator rows from
-    // previous runtime behavior or manual DB edits. Keep the canonical
-    // main-agent assignment authoritative to avoid "stuck" swap behavior.
-    if (this.hasMainAssignmentPolicyConflicts(refreshed.agents)) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Main assignment policy conflict detected for canonical agent ${this.mainAgentId}`,
-        );
-      }
-      await this.spaceAdminService.updateAgentAssignment({
-        spaceId: this.mainSpaceId,
-        agentId: this.mainAgentId,
-        profileId: this.mainProfileId,
-        role: "global_coordinator",
-        turnOrder: 0,
-        isPrimary: true,
-      });
-      repaired = true;
-
-      refreshed = await this.spaceAdminService.getSpace(this.mainSpaceId);
-      if (!refreshed) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to load main space after policy normalization: ${this.mainSpaceId}`,
-        );
-      }
-      refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.mainAgentId);
-      if (!refreshedAssignment) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to load canonical main assignment after policy normalization: ${this.mainSpaceId}/${this.mainAgentId}`,
-        );
-      }
-    }
-
-    return {
-      spaceUid: refreshed.spaceUid,
-      repaired,
-      assignedProfileId: refreshedAssignment?.profileId,
-      updatedAt: String(refreshed.updatedAt),
-    };
+    return ensureGatewayAdminMainSpace(this.managedSpaceRepairContext(), repairIfMissing);
   }
 
   private async ensureConciergeSpace(
     repairIfMissing: boolean,
   ): Promise<{ spaceUid: string; repaired: boolean; assignedProfileId?: string; updatedAt: string }> {
-    let space = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
-    let repaired = false;
+    return ensureGatewayAdminConciergeSpace(this.managedSpaceRepairContext(), repairIfMissing);
+  }
 
-    if (!space) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Concierge space is missing: ${this.conciergeSpaceId}`,
-        );
-      }
-      space = await this.spaceAdminService.createSpace({
-        spaceId: this.conciergeSpaceId,
-        resourceId: this.conciergeSpaceResourceId,
-        spaceType: "concierge",
-        name: this.conciergeSpaceName,
-        goal: this.conciergeSpaceGoal,
-        turnModel: "sequential_all",
-        visibility: "private",
-        initialAgents: [
-          {
-            agentId: this.conciergeAgentId,
-            profileId: this.conciergeProfileId,
-            role: "global_coordinator",
-            turnOrder: 0,
-            isPrimary: true,
-          },
-        ],
-      });
-      repaired = true;
-    }
-
-    const rawSpace = this.spaceRepo?.getById(this.conciergeSpaceId);
-    const desiredConfigJson = this.buildCanonicalConciergeSpaceConfigJson(rawSpace?.space_config_json);
-    const requiresMetadataRepair = Boolean(rawSpace) && (
-      rawSpace?.resource_id !== this.conciergeSpaceResourceId
-      || rawSpace?.space_type !== "concierge"
-      || rawSpace?.name !== this.conciergeSpaceName
-      || rawSpace?.goal !== this.conciergeSpaceGoal
-      || rawSpace?.turn_model !== "sequential_all"
-      || rawSpace?.space_config_json !== desiredConfigJson
-    );
-    if (requiresMetadataRepair) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Concierge space metadata is out of policy for ${this.conciergeSpaceId}`,
-        );
-      }
-      this.updateRawSpaceMetadata({
-        spaceId: this.conciergeSpaceId,
-        resourceId: this.conciergeSpaceResourceId,
-        spaceType: "concierge",
-        name: this.conciergeSpaceName,
-        goal: this.conciergeSpaceGoal,
-        turnModel: "sequential_all",
-        configJson: desiredConfigJson,
-      });
-      repaired = true;
-    }
-
-    const conciergeAssignment = space.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
-    if (!conciergeAssignment) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Concierge agent assignment is missing: ${this.conciergeAgentId}`,
-        );
-      }
-      await this.spaceAdminService.addAgent({
-        spaceId: this.conciergeSpaceId,
-        agentId: this.conciergeAgentId,
-        profileId: this.conciergeProfileId,
-        role: "global_coordinator",
-        turnOrder: 0,
-        isPrimary: true,
-      });
-      repaired = true;
-    } else {
-      const requiresNormalization = (
-        conciergeAssignment.profileId !== this.conciergeProfileId
-        || conciergeAssignment.role !== "global_coordinator"
-        || conciergeAssignment.turnOrder !== 0
-        || !conciergeAssignment.isPrimary
-      );
-      if (requiresNormalization) {
-        if (!repairIfMissing) {
-          throwGatewayError(
-            "FAILED_PRECONDITION",
-            `Concierge assignment is out of policy for agent ${this.conciergeAgentId}`,
-          );
-        }
-        await this.spaceAdminService.updateAgentAssignment({
-          spaceId: this.conciergeSpaceId,
-          agentId: this.conciergeAgentId,
-          profileId: this.conciergeProfileId,
-          role: "global_coordinator",
-          turnOrder: 0,
-          isPrimary: true,
-        });
-        repaired = true;
-      }
-    }
-
-    let refreshed = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
-    if (!refreshed) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Unable to load concierge space after repair: ${this.conciergeSpaceId}`,
-      );
-    }
-    let refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
-    if (!refreshedAssignment) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Unable to load canonical concierge assignment after repair: ${this.conciergeSpaceId}/${this.conciergeAgentId}`,
-      );
-    }
-
-    if (this.hasConciergeAssignmentPolicyConflicts(refreshed.agents)) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Concierge assignment policy conflict detected for canonical agent ${this.conciergeAgentId}`,
-        );
-      }
-      await this.spaceAdminService.updateAgentAssignment({
-        spaceId: this.conciergeSpaceId,
-        agentId: this.conciergeAgentId,
-        profileId: this.conciergeProfileId,
-        role: "global_coordinator",
-        turnOrder: 0,
-        isPrimary: true,
-      });
-      repaired = true;
-
-      refreshed = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
-      if (!refreshed) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to load concierge space after policy normalization: ${this.conciergeSpaceId}`,
-        );
-      }
-      refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
-      if (!refreshedAssignment) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to load canonical concierge assignment after policy normalization: ${this.conciergeSpaceId}/${this.conciergeAgentId}`,
-        );
-      }
-    }
-
-    if (refreshed.orchestratorProfileId !== this.conciergeProfileId) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Concierge orchestrator profile is out of policy for ${this.conciergeSpaceId}`,
-        );
-      }
-      await this.spaceAdminService.setSpaceOrchestrator({
-        spaceId: this.conciergeSpaceId,
-        profileId: this.conciergeProfileId,
-      });
-      repaired = true;
-
-      refreshed = await this.spaceAdminService.getSpace(this.conciergeSpaceId);
-      if (!refreshed) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to load concierge space after orchestrator normalization: ${this.conciergeSpaceId}`,
-        );
-      }
-      refreshedAssignment = refreshed.agents.find((assignment) => assignment.agentId === this.conciergeAgentId);
-      if (!refreshedAssignment) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to load canonical concierge assignment after orchestrator normalization: ${this.conciergeSpaceId}/${this.conciergeAgentId}`,
-        );
-      }
-    }
-
+  private managedSpaceRepairContext(): GatewayAdminManagedSpaceRepairContext {
     return {
-      spaceUid: refreshed.spaceUid,
-      repaired,
-      assignedProfileId: refreshedAssignment?.profileId,
-      updatedAt: String(refreshed.updatedAt),
+      spaceAdminService: this.spaceAdminService,
+      spaceRepo: this.spaceRepo,
+      main: {
+        spaceId: this.mainSpaceId,
+        resourceId: this.mainSpaceResourceId,
+        name: this.mainSpaceName,
+        goal: this.mainSpaceGoal,
+        profileId: this.mainProfileId,
+        agentId: this.mainAgentId,
+      },
+      concierge: {
+        spaceId: this.conciergeSpaceId,
+        resourceId: this.conciergeSpaceResourceId,
+        name: this.conciergeSpaceName,
+        goal: this.conciergeSpaceGoal,
+        profileId: this.conciergeProfileId,
+        agentId: this.conciergeAgentId,
+      },
     };
-  }
-
-  private hasMainAssignmentPolicyConflicts(
-    assignments: Array<{ agentId: string; role: string; isPrimary: boolean }>,
-  ): boolean {
-    return assignments.some((assignment) => {
-      if (assignment.agentId === this.mainAgentId) {
-        return false;
-      }
-      const role = assignment.role.trim().toLowerCase();
-      return assignment.isPrimary || role === "global_coordinator";
-    });
-  }
-
-  private hasConciergeAssignmentPolicyConflicts(
-    assignments: Array<{ agentId: string; role: string; isPrimary: boolean }>,
-  ): boolean {
-    return assignments.some((assignment) => {
-      if (assignment.agentId === this.conciergeAgentId) {
-        return false;
-      }
-      const role = assignment.role.trim().toLowerCase();
-      return assignment.isPrimary || role === "global_coordinator";
-    });
   }
 
   private async normalizeMainAssignment(spaceId: string): Promise<void> {
@@ -1763,62 +996,6 @@ export class DefaultGatewayAdminService {
       return;
     }
     await this.ensureConciergeSpace(true);
-  }
-
-  private buildCanonicalConciergeSpaceConfigJson(existingJson: string | null | undefined): string {
-    const parsed = this.parseSpaceConfigRecord(existingJson);
-    parsed.visibility = "private";
-    parsed.orchestratorProfileId = this.conciergeProfileId;
-    return JSON.stringify(parsed);
-  }
-
-  private parseSpaceConfigRecord(existingJson: string | null | undefined): Record<string, unknown> {
-    if (!existingJson?.trim()) {
-      return {};
-    }
-    try {
-      const parsed = JSON.parse(existingJson) as Record<string, unknown> | null;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? { ...parsed }
-        : {};
-    } catch {
-      return {};
-    }
-  }
-
-  private updateRawSpaceMetadata(input: {
-    spaceId: string;
-    resourceId: string;
-    spaceType: string;
-    name: string;
-    goal: string;
-    turnModel: string;
-    configJson: string;
-  }): void {
-    const db = (this.spaceRepo as { db?: { query: (sql: string) => { run: (...args: unknown[]) => unknown } } } | undefined)?.db;
-    if (!db) {
-      throw new Error("Space persistence unavailable for concierge metadata repair");
-    }
-    db.query(
-      `UPDATE spaces
-       SET resource_id = ?,
-           space_type = ?,
-           name = ?,
-           goal = ?,
-           turn_model = ?,
-           space_config_json = ?,
-           updated_at = ?
-       WHERE space_id = ?`,
-    ).run(
-      input.resourceId,
-      input.spaceType,
-      input.name,
-      input.goal,
-      input.turnModel,
-      input.configJson,
-      new Date().toISOString(),
-      input.spaceId,
-    );
   }
 
   private resolveFallbackProviderModel(): { providerHint: string; modelHint: string } | null {
@@ -2226,342 +1403,7 @@ export class DefaultGatewayAdminService {
     providerId?: string;
     refresh?: boolean;
   }): Promise<GatewayModelProviderCatalog[]> {
-    const requestedProvider = normalizeProviderId(input?.providerId);
-    if (input?.providerId && !requestedProvider) {
-      throw new Error(`Unknown providerId: ${input.providerId}`);
-    }
-    const forceRefresh = input?.refresh === true;
-    const cacheKey = requestedProvider ?? "__all__";
-
-    if (!forceRefresh) {
-      const cached = this.providerCatalogSnapshotCache.get(cacheKey);
-      if (cached) {
-        if (cached.expiresAt > Date.now()) {
-          return cached.value.map(cloneGatewayModelProviderCatalog);
-        }
-        if (!this.providerCatalogSnapshotInFlight.has(cacheKey)) {
-          this.providerCatalogSnapshotInFlight.set(
-            cacheKey,
-            this.computeProviderCatalogSnapshot(requestedProvider, false),
-          );
-        }
-        return cached.value.map(cloneGatewayModelProviderCatalog);
-      }
-
-      const inFlight = this.providerCatalogSnapshotInFlight.get(cacheKey);
-      if (inFlight) {
-        return (await inFlight).map(cloneGatewayModelProviderCatalog);
-      }
-    }
-
-    if (!this.providerCatalogSnapshotInFlight.has(cacheKey)) {
-      this.providerCatalogSnapshotInFlight.set(
-        cacheKey,
-        this.computeProviderCatalogSnapshot(requestedProvider, forceRefresh),
-      );
-    }
-    return (await this.providerCatalogSnapshotInFlight.get(cacheKey)!)
-      .map(cloneGatewayModelProviderCatalog);
-  }
-
-  private async computeProviderCatalogSnapshot(
-    requestedProvider: string | undefined,
-    forceRefresh: boolean,
-  ): Promise<GatewayModelProviderCatalog[]> {
-    await this.ensureAppleFoundationAvailability();
-    if (requestedProvider === "apple" && !this.providerVisibleInCatalog("apple")) {
-      throw new Error(`Unknown providerId: ${requestedProvider}`);
-    }
-
-    const providerIds = requestedProvider
-      ? [requestedProvider]
-      : Array.from(new Set([
-        ...Object.keys(DEFAULT_MODEL_BY_PROVIDER),
-        ...Array.from(this.providerConfigs.keys()),
-      ]))
-        .filter((providerId) => this.providerVisibleInCatalog(providerId))
-        .sort();
-
-    const localAgents = await this.loadLocalAgentSnapshot(forceRefresh);
-    const localAgentsByProvider = new Map<string, DiscoveredLocalAgent>();
-    for (const agent of localAgents) {
-      localAgentsByProvider.set(agent.recommendedProviderId, agent);
-    }
-
-    const openAIDetections = new Map<string, {
-      serviceReachable: boolean;
-      models: OpenAICompatibleDetectedModel[];
-      detectionError?: string;
-    }>();
-    const claudeAgentSdkDetections = new Map<string, ClaudeAgentSdkCatalogProbe>();
-    const codexAppServerDetections = new Map<string, CodexAppServerCatalogProbe>();
-
-    await Promise.all(
-      providerIds
-        .filter((providerId) => isOpenAICompatibleProvider(providerId) && this.isProviderConfigAllowed(providerId))
-        .map(async (providerId) => {
-          const config = this.providerConfigs.get(providerId);
-          const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
-          const detection = await this.detectOpenAICompatibleModels(baseURL, {
-            forceRefresh,
-          });
-          openAIDetections.set(providerId, detection);
-        }),
-    );
-
-    await Promise.all(
-      providerIds
-        .filter((providerId) => providerId === "claude-agent-sdk" && this.isProviderConfigAllowed(providerId))
-        .map(async (providerId) => {
-          const config = this.providerConfigs.get(providerId);
-          const detection = await this.detectClaudeAgentSdkCatalog(config, forceRefresh);
-          claudeAgentSdkDetections.set(providerId, detection);
-        }),
-    );
-
-    await Promise.all(
-      providerIds
-        .filter((providerId) => providerId === "codex-app-server" && this.isProviderConfigAllowed(providerId))
-        .map(async (providerId) => {
-          const config = this.providerConfigs.get(providerId);
-          const detection = await this.detectCodexAppServerCatalog(config, forceRefresh);
-          codexAppServerDetections.set(providerId, detection);
-        }),
-    );
-
-    try {
-      const value = providerIds.map((providerId) => {
-        const config = this.providerConfigs.get(providerId);
-      const policyRestrictionReason = this.providerPolicyRestrictionReason(providerId);
-      const configAllowed = this.isProviderConfigAllowed(providerId);
-      const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
-      const hasApiKey = Boolean(config?.apiKey || config?.apiKeySecretRef || keyFromEnvironment(providerId));
-      const supportedAuthModes = providerSupportedAuthModes(providerId);
-      const authMode = resolveProviderAuthMode(providerId, config?.authMode);
-      let authStatus = inferDefaultProviderAuthStatus(providerId, authMode, hasApiKey);
-      let authAccount: GatewayProviderAuthAccount | undefined;
-      const requiresApiKey = providerRequiresApiKey(providerId, baseURL, authMode);
-      const localAgent = localAgentsByProvider.get(providerId);
-      const localRuntimeDetected = localAgent ? localAgent.detected : true;
-      let runtimeAvailable = configAllowed && (requiresApiKey ? hasApiKey : true) && localRuntimeDetected;
-
-      const models: GatewayModelCatalogEntry[] = [];
-      const addModel = (
-        idRaw: string | undefined,
-        source: GatewayModelCatalogSource,
-        available: boolean,
-        contextWindow?: number,
-      ) => {
-        const idTrimmed = idRaw?.trim();
-        if (!idTrimmed) return;
-        const inferredContextWindow = contextWindow ?? inferContextWindow(providerId, idTrimmed);
-        const id = withProviderPrefix(providerId, idTrimmed);
-        const existingIndex = models.findIndex((entry) => entry.id === id);
-        if (existingIndex >= 0) {
-          if (models[existingIndex].contextWindow === undefined && inferredContextWindow !== undefined) {
-            models[existingIndex] = {
-              ...models[existingIndex],
-              contextWindow: inferredContextWindow,
-            };
-          }
-          return;
-        }
-        const tier = classifyTier(providerId, id, inferredContextWindow);
-        models.push({
-          id,
-          displayName: id.includes("/") ? id.split("/").slice(1).join("/") : id,
-          source,
-          available,
-          tier,
-          ...(inferredContextWindow !== undefined ? { contextWindow: inferredContextWindow } : {}),
-        });
-      };
-
-      let detectionStatus: GatewayModelDetectionStatus = runtimeAvailable ? "available" : "unavailable";
-      let detectionError: string | undefined = policyRestrictionReason;
-      let integrationStatus: GatewayIntegrationStatus = runtimeAvailable ? "reachable" : "missing";
-
-      if (providerId === "apple" && configAllowed) {
-        const eligibility = this.appleProviderRuntimeEligibleSync();
-        runtimeAvailable = eligibility.eligible;
-        detectionStatus = eligibility.eligible ? "available" : "unavailable";
-        if (!eligibility.eligible) {
-          detectionError = eligibility.reason;
-          integrationStatus = "unsupported";
-        }
-      }
-
-      if (localAgent && configAllowed) {
-        if (!localAgent.detected) {
-          detectionStatus = "unavailable";
-          detectionError = localAgent.detectionError?.trim() || `${localAgent.name} runtime is not detected on this host.`;
-          integrationStatus = "missing";
-        } else if (localAgent.detectionError?.trim()) {
-          detectionStatus = "error";
-          detectionError = localAgent.detectionError.trim();
-          integrationStatus = "error";
-        } else {
-          integrationStatus = "installed";
-        }
-
-        for (const modelId of localAgent.availableModels ?? []) {
-          addModel(modelId, "detected", localAgent.detected);
-        }
-        for (const modelId of LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []) {
-          addModel(modelId, "fallback", localAgent.detected);
-        }
-      }
-
-      const openAIDetection = openAIDetections.get(providerId);
-      if (openAIDetection && configAllowed) {
-        if (openAIDetection.models.length > 0) {
-          for (const model of openAIDetection.models) {
-            addModel(model.id, "detected", runtimeAvailable, model.contextWindow);
-          }
-          detectionStatus = "available";
-          integrationStatus = "reachable";
-        } else if (openAIDetection.detectionError) {
-          detectionStatus = "error";
-          detectionError = openAIDetection.detectionError;
-          integrationStatus = "error";
-        } else if (openAIDetection.serviceReachable) {
-          integrationStatus = "no_models_loaded";
-        } else if (!openAIDetection.serviceReachable && !runtimeAvailable) {
-          detectionStatus = "unavailable";
-          integrationStatus = "missing";
-        }
-      }
-
-      const claudeAgentSdkDetection = claudeAgentSdkDetections.get(providerId);
-      if (claudeAgentSdkDetection && configAllowed) {
-        authStatus = claudeAgentSdkDetection.authStatus;
-        authAccount = claudeAgentSdkDetection.authAccount;
-        if (claudeAgentSdkDetection.models.length > 0) {
-          for (const model of claudeAgentSdkDetection.models) {
-            addModel(model.id, "detected", authStatus === "authenticated", model.contextWindow);
-          }
-          detectionStatus = "available";
-          detectionError = undefined;
-        } else if (claudeAgentSdkDetection.detectionError) {
-          detectionError = claudeAgentSdkDetection.detectionError;
-          detectionStatus = authStatus === "error" ? "error" : models.length > 0 ? "available" : "unavailable";
-        }
-      }
-
-      const codexAppServerDetection = codexAppServerDetections.get(providerId);
-      if (codexAppServerDetection && configAllowed) {
-        authStatus = codexAppServerDetection.authStatus;
-        authAccount = codexAppServerDetection.authAccount;
-        if (codexAppServerDetection.models.length > 0) {
-          for (const model of codexAppServerDetection.models) {
-            addModel(model.id, "detected", authStatus === "authenticated", model.contextWindow);
-          }
-          detectionStatus = "available";
-          detectionError = undefined;
-        } else if (codexAppServerDetection.detectionError) {
-          detectionError = codexAppServerDetection.detectionError;
-          detectionStatus = authStatus === "error" ? "error" : models.length > 0 ? "available" : "unavailable";
-        }
-      }
-
-      for (const modelId of config?.allowedModels ?? []) {
-        addModel(modelId, "allowlist", runtimeAvailable);
-      }
-      addModel(config?.model, "configured", runtimeAvailable);
-      const shouldUseFallbackManifest = (
-        providerId !== "claude-agent-sdk"
-        && providerId !== "codex-app-server"
-      ) || !models.some((entry) => entry.source === "detected");
-      if (shouldUseFallbackManifest) {
-        for (const modelId of LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? []) {
-          addModel(modelId, "fallback", runtimeAvailable);
-        }
-        addModel(DEFAULT_MODEL_BY_PROVIDER[providerId], "fallback", runtimeAvailable);
-      }
-
-      // Sort models for cloud providers with dynamically detected model lists.
-      // CLI executor providers (claude, codex, gemini) keep manifest insertion order.
-      if (
-        (isOpenAICompatibleProvider(providerId) && !isCliExecutorProvider(providerId))
-        || providerId === "claude-agent-sdk"
-        || providerId === "codex-app-server"
-      ) {
-        models.sort((a, b) => {
-          const sourcePriority = (s: GatewayModelCatalogSource): number => {
-            if (providerId === "claude-agent-sdk" || providerId === "codex-app-server") {
-              switch (s) {
-                case "detected": return 0;
-                case "configured": return 1;
-                case "allowlist": return 2;
-                case "fallback": return 3;
-                default: return 4;
-              }
-            }
-            switch (s) {
-              case "configured": return 0;
-              case "detected": return 1;
-              case "allowlist": return 2;
-              case "fallback": return 3;
-              default: return 4;
-            }
-          };
-          const aPriority = sourcePriority(a.source);
-          const bPriority = sourcePriority(b.source);
-          if (aPriority !== bPriority) return aPriority - bPriority;
-          const aCtx = a.contextWindow ?? 0;
-          const bCtx = b.contextWindow ?? 0;
-          if (aCtx !== bCtx) return bCtx - aCtx;
-          return a.displayName.localeCompare(b.displayName);
-        });
-      }
-
-      if (!configAllowed) {
-        integrationStatus = "policy_blocked";
-      } else if (authStatus === "needs_auth") {
-        integrationStatus = "needs_auth";
-      } else if (authStatus === "needs_key") {
-        integrationStatus = "needs_key";
-      } else if (requiresApiKey && !hasApiKey) {
-        integrationStatus = "needs_key";
-      } else if (authStatus === "error") {
-        integrationStatus = "error";
-      } else if (detectionStatus === "error") {
-        integrationStatus = "error";
-      } else if (models.length === 0 && isOpenAICompatibleProvider(providerId) && runtimeAvailable) {
-        integrationStatus = "no_models_loaded";
-      }
-
-        return {
-          providerId,
-          displayName: providerDisplayName(providerId),
-          group: providerCatalogGroup(providerId),
-          integrationClass: providerIntegrationClass(providerId),
-          status: integrationStatus,
-          hasApiKey,
-          requiresApiKey,
-          ...(supportedAuthModes.length > 0 ? { supportedAuthModes } : {}),
-          ...(authMode ? { authMode } : {}),
-          ...(authStatus ? { authStatus } : {}),
-          ...(authAccount ? { authAccount } : {}),
-          baseURL,
-          detectionStatus,
-          ...(detectionError ? { detectionError } : {}),
-          models,
-          installHint: providerInstallHint(providerId),
-          recommended: providerRecommended(providerId),
-          supportsHostedBilling: providerIntegrationClass(providerId) === "cloud",
-          configAllowed,
-        };
-      });
-
-      this.providerCatalogSnapshotCache.set(requestedProvider ?? "__all__", {
-        expiresAt: Date.now() + PROVIDER_CATALOG_SNAPSHOT_CACHE_TTL_MS,
-        value,
-      });
-      return value;
-    } finally {
-      this.providerCatalogSnapshotInFlight.delete(requestedProvider ?? "__all__");
-    }
+    return this.providerCatalogService.listProviderCatalogs(input);
   }
 
   async listAvailableModels(input?: {
@@ -2571,260 +1413,46 @@ export class DefaultGatewayAdminService {
     return this.listProviderCatalogs(input);
   }
 
-  private async resolveRuntimeDefaults(): Promise<GatewayRuntimeDefaultsPayload> {
-    const stored = this.gatewayRuntimeDefaultsRepo?.get();
-    const mainProfileSelection = this.runtimeDefaultSelectionFromProfile(this.mainProfileId);
-    const conciergeProfileSelection = this.runtimeDefaultSelectionFromProfile(this.conciergeProfileId);
-    const recommended = await this.recommendRuntimeDefaultSelection();
-    const fallback = this.fallbackRuntimeDefaultSelection();
-
-    const main = normalizeRuntimeDefaultSelection(
-      stored?.main_provider_id,
-      stored?.main_model_id,
-    ) ?? mainProfileSelection ?? recommended ?? fallback;
-    const concierge = normalizeRuntimeDefaultSelection(
-      stored?.concierge_provider_id,
-      stored?.concierge_model_id,
-    ) ?? conciergeProfileSelection ?? recommended ?? main;
-
-    return {
-      main,
-      concierge,
-      updatedAt: stored?.updated_at ?? new Date().toISOString(),
-    };
-  }
-
-  private fallbackRuntimeDefaultSelection(): GatewayRuntimeDefaultSelectionPayload {
-    const configuredProvider = this.listProviderConfigs().find((entry) =>
-      this.isProviderConfigAllowed(entry.providerId)
-    );
-    if (configuredProvider) {
-      return {
-        providerId: configuredProvider.providerId,
-        modelId: configuredProvider.model,
-      };
-    }
-
-    const providerId = this.defaultProviderId
-      || deriveProviderFromModel(this.defaultModelId)
-      || "openai";
-    const modelId = withProviderPrefix(
-      providerId,
-      this.defaultModelId ?? DEFAULT_MODEL_BY_PROVIDER[providerId] ?? `${providerId}/default`,
-    );
-    return { providerId, modelId };
-  }
-
-  private runtimeDefaultSelectionFromProfile(
-    profileId: string,
-  ): GatewayRuntimeDefaultSelectionPayload | null {
-    const profileRepo = this.profileRepo;
-    if (!profileRepo) {
-      return null;
-    }
-
-    const revision = profileRepo.getActiveRevision(profileId);
-    return normalizeRuntimeDefaultSelection(
-      revision?.provider_hint ?? undefined,
-      revision?.model_hint ?? undefined,
-    );
-  }
-
-  private async recommendRuntimeDefaultSelection(): Promise<GatewayRuntimeDefaultSelectionPayload | null> {
-    const catalogs = await this.listProviderCatalogs({ refresh: false });
-    const candidates = catalogs
-      .filter((catalog) => catalog.configAllowed !== false)
-      .filter((catalog) => catalog.models.length > 0)
-      .sort((lhs, rhs) => {
-        const lhsRank = runtimeDefaultPriority(lhs.providerId);
-        const rhsRank = runtimeDefaultPriority(rhs.providerId);
-        if (lhsRank !== rhsRank) {
-          return lhsRank - rhsRank;
-        }
-        if (Boolean(lhs.recommended) !== Boolean(rhs.recommended)) {
-          return lhs.recommended ? -1 : 1;
-        }
-        return lhs.displayName.localeCompare(rhs.displayName);
-      });
-
-    const selected = candidates[0];
-    const modelId = selected?.models[0]?.id?.trim();
-    if (!selected || !modelId) {
-      return null;
-    }
-
-    return {
-      providerId: selected.providerId,
-      modelId,
-    };
-  }
-
-  private async validateRuntimeDefaultSelection(
-    selection: GatewayRuntimeDefaultSelectionPayload,
-    branch: "main" | "concierge",
-  ): Promise<GatewayRuntimeDefaultSelectionPayload> {
-    const providerId = normalizeProviderId(selection.providerId);
-    const modelIdRaw = selection.modelId?.trim();
-    if (!providerId || !modelIdRaw) {
-      throwGatewayError(
-        "INVALID_ARGUMENT",
-        `${branch} runtime defaults require both providerId and modelId.`,
-      );
-    }
-
-    const modelProviderPrefix = deriveProviderFromModel(modelIdRaw);
-    if (modelProviderPrefix && modelProviderPrefix !== providerId) {
-      throwGatewayError(
-        "INVALID_ARGUMENT",
-        `modelId provider prefix ${modelProviderPrefix} does not match providerId ${providerId}`,
-      );
-    }
-
-    const providerConfig = this.listProviderConfigs()
-      .find((entry) => entry.providerId.trim().toLowerCase() === providerId);
-    if (!providerConfig) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Provider is not configured: ${providerId}`,
-      );
-    }
-
-    const modelId = withProviderPrefix(providerId, modelIdRaw);
-    const allowedModels = this.mergeAllowedModels(
-      providerId,
-      providerConfig.model,
-      providerConfig.allowedModels,
-    );
-    if (!providerConfig.allowCustomModel && !allowedModels.includes(modelId)) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Model ${modelId} is not allowed for provider ${providerId}.`,
-      );
-    }
-
-    const runtimeValidation = await this.validateProviderRuntimeSelection(providerId, modelId);
-    if (!runtimeValidation.valid) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        runtimeValidation.reason
-          || `Provider runtime rejected model ${modelId} for ${providerId}.`,
-      );
-    }
-
-    return {
-      providerId,
-      modelId,
-    };
-  }
-
-  private updateManagedRuntimeProfile(
-    profileId: string,
-    selection: GatewayRuntimeDefaultSelectionPayload,
-    isDefault: boolean,
-    source: string,
-  ): void {
-    const profileRepo = this.requireProfileRepo();
-    const activeRevision = profileRepo.getActiveRevision(profileId);
-
-    profileRepo.update({
-      profileId,
-      providerHint: selection.providerId,
-      modelHint: selection.modelId,
-      defaultSkillIds: mergeSkillIds(
-        parseStringArray(activeRevision?.default_skill_set_ids_json),
-        [USER_ESCALATION_SKILL_ID],
-      ),
-      modelConfig: {
-        preferredModels: [selection.modelId],
-        fallbackModels: [],
-      },
-      isDefault,
-      source,
-    });
-  }
-
   listTools(_input: GatewayListToolsPayload = {}): GatewayListToolsResponsePayload["tools"] {
-    return this.cliToolService?.listTools() ?? [];
+    return this.toolIntegrationService.listTools(_input);
   }
 
   getTool(toolId: string): GatewayGetToolResponsePayload["tool"] {
-    return this.cliToolService?.getTool(toolId) ?? null;
+    return this.toolIntegrationService.getTool(toolId);
   }
 
   listInterconnectors(
     _input: GatewayListInterconnectorsPayload = {},
   ): GatewayListInterconnectorsResponsePayload["interconnectors"] {
-    return this.interconnectorCatalogService?.listBundles() ?? [];
+    return this.toolIntegrationService.listInterconnectors(_input);
   }
 
   async rescanInterconnectors(
     _input: GatewayRescanInterconnectorsPayload = {},
   ): Promise<GatewayRescanInterconnectorsResponsePayload["interconnectors"]> {
-    if (!this.interconnectorCatalogService) {
-      return [];
-    }
-    const result = await this.interconnectorCatalogService.rescan();
-    return result.interconnectors;
+    return this.toolIntegrationService.rescanInterconnectors(_input);
   }
 
   scaffoldTool(
     input: GatewayScaffoldToolPayload,
   ): GatewayScaffoldToolResponsePayload {
-    const cliToolService = this.requireCliToolService();
-    return cliToolService.scaffoldTool({
-      id: input.id,
-      displayName: input.displayName,
-      description: input.description,
-      outputMode: input.outputMode,
-    });
+    return this.toolIntegrationService.scaffoldTool(input);
   }
 
   async registerTool(
     input: GatewayRegisterToolPayload,
   ): Promise<GatewayRegisterToolResponsePayload["tool"]> {
-    const cliToolService = this.requireCliToolService();
-    return cliToolService.registerTool({
-      schemaVersion: input.schemaVersion,
-      id: input.id,
-      displayName: input.displayName,
-      description: input.description,
-      bundleId: input.bundleId,
-      bundleDisplayName: input.bundleDisplayName,
-      bundleDescription: input.bundleDescription,
-      toolGroupId: input.toolGroupId,
-      toolGroupDisplayName: input.toolGroupDisplayName,
-      executable: input.executable,
-      argsTemplate: input.argsTemplate,
-      inputSchema: input.inputSchema,
-      instructions: input.instructions,
-      examples: input.examples,
-      timeoutMs: input.timeoutMs,
-      maxOutputBytes: input.maxOutputBytes,
-      cwdMode: input.cwdMode,
-      fixedCwd: input.fixedCwd,
-      outputMode: input.outputMode,
-      dangerLevel: input.dangerLevel,
-      readme: input.readme,
-      enabled: input.enabled,
-    });
+    return this.toolIntegrationService.registerTool(input);
   }
 
   async removeTool(toolId: string): Promise<GatewayRemoveToolResponsePayload> {
-    const cliToolService = this.requireCliToolService();
-    const removed = await cliToolService.removeTool(toolId);
-    return {
-      toolId,
-      removed,
-    };
+    return this.toolIntegrationService.removeTool(toolId);
   }
 
   async setToolEnabled(
     input: GatewaySetToolEnabledPayload,
   ): Promise<GatewaySetToolEnabledResponsePayload> {
-    const cliToolService = this.requireCliToolService();
-    return {
-      tools: await cliToolService.setToolEnabled(input.toolId, input.enabled),
-    };
+    return this.toolIntegrationService.setToolEnabled(input);
   }
 
   listToolApprovalGrants(
@@ -2832,15 +1460,7 @@ export class DefaultGatewayAdminService {
     principalId: string,
     deviceId?: string,
   ): GatewayListToolApprovalGrantsResponsePayload["grants"] {
-    const toolApprovalGrantService = this.requireToolApprovalGrantService();
-    return toolApprovalGrantService.listGrants({
-      principalId,
-      deviceId: asString(input.deviceId) ?? deviceId,
-      spaceId: asString(input.spaceId),
-      toolId: asString(input.toolId),
-      includeExpired: input.includeExpired,
-      includeRevoked: input.includeRevoked,
-    });
+    return this.toolIntegrationService.listToolApprovalGrants(input, principalId, deviceId);
   }
 
   revokeToolApprovalGrant(
@@ -2848,24 +1468,7 @@ export class DefaultGatewayAdminService {
     principalId: string,
     deviceId?: string,
   ): GatewayRevokeToolApprovalGrantResponsePayload {
-    const toolApprovalGrantService = this.requireToolApprovalGrantService();
-    const resolvedDeviceId = asString(input.deviceId) ?? deviceId;
-    const result = toolApprovalGrantService.revokeGrant({
-      principalId,
-      deviceId: resolvedDeviceId,
-      spaceId: input.spaceId,
-      toolId: input.toolId,
-      reason: input.reason,
-    });
-    this.accessGrantService?.revokeAccess({
-      principalId,
-      deviceId: resolvedDeviceId,
-      spaceId: input.spaceId,
-      targetKind: "tool_selector",
-      targetId: `tool_operation:${input.toolId}`,
-      reason: input.reason ?? `Revoked tool approval for ${input.toolId}.`,
-    });
-    return result;
+    return this.toolIntegrationService.revokeToolApprovalGrant(input, principalId, deviceId);
   }
 
   createIntegrationRequest(
@@ -2873,233 +1476,59 @@ export class DefaultGatewayAdminService {
     principalId?: string,
     deviceId?: string,
   ): GatewayCreateIntegrationRequestResponsePayload["request"] {
-    if (!this.integrationRequestRepo) {
-      throw new Error("Integration request repository unavailable");
-    }
-    const requestedName = input.requestedName?.trim();
-    if (!requestedName) {
-      throw new Error("requestedName is required");
-    }
-    const integrationClass = normalizeIntegrationClass(input.integrationClass);
-    if (!integrationClass) {
-      throw new Error("integrationClass is required");
-    }
-    const row = this.integrationRequestRepo.create({
-      integrationRequestId: randomUUID(),
-      integrationClass,
-      requestedName,
-      useCase: input.useCase?.trim(),
-      sourceUrl: input.sourceURL?.trim(),
-      notes: input.notes?.trim(),
-      principalId: principalId?.trim(),
-      deviceId: deviceId?.trim(),
-    });
-    return mapIntegrationRequestRow(row);
+    return this.toolIntegrationService.createIntegrationRequest(input, principalId, deviceId);
   }
 
   listIntegrationRequests(
     input?: GatewayListIntegrationRequestsPayload,
   ): GatewayListIntegrationRequestsResponsePayload["requests"] {
-    if (!this.integrationRequestRepo) {
-      return [];
-    }
-    const integrationClass = normalizeIntegrationClass(input?.integrationClass);
-    return this.integrationRequestRepo
-      .list(input?.limit, integrationClass)
-      .map((row) => mapIntegrationRequestRow(row));
+    return this.toolIntegrationService.listIntegrationRequests(input);
   }
 
   setUsageSnapshotService(service?: UsageSnapshotService): void {
-    this.usageSnapshotService = service;
+    this.providerTelemetryService.setUsageSnapshotService(service);
   }
 
   setLocalUsageTelemetryService(service?: LocalUsageTelemetryService): void {
-    this.localUsageTelemetryService = service;
+    this.providerTelemetryService.setLocalUsageTelemetryService(service);
   }
 
   async getProviderTelemetry(input?: {
     providerId?: string;
   }): Promise<ProviderTelemetry[]> {
-    const requestedProvider = normalizeProviderId(input?.providerId);
-    if (input?.providerId && !requestedProvider) {
-      throw new Error(`Unknown providerId: ${input.providerId}`);
-    }
-
-    const configured = this.listProviderConfigs();
-    const configuredById = new Map(
-      configured.map((entry) => [entry.providerId.trim().toLowerCase(), entry]),
-    );
-
-    if (requestedProvider && !configuredById.has(requestedProvider)) {
-      throw new Error(`Unknown providerId: ${requestedProvider}`);
-    }
-
-    const targetConfigs = requestedProvider
-      ? [configuredById.get(requestedProvider)!]
-      : configured;
-    return this.buildProviderTelemetryEntries(targetConfigs);
+    return this.providerTelemetryService.getProviderTelemetry(input);
   }
 
   async getLocalUsageTelemetry(input?: {
     providerId?: string;
     providerIds?: string[];
   }): Promise<LocalProviderUsageTelemetry[]> {
-    const requestedProvider = normalizeProviderId(input?.providerId);
-    if (input?.providerId && !requestedProvider) {
-      throw new Error(`Unknown providerId: ${input.providerId}`);
-    }
-    const hasProviderIdsBatch = input?.providerIds !== undefined;
-    const requestedProviderIds = normalizeProviderIds(input?.providerIds);
-    if (hasProviderIdsBatch && input.providerIds?.some((providerId) => !normalizeProviderId(providerId))) {
-      throw new Error("providerIds must contain non-empty provider IDs");
-    }
-    if (requestedProvider && hasProviderIdsBatch) {
-      throw new Error("providerId and providerIds are mutually exclusive");
-    }
-
-    const configured = this.listProviderConfigs();
-    const configuredById = new Map(
-      configured.map((entry) => [entry.providerId.trim().toLowerCase(), entry]),
-    );
-
-    if (requestedProvider && !configuredById.has(requestedProvider)) {
-      throw new Error(`Unknown providerId: ${requestedProvider}`);
-    }
-    for (const providerId of requestedProviderIds) {
-      if (!configuredById.has(providerId)) {
-        throw new Error(`Unknown providerId: ${providerId}`);
-      }
-    }
-
-    const targetConfigs = hasProviderIdsBatch
-      ? requestedProviderIds.map((providerId) => configuredById.get(providerId)!)
-      : requestedProvider
-        ? [configuredById.get(requestedProvider)!]
-        : configured;
-    const targetProviderIds = targetConfigs
-      .map((entry) => entry.providerId.trim().toLowerCase())
-      .filter((providerId) => providerId.length > 0);
-    const fallbackTelemetry = await this.buildProviderTelemetryEntries(targetConfigs);
-    if (!this.localUsageTelemetryService) {
-      const fetchedAt = new Date().toISOString();
-      return fallbackTelemetry.map((entry) => ({
-        providerId: entry.providerId,
-        status: entry.status,
-        fetchedAt,
-        message: entry.message,
-        quota: {
-          available: entry.windows.length > 0,
-          sourceLabel: mapFallbackTelemetrySource(entry.source),
-          windows: entry.windows.map((window) => ({
-            window: window.window,
-            label: window.window === "primary" ? "session" : "weekly",
-            usedPercent: window.usedPercent,
-            remainingPercent: window.remainingPercent,
-            windowMinutes: window.windowDurationMins,
-            resetsAt: window.resetsAt,
-          })),
-          accountLabel: entry.accountLabel,
-          updatedAt: fetchedAt,
-          message: "Local usage telemetry service is not configured.",
-        },
-        summary: {
-          windowDays: 30,
-          sessionCount: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          tokenAccuracy: "estimated",
-          usageSource: "local_scanner",
-        },
-        sessions: [],
-      }));
-    }
-
-    return this.localUsageTelemetryService.getTelemetry({
-      providerIds: targetProviderIds,
-      fallbackTelemetry,
-    });
+    return this.providerTelemetryService.getLocalUsageTelemetry(input);
   }
 
-  private async buildProviderTelemetryEntries(
-    configs: PublicProviderRuntimeConfig[],
-  ): Promise<ProviderTelemetry[]> {
-    const usageByProvider = this.providerUsageById();
-
-    return Promise.all(
-      configs.map(async (config) => this.buildProviderTelemetryEntry(
-        config,
-        usageByProvider.get(config.providerId.trim().toLowerCase()),
-      )),
-    );
-  }
-
-  private async buildProviderTelemetryEntry(
-    config: PublicProviderRuntimeConfig,
-    usage?: ProviderUsageSnapshotPayload,
-  ): Promise<ProviderTelemetry> {
-    const providerId = config.providerId.trim().toLowerCase();
-    const fallbackStatus = usage?.status ?? "unknown";
-    const fetchedAt = new Date().toISOString();
-    const probe = await this.probeLocalProviderTelemetry(config, usage);
-
+  private providerSettingsContext(): GatewayAdminProviderSettingsContext {
     return {
-      providerId,
-      status: probe?.status ?? fallbackStatus,
-      source: probe?.source ?? "usage_snapshot",
-      fetchedAt,
-      message: probe?.message ?? usage?.message,
-      accountLabel: probe?.accountLabel,
-      windows: probe?.windows ?? [],
-      usage,
+      logger: this.logger,
+      providerConfigs: this.providerConfigs,
+      providerConfigRepo: this.providerConfigRepo,
+      providerSecretRefService: this.providerSecretRefService,
+      defaultModelId: this.defaultModelId,
+      ensureAppleProviderEnabledSync: (operation) =>
+        this.ensureAppleProviderEnabledSync(operation),
+      assertProviderConfigAllowed: (providerId, input, existing) =>
+        this.assertProviderConfigAllowed(providerId, input, existing),
+      mergeAllowedModels: (providerId, model, modelIds) =>
+        this.mergeAllowedModels(providerId, model, modelIds),
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      applyConfigToEnvironment: (config) => this.applyConfigToEnvironment(config),
+      invalidateProviderRuntimeCaches: (providerId) =>
+        this.invalidateProviderRuntimeCaches(providerId),
     };
   }
 
   getProviderSettings(providerIdRaw: string): PublicProviderRuntimeConfig {
-    const providerId = normalizeProviderId(providerIdRaw);
-    if (!providerId) {
-      throw new Error("providerId is required");
-    }
-    if (providerId === "apple") {
-      this.ensureAppleProviderEnabledSync("getProviderSettings");
-    }
-
-    const existing = this.providerConfigs.get(providerId);
-    const model = withProviderPrefix(
-      providerId,
-      existing?.model
-        || DEFAULT_MODEL_BY_PROVIDER[providerId]
-        || this.defaultModelId
-        || `${providerId}/default`,
-    );
-
-    const hasApiKey = Boolean(existing?.apiKey || existing?.apiKeySecretRef || keyFromEnvironment(providerId));
-    const baseURL = this.resolveProviderBaseURL(providerId, existing?.baseURL);
-    const normalizedAllowedModels = normalizeProviderModelList(
-      providerId,
-      existing?.allowedModels?.length
-        ? existing.allowedModels
-        : [model],
-    );
-    const allowedModels = this.mergeAllowedModels(providerId, model, normalizedAllowedModels);
-    const allowCustomModel = existing?.allowCustomModel ?? false;
-    const nativeCliToolsEnabled = isCliExecutorProvider(providerId)
-      ? (existing?.nativeCliToolsEnabled ?? false)
-      : false;
-
-    return {
-      providerId,
-      model,
-      baseURL,
-      hasApiKey,
-      apiKeySecretRef: existing?.apiKeySecretRef,
-      authMode: resolveProviderAuthMode(providerId, existing?.authMode),
-      allowedModels,
-      allowCustomModel,
-      nativeCliToolsEnabled,
-      updatedAt: existing?.updatedAt ?? new Date().toISOString(),
-      source: existing?.source ?? "runtime",
-    };
+    return getGatewayAdminProviderSettings(this.providerSettingsContext(), providerIdRaw);
   }
 
   updateProviderSettings(input: {
@@ -3127,423 +1556,83 @@ export class DefaultGatewayAdminService {
     allowCustomModel?: boolean;
     nativeCliToolsEnabled?: boolean;
   }): PublicProviderRuntimeConfig {
-    const providerId = normalizeProviderId(input.providerId);
-    if (!providerId) {
-      throw new Error("providerId is required");
-    }
-    if (providerId === "apple") {
-      this.ensureAppleProviderEnabledSync("setProviderConfig");
-    }
-
-    const existing = this.providerConfigs.get(providerId);
-    this.assertProviderConfigAllowed(providerId, input, existing);
-    const rawModel = input.model?.trim()
-      || existing?.model
-      || DEFAULT_MODEL_BY_PROVIDER[providerId]
-      || this.defaultModelId
-      || "";
-
-    if (!rawModel) {
-      throw new Error("model is required");
-    }
-    const model = withProviderPrefix(providerId, rawModel);
-
-    const requestedApiKey = input.apiKey?.trim();
-    const requestedSecretRef = input.apiKeySecretRef?.trim();
-    const implicitAuthMode = (!input.authMode && !existing?.authMode && (requestedApiKey || requestedSecretRef))
-      ? "api_key"
-      : existing?.authMode;
-    const authMode = resolveRequestedProviderAuthMode(providerId, input.authMode, implicitAuthMode);
-    if (requestedSecretRef) {
-      if (!this.providerSecretRefService) {
-        throw new Error("Provider secret ref service unavailable");
-      }
-      const summary = this.providerSecretRefService.getSecretRef(requestedSecretRef);
-      if (!summary) {
-        throw new Error(`Unknown provider secret ref: ${requestedSecretRef}`);
-      }
-      if (summary.providerId !== providerId) {
-        throw new Error(
-          `Secret ref provider mismatch: expected ${providerId}, got ${summary.providerId}`,
-        );
-      }
-    }
-
-    const allowCustomModel = input.allowCustomModel ?? existing?.allowCustomModel ?? false;
-    const nativeCliToolsEnabled = isCliExecutorProvider(providerId)
-      ? (input.nativeCliToolsEnabled ?? existing?.nativeCliToolsEnabled ?? false)
-      : false;
-    const normalizedAllowedModels = normalizeProviderModelList(
-      providerId,
-      input.allowedModels
-        ?? existing?.allowedModels
-        ?? [model],
-    );
-    const allowedModels = this.mergeAllowedModels(providerId, model, normalizedAllowedModels);
-    const inputHasBaseURL = Object.prototype.hasOwnProperty.call(input, "baseURL");
-    const normalizedInputBaseURL = normalizeProviderBaseURL(providerId, input.baseURL);
-
-    const config: ProviderRuntimeConfig = {
-      providerId,
-      model,
-      apiKey: authMode === "api_key"
-        ? (requestedApiKey || (requestedSecretRef ? undefined : existing?.apiKey))
-        : undefined,
-      apiKeySecretRef: requestedSecretRef || (requestedApiKey ? undefined : existing?.apiKeySecretRef),
-      authMode,
-      baseURL: inputHasBaseURL ? normalizedInputBaseURL : existing?.baseURL,
-      allowedModels,
-      allowCustomModel,
-      nativeCliToolsEnabled,
-      updatedAt: new Date().toISOString(),
-      source: "runtime",
-    };
-
-    this.providerConfigs.set(providerId, config);
-    this.applyConfigToEnvironment(config);
-    this.invalidateProviderRuntimeCaches(providerId);
-
-    if (this.providerConfigRepo) {
-      this.providerConfigRepo.upsert({
-        providerId: config.providerId,
-        model: config.model,
-        baseUrl: config.baseURL,
-        allowedModelsJson: JSON.stringify(config.allowedModels),
-        allowCustomModel: config.allowCustomModel,
-        nativeCliToolsEnabled: config.nativeCliToolsEnabled,
-        apiKeySecretRef: config.apiKeySecretRef,
-        authMode: config.authMode,
-        source: config.source,
-      });
-    }
-
-    this.logger.info("Gateway provider config updated", {
-      providerId,
-      model,
-      hasApiKey: Boolean(config.apiKey || config.apiKeySecretRef),
-      apiKeySecretRef: config.apiKeySecretRef ?? "",
-      hasBaseURL: Boolean(config.baseURL),
-    });
-
-    return {
-      providerId: config.providerId,
-      model: config.model,
-      baseURL: config.baseURL,
-      hasApiKey: Boolean(config.apiKey || config.apiKeySecretRef),
-      apiKeySecretRef: config.apiKeySecretRef,
-      authMode: config.authMode,
-      allowedModels: [...config.allowedModels],
-      allowCustomModel: config.allowCustomModel,
-      nativeCliToolsEnabled: config.nativeCliToolsEnabled,
-      updatedAt: config.updatedAt,
-      source: config.source,
-    };
+    return setGatewayAdminProviderConfig(this.providerSettingsContext(), input);
   }
 
   putSecretRef(input: PutSecretRefInput): PutSecretRefResult {
-    if (!this.providerSecretRefService) {
-      throw new Error("Provider secret ref service unavailable");
-    }
-    return this.providerSecretRefService.putSecretRef(input);
+    return putGatewayAdminSecretRef(this.providerSettingsContext(), input);
   }
 
   listSecretRefs(providerId?: string): ProviderSecretRefSummary[] {
-    if (!this.providerSecretRefService) {
-      return [];
-    }
-    return this.providerSecretRefService.listSecretRefs(providerId);
+    return listGatewayAdminSecretRefs(this.providerSettingsContext(), providerId);
   }
 
   deleteSecretRef(secretRef: string): boolean {
-    if (!this.providerSecretRefService) {
-      throw new Error("Provider secret ref service unavailable");
-    }
-    const deleted = this.providerSecretRefService.deleteSecretRef(secretRef);
-
-    for (const [providerId, config] of this.providerConfigs.entries()) {
-      if (config.apiKeySecretRef !== secretRef) continue;
-      this.providerConfigs.set(providerId, {
-        ...config,
-        apiKeySecretRef: undefined,
-        updatedAt: new Date().toISOString(),
-      });
-      this.invalidateProviderRuntimeCaches(providerId);
-    }
-
-    return deleted;
+    return deleteGatewayAdminSecretRef(this.providerSettingsContext(), secretRef);
   }
 
   removeProviderConfig(providerIdRaw: string): void {
-    const providerId = normalizeProviderId(providerIdRaw);
-    if (!providerId) {
-      throw new Error("providerId is required");
-    }
+    removeGatewayAdminProviderConfig(this.providerSettingsContext(), providerIdRaw);
+  }
 
-    const existing = this.providerConfigs.get(providerId);
-    this.providerConfigs.delete(providerId);
-    this.providerConfigRepo?.remove(providerId);
-    this.invalidateProviderRuntimeCaches(providerId);
-
-    const keyEnv = API_KEY_ENV_BY_PROVIDER[providerId];
-    if (keyEnv) {
-      delete process.env[keyEnv];
-    }
-    if (providerId === "openai") {
-      delete process.env[OPENAI_BASE_URL_ENV];
-    }
-    if (providerId === "lmstudio") {
-      delete process.env[LMSTUDIO_BASE_URL_ENV];
-    }
-
-    this.logger.info("Gateway provider config removed", {
-      providerId,
-      hadConfig: Boolean(existing),
-    });
+  private profileRuntimeContext(): GatewayAdminProfileRuntimeContext {
+    return {
+      logger: this.logger,
+      profileRepo: this.profileRepo,
+      gatewayProfile: this.gatewayProfile,
+      providerConfigs: this.providerConfigs,
+      providerSecretRefService: this.providerSecretRefService,
+      defaultProviderId: this.defaultProviderId,
+      defaultModelId: this.defaultModelId,
+      getLocalClientTemplate: (localClientId) =>
+        this.localAgentDiscoveryService.getLocalClientTemplate(localClientId),
+      embeddedLocalIntegrationsAllowed: () => this.embeddedLocalIntegrationsAllowed(),
+      ensureAgentAssignment: (spaceId, agentId, profileId) =>
+        this.ensureAgentAssignment(spaceId, agentId, profileId),
+      resolveEmbeddedMacDefaultProvider: () => this.resolveEmbeddedMacDefaultProvider(),
+      providerPolicyRestrictionReason: (providerId) =>
+        this.providerPolicyRestrictionReason(providerId),
+      resolveFallbackProviderModel: () => this.resolveFallbackProviderModel(),
+      resolveValidatedProviderModel: (input) => this.resolveValidatedProviderModel(input),
+      ensureAppleProviderRuntimeEligibleSync: (operation) =>
+        this.ensureAppleProviderRuntimeEligibleSync(operation),
+      ensureAppleProviderEnabledSync: (operation) =>
+        this.ensureAppleProviderEnabledSync(operation),
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      resolveConfiguredProviderApiKey: (providerId, config) =>
+        this.resolveConfiguredProviderApiKey(providerId, config),
+      getProviderSettings: (providerId) => this.getProviderSettings(providerId),
+    };
   }
 
   async provisionLocalProfile(input: ProvisionLocalProfileInput): Promise<ProvisionLocalProfileResult> {
-    const template = LOCAL_CLIENT_TEMPLATES.find((entry) => entry.id === input.localClientId);
-
-    if (this.gatewayProfile === "embedded" && !this.embeddedLocalIntegrationsAllowed()) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        "Local profile provisioning requires embedded macOS on Apple Silicon or an external gateway profile.",
-      );
-    }
-    if (!template) {
-      throw new Error(`Unsupported localClientId: ${input.localClientId}`);
-    }
-
-    if (!this.profileRepo) {
-      throw new Error("Profile repository unavailable");
-    }
-
-    const profileId = (input.profileId?.trim() || `local-${template.id}-profile`);
-    const profileName = input.profileName?.trim() || template.defaultProfileName;
-
-    const providerConfig = this.providerConfigs.get(template.recommendedProviderId);
-    const providerId = providerConfig?.providerId ?? template.recommendedProviderId;
-    const model = providerConfig?.model ?? template.recommendedModel;
-
-    const existing = this.profileRepo.getById(profileId);
-    let created = false;
-    if (!existing) {
-      this.profileRepo.create({
-        profileId,
-        name: profileName,
-        description: `Auto-provisioned profile for ${template.name}.`,
-        canModerate: false,
-        personalityPrompt: template.defaultPersonalityPrompt,
-        providerHint: providerId,
-        modelHint: model,
-      });
-      created = true;
-    }
-
-    let assignmentCreated: boolean | undefined;
-    const agentId = input.agentId?.trim();
-    const spaceId = input.spaceId?.trim();
-    if (agentId && spaceId) {
-      assignmentCreated = await this.ensureAgentAssignment(spaceId, agentId, profileId);
-    }
-
-    this.logger.info("Local profile provisioned", {
-      localClientId: template.id,
-      profileId,
-      created,
-      providerId,
-      model,
-      agentId: agentId ?? "",
-      spaceId: spaceId ?? "",
-      assignmentCreated: assignmentCreated ?? false,
-    });
-
-    return {
-      profileId,
-      profileName,
-      created,
-      providerId,
-      model,
-      agentId: agentId || undefined,
-      assignmentCreated,
-    };
+    return provisionGatewayAdminLocalProfile(this.profileRuntimeContext(), input);
   }
 
   loadProfileRuntime(profileIdRaw?: string): ProfileRuntimeContext | null {
-    if (!this.profileRepo || !profileIdRaw?.trim()) {
-      return null;
-    }
-
-    const profileId = profileIdRaw.trim();
-    const row = this.profileRepo.getById(profileId);
-    if (!row || row.archived === 1) {
-      return null;
-    }
-
-    const revision = this.profileRepo.getActiveRevision(profileId);
-    const modelConfig = parseModelConfig(revision?.model_config_json, revision?.model_hint);
-    const preferredModelHint = modelConfig.preferredModels[0] || revision?.model_hint?.trim() || undefined;
-    return {
-      profileId,
-      systemPrompt: revision?.personality_prompt?.trim() || "",
-      defaultSkillIds: parseStringArray(revision?.default_skill_set_ids_json),
-      providerHint: revision?.provider_hint?.trim() || undefined,
-      modelHint: preferredModelHint,
-      modelConfig,
-    };
+    return loadGatewayAdminProfileRuntime(this.profileRuntimeContext(), profileIdRaw);
   }
 
   async resolveProviderForProfile(
     providerHintRaw?: string,
     modelHint?: string,
-  ): Promise<ResolvedProviderSelection> {
-    const providerHint = normalizeProviderId(providerHintRaw);
-    const providerFromModel = deriveProviderFromModel(modelHint);
-    if (providerHint && providerFromModel && providerHint !== providerFromModel) {
-      this.logger.warn("Profile provider hint mismatches model hint prefix; preferring model hint provider", {
-        providerHint,
-        modelHint,
-        selectedProvider: providerFromModel,
-      });
-    }
-    let selectedProvider = providerFromModel
-      || providerHint
-      || this.defaultProviderId
-      || deriveProviderFromModel(this.defaultModelId)
-      || this.resolveEmbeddedMacDefaultProvider()
-      || "openrouter";
-    let enforcedModelHint = modelHint?.trim() || undefined;
-    const explicitSelection = Boolean(providerFromModel || providerHint);
-    const policyRestrictionReason = this.providerPolicyRestrictionReason(selectedProvider);
-    if (policyRestrictionReason) {
-      const fallback = this.resolveFallbackProviderModel();
-      if (!fallback) {
-        throwGatewayError("FAILED_PRECONDITION", policyRestrictionReason);
-      }
-      this.logger.warn("Profile runtime blocked by embedded policy; using fallback runtime/model", {
-        requestedProvider: selectedProvider,
-        fallbackProvider: fallback.providerHint,
-        fallbackModel: fallback.modelHint,
-      });
-      selectedProvider = fallback.providerHint;
-      enforcedModelHint = fallback.modelHint;
-    }
-
-    const configuredSelection = this.providerConfigs.get(selectedProvider);
-    if (explicitSelection || configuredSelection) {
-      const resolvedModel = await this.resolveValidatedProviderModel({
-        providerHintRaw: selectedProvider,
-        modelHintRaw: enforcedModelHint || configuredSelection?.model,
-        repairIfInvalid: true,
-        allowFallbackRepair: selectedProvider !== "apple",
-      });
-      if (!resolvedModel.valid || !resolvedModel.providerHint || !resolvedModel.modelHint) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          resolvedModel.reason || "Runtime/model selection is invalid",
-        );
-      }
-      if (resolvedModel.fallbackApplied) {
-        this.logger.warn("Profile runtime unavailable; using fallback runtime/model", {
-          requestedProvider: selectedProvider,
-          requestedModel: enforcedModelHint || configuredSelection?.model || "",
-          fallbackProvider: resolvedModel.providerHint,
-          fallbackModel: resolvedModel.modelHint,
-          reason: resolvedModel.fallbackReason,
-        });
-      }
-      selectedProvider = resolvedModel.providerHint;
-      enforcedModelHint = resolvedModel.modelHint;
-    }
-
-    if (selectedProvider === "apple") {
-      this.ensureAppleProviderRuntimeEligibleSync("resolveProviderForProfile");
-    }
-
-    const config = this.providerConfigs.get(selectedProvider);
-    const modelRaw = enforcedModelHint
-      || config?.model
-      || DEFAULT_MODEL_BY_PROVIDER[selectedProvider]
-      || this.defaultModelId
-      || "";
-
-    if (!modelRaw) {
-      throw new Error(`No model configured for provider ${selectedProvider}`);
-    }
-    const model = withProviderPrefix(selectedProvider, modelRaw);
-
-    const baseURL = this.resolveProviderBaseURL(selectedProvider, config?.baseURL);
-    const apiKeySecretRef = config?.apiKeySecretRef;
-    const authMode = resolveProviderAuthMode(selectedProvider, config?.authMode);
-    let apiKey = authMode === "api_key"
-      ? (config?.apiKey || keyFromEnvironment(selectedProvider))
-      : undefined;
-    if (!apiKey && apiKeySecretRef && authMode === "api_key") {
-      if (!this.providerSecretRefService) {
-        throw new Error(`Provider secret ref service unavailable for ref: ${apiKeySecretRef}`);
-      }
-      const resolved = this.providerSecretRefService.resolveSecret(apiKeySecretRef);
-      if (!resolved) {
-        throw new Error(`Provider secret ref not found: ${apiKeySecretRef}`);
-      }
-      apiKey = resolved.secret;
-    }
-
-    return {
-      providerId: selectedProvider,
-      model,
-      apiKey,
-      apiKeySecretRef,
-      authMode,
-      baseURL,
-      isLocal: isLocalProvider(selectedProvider)
-        || (selectedProvider === "openai" && isLikelyLocalBaseURL(baseURL)),
-      nativeCliToolsEnabled: config?.nativeCliToolsEnabled ?? false,
-    };
+  ): Promise<ExactProviderRuntimeSelection> {
+    return resolveGatewayAdminProviderForProfile(
+      this.profileRuntimeContext(),
+      providerHintRaw,
+      modelHint,
+    );
   }
 
   resolveExactProviderRuntimeConfig(input: {
     providerId: string;
     model?: string;
   }): ExactProviderRuntimeSelection {
-    const providerId = normalizeProviderId(input.providerId);
-    if (!providerId) {
-      throw new Error("providerId is required");
-    }
-    if (providerId === "apple") {
-      this.ensureAppleProviderEnabledSync("resolveExactProviderRuntimeConfig");
-    }
-
-    const requestedModel = input.model?.trim();
-    const requestedProviderFromModel = deriveProviderFromModel(requestedModel);
-    if (requestedProviderFromModel && requestedProviderFromModel !== providerId) {
-      throw new Error(
-        `Model ${requestedModel} belongs to provider ${requestedProviderFromModel} but providerId is ${providerId}.`,
-      );
-    }
-
-    const config = this.providerConfigs.get(providerId);
-    const modelRaw = requestedModel
-      || config?.model
-      || DEFAULT_MODEL_BY_PROVIDER[providerId]
-      || `${providerId}/default`;
-    const model = withProviderPrefix(providerId, modelRaw);
-    const authMode = resolveProviderAuthMode(providerId, config?.authMode);
-    const baseURL = this.resolveProviderBaseURL(providerId, config?.baseURL);
-
-    return {
-      providerId,
-      model,
-      apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-      apiKeySecretRef: config?.apiKeySecretRef,
-      authMode,
-      baseURL,
-      isLocal: isLocalProvider(providerId)
-        || (providerId === "openai" && isLikelyLocalBaseURL(baseURL)),
-      nativeCliToolsEnabled: isCliExecutorProvider(providerId)
-        ? (config?.nativeCliToolsEnabled ?? false)
-        : false,
-    };
+    return resolveGatewayAdminExactProviderRuntimeConfig(
+      this.profileRuntimeContext(),
+      input,
+    );
   }
 
   validateProfileModelSelection(input: {
@@ -3551,411 +1640,11 @@ export class DefaultGatewayAdminService {
     modelHint?: string;
     modelConfig?: ProfileModelConfig;
   }): void {
-    const providerHint = normalizeProviderId(input.providerHint);
-    const candidateModels = collectProfileModelCandidates(input.modelHint, input.modelConfig);
-    if (candidateModels.length === 0) {
-      return;
-    }
-
-    for (const candidateModel of candidateModels) {
-      const candidateProviderFromModel = deriveProviderFromModel(candidateModel);
-      if (providerHint && candidateProviderFromModel && providerHint !== candidateProviderFromModel) {
-        throwGatewayError(
-          "INVALID_ARGUMENT",
-          `Model ${candidateModel} belongs to provider ${candidateProviderFromModel} but providerHint is ${providerHint}. Update providerHint/modelHint together.`,
-        );
-      }
-      const candidateProvider = candidateProviderFromModel
-        || providerHint
-        || this.defaultProviderId
-        || deriveProviderFromModel(this.defaultModelId)
-        || "openai";
-      const policyRestrictionReason = this.providerPolicyRestrictionReason(candidateProvider);
-      if (policyRestrictionReason) {
-        throwGatewayError("FAILED_PRECONDITION", policyRestrictionReason);
-      }
-      const modelId = withProviderPrefix(candidateProvider, candidateModel);
-      const settings = this.getProviderSettings(candidateProvider);
-      const allowedModels = normalizeProviderModelList(
-        candidateProvider,
-        settings.allowedModels.length > 0
-          ? settings.allowedModels
-          : [settings.model],
-      );
-      if (settings.allowCustomModel) {
-        continue;
-      }
-      if (!allowedModels.includes(modelId)) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Model ${modelId} is not allowed for provider ${candidateProvider}. Configure provider allowed models first.`,
-        );
-      }
-    }
+    validateGatewayAdminProfileModelSelection(this.profileRuntimeContext(), input);
   }
 
-  private providerUsageById(): Map<string, ProviderUsageSnapshotPayload> {
-    const usageByProvider = new Map<string, ProviderUsageSnapshotPayload>();
-    if (!this.usageSnapshotService) {
-      return usageByProvider;
-    }
-
-    try {
-      const snapshot = this.usageSnapshotService.getSnapshot();
-      for (const usage of snapshot.providerUsage) {
-        const providerId = usage.providerId.trim().toLowerCase();
-        if (!providerId) continue;
-        usageByProvider.set(providerId, usage);
-      }
-    } catch (err) {
-      this.logger.warn("Failed to load usage snapshot for provider telemetry", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    return usageByProvider;
-  }
-
-  private async probeLocalProviderTelemetry(
-    config: PublicProviderRuntimeConfig,
-    usage?: ProviderUsageSnapshotPayload,
-  ): Promise<LocalProviderTelemetryProbeResult | null> {
-    const providerId = config.providerId.trim().toLowerCase();
-
-    switch (providerId) {
-      case "codex":
-      case "codex-app-server":
-        return this.probeCodexRateLimits(usage);
-
-      case "claude":
-        return this.probeClaudeCliStatus(usage);
-
-      case "gemini":
-        return this.probeGeminiCliStatus();
-
-      case "lmstudio":
-        return this.probeLmStudioRuntime(config);
-
-      default:
-        return null;
-    }
-  }
-
-  private async probeCodexRateLimits(
-    usage?: ProviderUsageSnapshotPayload,
-  ): Promise<LocalProviderTelemetryProbeResult> {
-    const executablePath = this.findExecutable(["codex"]);
-    if (!executablePath) {
-      return {
-        source: "codex_app_server",
-        status: "unavailable",
-        message: "Codex CLI is not installed on the gateway host.",
-      };
-    }
-
-    const probe = await this.queryCodexAppServer(executablePath);
-    const accountPayload = isObjectRecord(probe.account) ? probe.account : null;
-    const account = accountPayload && isObjectRecord(accountPayload.account)
-      ? accountPayload.account
-      : null;
-    const accountPlan = asString(account?.planType);
-    const accountEmail = asString(account?.email);
-    const accountLabel = joinNonEmpty([accountPlan, accountEmail], " • ");
-
-    const rateLimitsPayload = isObjectRecord(probe.rateLimits) ? probe.rateLimits : null;
-    const windows = this.normalizeCodexTelemetryWindows(rateLimitsPayload);
-
-    const status: ProviderUsageSnapshotPayload["status"] = windows.length > 0
-      ? "available"
-      : (probe.error ? "unavailable" : (usage?.status ?? "unknown"));
-
-    return {
-      source: "codex_app_server",
-      status,
-      accountLabel: accountLabel || undefined,
-      windows,
-      message: probe.error
-        || (windows.length === 0
-          ? "Codex app-server did not return rate-limit windows."
-          : undefined),
-    };
-  }
-
-  private normalizeCodexTelemetryWindows(rateLimitsPayload: Record<string, unknown> | null): ProviderTelemetryWindow[] {
-    if (!rateLimitsPayload) {
-      return [];
-    }
-
-    const entryByScopeId = new Map<string, Record<string, unknown>>();
-    const pushEntry = (entryRaw: unknown) => {
-      if (!isObjectRecord(entryRaw)) return;
-      const scopeId = asString(entryRaw.limitId) || "codex";
-      entryByScopeId.set(scopeId, entryRaw);
-    };
-
-    pushEntry(rateLimitsPayload.rateLimits);
-
-    const byLimitId = rateLimitsPayload.rateLimitsByLimitId;
-    if (isObjectRecord(byLimitId)) {
-      for (const value of Object.values(byLimitId)) {
-        pushEntry(value);
-      }
-    }
-
-    const windows: ProviderTelemetryWindow[] = [];
-    for (const [scopeId, entry] of entryByScopeId.entries()) {
-      const scopeName = asString(entry.limitName) || undefined;
-      windows.push(...this.codexWindowEntries(scopeId, scopeName, entry));
-    }
-
-    return windows.sort((lhs, rhs) => {
-      if (lhs.scopeId !== rhs.scopeId) {
-        return lhs.scopeId.localeCompare(rhs.scopeId);
-      }
-      if (lhs.window === rhs.window) return 0;
-      return lhs.window === "primary" ? -1 : 1;
-    });
-  }
-
-  private codexWindowEntries(
-    scopeId: string,
-    scopeName: string | undefined,
-    entry: Record<string, unknown>,
-  ): ProviderTelemetryWindow[] {
-    const windows: ProviderTelemetryWindow[] = [];
-
-    for (const key of ["primary", "secondary"] as const) {
-      const payload = entry[key];
-      if (!isObjectRecord(payload)) {
-        continue;
-      }
-
-      const usedPercent = normalizePercentage(payload.usedPercent);
-      const windowDurationMins = asInteger(payload.windowDurationMins);
-      const resetsAt = asIsoFromEpochSeconds(payload.resetsAt);
-
-      windows.push({
-        scopeId,
-        scopeName,
-        window: key,
-        usedPercent,
-        remainingPercent: usedPercent !== undefined
-          ? Math.max(0, Math.min(100, 100 - usedPercent))
-          : undefined,
-        resetsAt,
-        windowDurationMins,
-      });
-    }
-
-    return windows;
-  }
-
-  private async queryCodexAppServer(executablePath: string): Promise<{
-    rateLimits?: unknown;
-    account?: unknown;
-    error?: string;
-  }> {
-    return new Promise((resolve) => {
-      const child = spawn(executablePath, ["app-server", "--listen", "stdio://"], {
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-
-      let settled = false;
-      let initialized = false;
-      let stdoutBuffer = "";
-      let stderrBuffer = "";
-      let rateLimits: unknown;
-      let account: unknown;
-      let rateLimitsDone = false;
-      let accountDone = false;
-      let errorMessage: string | undefined;
-      let timeout: ReturnType<typeof setTimeout> | null = null;
-
-      const finish = (result: { rateLimits?: unknown; account?: unknown; error?: string }) => {
-        if (settled) return;
-        settled = true;
-        if (timeout) {
-          clearTimeout(timeout);
-        }
-        if (!child.killed) {
-          child.kill("SIGTERM");
-        }
-        resolve(result);
-      };
-
-      const send = (message: Record<string, unknown>) => {
-        if (settled) return;
-        if (!child.stdin.writable) return;
-        child.stdin.write(`${JSON.stringify(message)}\n`);
-      };
-
-      const parseLine = (line: string) => {
-        if (!line) return;
-
-        let payload: unknown;
-        try {
-          payload = JSON.parse(line);
-        } catch {
-          return;
-        }
-
-        if (!isObjectRecord(payload)) {
-          return;
-        }
-
-        const id = asInteger(payload.id);
-        if (id === 1 && !initialized) {
-          initialized = true;
-          send({ jsonrpc: "2.0", method: "initialized" });
-          send({ jsonrpc: "2.0", id: 2, method: "account/rateLimits/read", params: {} });
-          send({ jsonrpc: "2.0", id: 3, method: "account/read", params: { refreshToken: false } });
-          return;
-        }
-
-        if (id === 2) {
-          if (payload.result !== undefined) {
-            rateLimits = payload.result;
-          } else if (isObjectRecord(payload.error)) {
-            errorMessage = asString(payload.error.message) || "Codex rate-limit request failed.";
-          }
-          rateLimitsDone = true;
-        } else if (id === 3) {
-          if (payload.result !== undefined) {
-            account = payload.result;
-          } else if (isObjectRecord(payload.error)) {
-            errorMessage = asString(payload.error.message) || "Codex account request failed.";
-          }
-          accountDone = true;
-        }
-
-        if (rateLimitsDone && accountDone) {
-          finish({
-            rateLimits,
-            account,
-            error: errorMessage,
-          });
-        }
-      };
-
-      child.stdout.on("data", (chunk: Buffer | string) => {
-        stdoutBuffer += chunk.toString();
-        let newlineIndex = stdoutBuffer.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const line = stdoutBuffer.slice(0, newlineIndex).trim();
-          stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-          parseLine(line);
-          newlineIndex = stdoutBuffer.indexOf("\n");
-        }
-      });
-
-      child.stderr.on("data", (chunk: Buffer | string) => {
-        stderrBuffer += chunk.toString();
-      });
-
-      child.on("error", (err) => {
-        finish({
-          rateLimits,
-          account,
-          error: err.message || "Failed to start Codex app-server.",
-        });
-      });
-
-      child.on("exit", (code, signal) => {
-        if (settled) return;
-        const normalizedStderr = stderrBuffer.trim();
-        finish({
-          rateLimits,
-          account,
-          error: errorMessage
-            || normalizedStderr
-            || `Codex app-server exited before telemetry completed (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
-        });
-      });
-
-      timeout = setTimeout(() => {
-        finish({
-          rateLimits,
-          account,
-          error: errorMessage || "Timed out waiting for Codex app-server telemetry.",
-        });
-      }, 4_500);
-
-      send({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          clientInfo: {
-            name: "spaces-gateway",
-            version: "0.1.0",
-          },
-          capabilities: {
-            experimentalApi: true,
-          },
-        },
-      });
-    });
-  }
-
-  private async probeClaudeCliStatus(
-    usage?: ProviderUsageSnapshotPayload,
-  ): Promise<LocalProviderTelemetryProbeResult> {
-    if (!this.findExecutable(["claude"])) {
-      return {
-        source: "claude_cli",
-        status: "unavailable",
-        message: "Claude CLI is not installed on the gateway host.",
-      };
-    }
-
-    const credentials = await this.readClaudeOAuthAccessToken();
-    if (credentials.accessToken) {
-      try {
-        const usageResult = await this.fetchClaudeOAuthUsage(credentials.accessToken);
-        if (usageResult.windows.length > 0) {
-          return {
-            source: "claude_cli",
-            status: "available",
-            accountLabel: usageResult.accountLabel,
-            windows: usageResult.windows,
-            message: usageResult.message
-              ?? `Claude OAuth quota windows loaded from ${credentials.source ?? "OAuth credentials"}.`,
-          };
-        }
-      } catch (err) {
-        return this.claudeCliFallbackStatus(
-          usage,
-          `Claude OAuth quota probe failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    if (credentials.message) {
-      return this.claudeCliFallbackStatus(usage, credentials.message);
-    }
-
-    return this.claudeCliFallbackStatus(
-      usage,
-      "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
-    );
-  }
-
-  private claudeCliFallbackStatus(
-    usage: ProviderUsageSnapshotPayload | undefined,
-    quotaMessage: string,
-  ): LocalProviderTelemetryProbeResult {
-    const status = usage?.status ?? "available";
-    const hasRecentUsage = Boolean(
-      usage && (usage.totalTokens > 0 || usage.spentUsd > 0 || usage.status === "available"),
-    );
-
-    return {
-      source: "claude_cli",
-      status,
-      message: hasRecentUsage
-        ? `Claude CLI is installed; ${quotaMessage} Recent usage indicates the runtime is active.`
-        : `Claude CLI is installed; ${quotaMessage}`,
-    };
+  private async queryCodexAppServer(executablePath: string): Promise<CodexAppServerTelemetryResult> {
+    return queryCodexAppServerTelemetry(executablePath);
   }
 
   private async readClaudeOAuthAccessToken(): Promise<ClaudeOAuthAccessTokenResult> {
@@ -3975,130 +1664,15 @@ export class DefaultGatewayAdminService {
   }
 
   private readClaudeOAuthAccessTokenFromKeychain(): ClaudeOAuthAccessTokenResult {
-    if (process.platform !== "darwin") {
-      return {};
-    }
-    const user = process.env.USER?.trim();
-    if (!user) {
-      return {};
-    }
-
-    const result = spawnSync(
-      "security",
-      ["find-generic-password", "-s", CLAUDE_OAUTH_KEYCHAIN_SERVICE, "-a", user, "-w"],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 3_000,
-      },
-    );
-    if (result.status !== 0 || !result.stdout?.trim()) {
-      return {};
-    }
-
-    const accessToken = extractClaudeOAuthAccessToken(result.stdout);
-    return accessToken
-      ? { accessToken, source: "keychain" }
-      : {};
+    return readClaudeOAuthAccessTokenFromKeychainPayload();
   }
 
   private readClaudeOAuthAccessTokenFromCredentialsFile(): ClaudeOAuthAccessTokenResult {
-    const credentialsPath = join(homedir(), ".claude", ".credentials.json");
-    try {
-      const accessToken = extractClaudeOAuthAccessToken(readFileSync(credentialsPath, "utf8"));
-      return accessToken
-        ? { accessToken, source: "credentials_file" }
-        : {};
-    } catch {
-      return {};
-    }
+    return readClaudeOAuthAccessTokenFromCredentialsFilePayload();
   }
 
   private async fetchClaudeOAuthUsage(accessToken: string): Promise<ClaudeOAuthUsageResult> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), CLAUDE_OAUTH_TIMEOUT_MS);
-    try {
-      const response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
-        },
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`Claude OAuth usage endpoint returned HTTP ${response.status}`);
-      }
-      const payload = await response.json();
-      const windows = mapClaudeOAuthUsageWindows(payload);
-      return {
-        windows,
-        message: windows.length > 0
-          ? "Claude OAuth quota windows loaded from provider usage endpoint."
-          : "Claude OAuth usage endpoint returned no quota windows.",
-      };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private probeGeminiCliStatus(): LocalProviderTelemetryProbeResult {
-    const executablePath = this.findExecutable(["gemini"]);
-    if (!executablePath) {
-      return {
-        source: "gemini_cli",
-        status: "unavailable",
-        message: "Gemini CLI is not installed on the gateway host.",
-      };
-    }
-
-    const result = spawnSync(executablePath, ["--version"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 1_500,
-    });
-
-    if (result.status !== 0) {
-      return {
-        source: "gemini_cli",
-        status: "unknown",
-        message: result.stderr?.trim() || "Unable to read Gemini CLI version.",
-      };
-    }
-
-    const accountLabel = result.stdout
-      ?.split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-
-    return {
-      source: "gemini_cli",
-      status: "available",
-      accountLabel: accountLabel || undefined,
-      message: "Gemini CLI does not expose quota windows via public commands.",
-    };
-  }
-
-  private async probeLmStudioRuntime(
-    config: PublicProviderRuntimeConfig,
-  ): Promise<LocalProviderTelemetryProbeResult> {
-    const baseURL = this.resolveProviderBaseURL("lmstudio", config.baseURL);
-    const detection = await this.detectOpenAICompatibleModels(baseURL);
-
-    if (!detection.serviceReachable) {
-      return {
-        source: "lmstudio_runtime",
-        status: "unavailable",
-        message: detection.detectionError || "LM Studio endpoint is not reachable.",
-      };
-    }
-
-    return {
-      source: "lmstudio_runtime",
-      status: "available",
-      message: detection.models.length > 0
-        ? `Detected ${detection.models.length} model(s) from LM Studio runtime.`
-        : "LM Studio endpoint is reachable but returned no models.",
-    };
+    return fetchClaudeOAuthUsageWindowPayloads(accessToken);
   }
 
   private async ensureAgentAssignment(
@@ -4141,165 +1715,13 @@ export class DefaultGatewayAdminService {
     }
   }
 
-  private seedFromEnvironment(defaultApiKey?: string): void {
-    const now = new Date().toISOString();
-
-    // Load persisted configs first — env and runtime will overwrite
-    if (this.providerConfigRepo) {
-      for (const row of this.providerConfigRepo.list()) {
-        if (this.providerConfigs.has(row.provider_id)) continue;
-        if (!this.isProviderConfigAllowed(row.provider_id)) continue;
-        const rowConfig = rowToProviderConfig(row);
-        this.providerConfigs.set(row.provider_id, {
-          ...rowConfig,
-          baseURL: this.resolveProviderBaseURL(rowConfig.providerId, rowConfig.baseURL),
-        });
-      }
-    }
-
-    if (this.defaultProviderId && this.defaultModelId) {
-      if (!this.isProviderConfigAllowed(this.defaultProviderId)) {
-        this.logger.warn("Skipping blocked embedded default provider from environment", {
-          providerId: this.defaultProviderId,
-        });
-      } else {
-        const normalizedDefaultModel = withProviderPrefix(this.defaultProviderId, this.defaultModelId);
-        this.providerConfigs.set(this.defaultProviderId, {
-          providerId: this.defaultProviderId,
-          model: normalizedDefaultModel,
-          apiKey: defaultApiKey || keyFromEnvironment(this.defaultProviderId),
-          apiKeySecretRef: undefined,
-          authMode: resolveProviderAuthMode(this.defaultProviderId),
-          baseURL: this.resolveProviderBaseURL(
-            this.defaultProviderId,
-            this.defaultProviderId === "openai" ? process.env[OPENAI_BASE_URL_ENV] : undefined,
-          ),
-          allowedModels: [normalizedDefaultModel],
-          allowCustomModel: false,
-          nativeCliToolsEnabled: false,
-          updatedAt: now,
-          source: "env",
-        });
-      }
-    }
-
-    for (const providerId of Object.keys(API_KEY_ENV_BY_PROVIDER)) {
-      const apiKey = keyFromEnvironment(providerId);
-      const existing = this.providerConfigs.get(providerId);
-      if (!apiKey && !existing) continue;
-      const preferredAuthMode = existing?.authMode ?? (apiKey ? "api_key" : undefined);
-      const resolvedAuthMode = resolveProviderAuthMode(providerId, preferredAuthMode);
-
-      this.providerConfigs.set(providerId, {
-        providerId,
-        model: withProviderPrefix(
-          providerId,
-          existing?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || this.defaultModelId || "",
-        ),
-        apiKey: resolvedAuthMode === "api_key"
-          ? (apiKey || existing?.apiKey)
-          : undefined,
-        apiKeySecretRef: existing?.apiKeySecretRef,
-        authMode: resolvedAuthMode,
-        baseURL: this.resolveProviderBaseURL(
-          providerId,
-          providerId === "openai" ? (process.env[OPENAI_BASE_URL_ENV] || existing?.baseURL) : existing?.baseURL,
-        ),
-        allowedModels: normalizeProviderModelList(
-          providerId,
-          existing?.allowedModels?.length
-            ? existing.allowedModels
-            : [existing?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || this.defaultModelId || ""],
-        ),
-        allowCustomModel: existing?.allowCustomModel ?? false,
-        nativeCliToolsEnabled: existing?.nativeCliToolsEnabled ?? false,
-        updatedAt: now,
-        source: "env",
-      });
-    }
-
-    if (this.providerVisibleInCatalog("apple")) {
-      const existing = this.providerConfigs.get("apple");
-      const model = withProviderPrefix(
-        "apple",
-        existing?.model || DEFAULT_MODEL_BY_PROVIDER.apple,
-      );
-      this.providerConfigs.set("apple", {
-        providerId: "apple",
-        model,
-        apiKey: undefined,
-        apiKeySecretRef: undefined,
-        authMode: undefined,
-        baseURL: undefined,
-        allowedModels: normalizeProviderModelList("apple", existing?.allowedModels?.length ? existing.allowedModels : [model]),
-        allowCustomModel: false,
-        nativeCliToolsEnabled: false,
-        updatedAt: now,
-        source: existing?.source ?? "env",
-      });
-    }
-
-    // Auto-seed detected CLI executor providers (claude, codex, gemini).
-    // These runtimes use their own auth (Max subscription, Google account, etc.)
-    // and don't require API keys — seed them if the executable is on the host.
-    const cliExecutorIds = ["claude", "codex", "gemini"] as const;
-    for (const providerId of cliExecutorIds) {
-      if (this.providerConfigs.has(providerId)) continue;
-      if (!this.providerVisibleInCatalog(providerId)) continue;
-      if (!this.findExecutable([providerId])) continue;
-      const defaultModel = DEFAULT_MODEL_BY_PROVIDER[providerId];
-      if (!defaultModel) continue;
-      const model = withProviderPrefix(providerId, defaultModel);
-      const manifest = LOCAL_PROVIDER_MODEL_MANIFEST[providerId] ?? [];
-      this.providerConfigs.set(providerId, {
-        providerId,
-        model,
-        apiKey: undefined,
-        apiKeySecretRef: undefined,
-        authMode: undefined,
-        baseURL: undefined,
-        allowedModels: normalizeProviderModelList(providerId, manifest.length > 0 ? manifest : [model]),
-        allowCustomModel: false,
-        nativeCliToolsEnabled: false,
-        updatedAt: now,
-        source: "env",
-      });
-    }
-
-    if (!this.providerConfigs.has("codex-app-server") && this.providerVisibleInCatalog("codex-app-server")) {
-      const executablePath = this.findExecutable(["codex"]);
-      const defaultModel = DEFAULT_MODEL_BY_PROVIDER["codex-app-server"];
-      if (executablePath && defaultModel) {
-        const model = withProviderPrefix("codex-app-server", defaultModel);
-        const manifest = LOCAL_PROVIDER_MODEL_MANIFEST["codex-app-server"] ?? [];
-        this.providerConfigs.set("codex-app-server", {
-          providerId: "codex-app-server",
-          model,
-          apiKey: undefined,
-          apiKeySecretRef: undefined,
-          authMode: "host_login",
-          baseURL: undefined,
-          allowedModels: normalizeProviderModelList(
-            "codex-app-server",
-            manifest.length > 0 ? manifest : [model],
-          ),
-          allowCustomModel: false,
-          nativeCliToolsEnabled: false,
-          updatedAt: now,
-          source: "env",
-        });
-      }
-    }
-  }
-
   private mergeAllowedModels(providerId: string, model: string, modelIds: string[]): string[] {
-    const merged = uniqueModelIds([
+    return mergeAllowedProviderModels({
+      providerId,
       model,
-      ...modelIds,
-      ...this.detectedLocalModelHints(providerId),
-    ]);
-    const normalized = normalizeProviderModelList(providerId, merged);
-    return normalized.length > 0 ? normalized : [model];
+      modelIds,
+      detectedModelHints: this.detectedLocalModelHints(providerId),
+    });
   }
 
   private detectedLocalModelHints(providerId: string): string[] {
@@ -4325,30 +1747,7 @@ export class DefaultGatewayAdminService {
   }
 
   private applyConfigToEnvironment(config: ProviderRuntimeConfig): void {
-    const keyEnv = API_KEY_ENV_BY_PROVIDER[config.providerId];
-    if (keyEnv) {
-      if (config.apiKey) {
-        process.env[keyEnv] = config.apiKey;
-      } else {
-        delete process.env[keyEnv];
-      }
-    }
-
-    if (config.providerId === "openai") {
-      if (config.baseURL) {
-        process.env[OPENAI_BASE_URL_ENV] = config.baseURL;
-      } else {
-        delete process.env[OPENAI_BASE_URL_ENV];
-      }
-    }
-
-    if (config.providerId === "lmstudio") {
-      if (config.baseURL) {
-        process.env[LMSTUDIO_BASE_URL_ENV] = config.baseURL;
-      } else {
-        delete process.env[LMSTUDIO_BASE_URL_ENV];
-      }
-    }
+    applyProviderConfigToEnvironment(config);
   }
 
   private assertProviderConfigAllowed(
@@ -4363,90 +1762,15 @@ export class DefaultGatewayAdminService {
     },
     existing?: ProviderRuntimeConfig,
   ): void {
-    if (this.gatewayProfile !== "embedded") {
-      return;
-    }
-
-    const policyRestrictionReason = this.providerPolicyRestrictionReason(providerId);
-    if (policyRestrictionReason) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        policyRestrictionReason,
-      );
-    }
-
-    if (!API_KEY_ENV_BY_PROVIDER[providerId] && !LOCAL_PROVIDER_IDS.has(providerId)) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        "Custom runtime configuration requires external gateway profile.",
-      );
-    }
-
-    const nextBaseURL = input.baseURL?.trim() || existing?.baseURL;
-    if (nextBaseURL) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        "Custom model endpoints require external gateway profile.",
-      );
-    }
+    this.providerPolicyService.assertProviderConfigAllowed(providerId, input, existing);
   }
 
   private isProviderConfigAllowed(providerId: string): boolean {
-    return !this.providerPolicyRestrictionReason(providerId);
+    return this.providerPolicyService.isProviderConfigAllowed(providerId);
   }
 
   private resolveProviderBaseURL(providerId: string, configuredBaseURL?: string): string | undefined {
-    const explicitBaseURL = normalizeProviderBaseURL(providerId, configuredBaseURL);
-    if (explicitBaseURL) {
-      if (this.gatewayProfile === "embedded") {
-        return undefined;
-      }
-      return explicitBaseURL;
-    }
-
-    if (providerId === "openai") {
-      if (this.gatewayProfile === "embedded") {
-        return undefined;
-      }
-      return normalizeProviderBaseURL(providerId, process.env[OPENAI_BASE_URL_ENV]);
-    }
-
-    if (providerId === "lmstudio") {
-      if (!this.isProviderConfigAllowed(providerId)) {
-        return undefined;
-      }
-      const lmstudioFromEnv = normalizeProviderBaseURL(providerId, process.env[LMSTUDIO_BASE_URL_ENV]);
-      if (lmstudioFromEnv) {
-        return lmstudioFromEnv;
-      }
-
-      return "http://127.0.0.1:1234/v1";
-    }
-
-    if (providerId === "ollama") {
-      if (!this.isProviderConfigAllowed(providerId)) {
-        return undefined;
-      }
-      return normalizeProviderBaseURL(providerId, process.env[OLLAMA_BASE_URL_ENV]) || "http://127.0.0.1:11434/v1";
-    }
-
-    if (providerId === "openrouter") {
-      return "https://openrouter.ai/api/v1";
-    }
-
-    if (providerId === "groq") {
-      return "https://api.groq.com/openai/v1";
-    }
-
-    if (providerId === "together") {
-      return "https://api.together.xyz/v1";
-    }
-
-    if (providerId === "mistral") {
-      return "https://api.mistral.ai/v1";
-    }
-
-    return undefined;
+    return this.providerPolicyService.resolveProviderBaseURL(providerId, configuredBaseURL);
   }
 
   private async detectOpenAICompatibleModels(
@@ -4454,109 +1778,8 @@ export class DefaultGatewayAdminService {
     options?: {
       forceRefresh?: boolean;
     },
-  ): Promise<{
-    serviceReachable: boolean;
-    models: OpenAICompatibleDetectedModel[];
-    detectionError?: string;
-  }> {
-    const baseURL = baseURLRaw?.trim();
-    if (!baseURL) {
-      return {
-        serviceReachable: false,
-        models: [],
-      };
-    }
-    const endpoint = resolveOpenAICompatibleModelsEndpoint(baseURL);
-    const now = Date.now();
-    const forceRefresh = options?.forceRefresh === true;
-    const cached = this.openAICompatibleDetectionCache.get(endpoint);
-    if (!forceRefresh && cached && cached.expiresAt > now) {
-      return {
-        ...cached.value,
-        models: cached.value.models.map((entry) => ({ ...entry })),
-      };
-    }
-
-    const inFlight = forceRefresh ? undefined : this.openAICompatibleDetectionInFlight.get(endpoint);
-    if (inFlight) {
-      const shared = await inFlight;
-      return {
-        ...shared,
-        models: shared.models.map((entry) => ({ ...entry })),
-      };
-    }
-
-    const requestPromise = (async () => {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1200);
-      try {
-        const response = await fetch(endpoint, {
-          method: "GET",
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          return {
-            serviceReachable: false,
-            models: [],
-            detectionError: `Model discovery failed at ${endpoint}: ${response.status} ${response.statusText}`,
-          };
-        }
-
-        const payload = await response.json() as { data?: Array<Record<string, unknown>> };
-        const modelsById = new Map<string, OpenAICompatibleDetectedModel>();
-        for (const entry of payload.data ?? []) {
-          const id = typeof entry?.id === "string" ? entry.id.trim() : "";
-          if (!id) continue;
-          const contextWindow = asPositiveInteger(entry.context_length)
-            ?? asPositiveInteger(entry.context_window)
-            ?? asPositiveInteger(entry.max_context_length)
-            ?? asPositiveInteger(entry.contextLength)
-            ?? asPositiveInteger(entry.contextWindow)
-            ?? asPositiveInteger(entry.maxContextLength);
-
-          const existing = modelsById.get(id);
-          if (!existing) {
-            modelsById.set(id, {
-              id,
-              ...(contextWindow !== undefined ? { contextWindow } : {}),
-            });
-            continue;
-          }
-
-          if (existing.contextWindow === undefined && contextWindow !== undefined) {
-            modelsById.set(id, {
-              ...existing,
-              contextWindow,
-            });
-          }
-        }
-        return {
-          serviceReachable: true,
-          models: Array.from(modelsById.values()),
-        };
-      } catch (err) {
-        return {
-          serviceReachable: false,
-          models: [],
-          detectionError: describeOpenAICompatibleDetectionError(err, endpoint),
-        };
-      } finally {
-        clearTimeout(timeout);
-      }
-    })();
-
-    this.openAICompatibleDetectionInFlight.set(endpoint, requestPromise);
-    const value = await requestPromise;
-    this.openAICompatibleDetectionInFlight.delete(endpoint);
-    this.openAICompatibleDetectionCache.set(endpoint, {
-      expiresAt: Date.now() + OPENAI_COMPATIBLE_DETECTION_CACHE_TTL_MS,
-      value,
-    });
-    return {
-      ...value,
-      models: value.models.map((entry) => ({ ...entry })),
-    };
+  ): Promise<OpenAICompatibleDetectionResult> {
+    return this.openAICompatibleModelDiscoveryService.detectModels(baseURLRaw, options);
   }
 
   private async detectClaudeAgentSdkCatalog(
@@ -4564,57 +1787,39 @@ export class DefaultGatewayAdminService {
     forceRefresh = false,
   ): Promise<ClaudeAgentSdkCatalogProbe> {
     const providerId = "claude-agent-sdk";
-    const cacheKey = providerId;
-    const now = Date.now();
-    if (forceRefresh) {
-      this.claudeAgentSdkDetectionCache.delete(cacheKey);
-      this.claudeAgentSdkDetectionInFlight.delete(cacheKey);
-    }
-
-    const cached = this.claudeAgentSdkDetectionCache.get(cacheKey);
-    if (!forceRefresh && cached && cached.expiresAt > now) {
-      return cloneClaudeAgentSdkCatalogProbe(cached.value);
-    }
-
-    const inFlight = forceRefresh ? undefined : this.claudeAgentSdkDetectionInFlight.get(cacheKey);
-    if (inFlight) {
-      return cloneClaudeAgentSdkCatalogProbe(await inFlight);
-    }
-
-    const requestPromise = (async () => {
-      const model = withProviderPrefix(
-        providerId,
-        config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
-      );
-      const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "api_key";
-      if (this.claudeAgentSdkMetadataProbe) {
-        return await this.claudeAgentSdkMetadataProbe({
+    return runCachedCatalogProbe({
+      cache: this.claudeAgentSdkDetectionCache,
+      inFlight: this.claudeAgentSdkDetectionInFlight,
+      cacheKey: providerId,
+      forceRefresh,
+      ttlMs: CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
+      cloneValue: cloneClaudeAgentSdkCatalogProbe,
+      buildValue: async () => {
+        const model = withProviderPrefix(
           providerId,
+          config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
+        );
+        const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "api_key";
+        if (this.claudeAgentSdkMetadataProbe) {
+          return await this.claudeAgentSdkMetadataProbe({
+            providerId,
+            model,
+            authMode,
+            apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+          });
+        }
+
+        const provider = new ClaudeAgentSdkModelProvider({
+          id: providerId,
+          name: providerDisplayName(providerId),
           model,
-          authMode,
           apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+          authMode: authMode as "api_key" | "host_login",
         });
-      }
-
-      const provider = new ClaudeAgentSdkModelProvider({
-        id: providerId,
-        name: providerDisplayName(providerId),
-        model,
-        apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-        authMode: authMode as "api_key" | "host_login",
-      });
-      const probe = await provider.probeMetadata();
-      return mapClaudeAgentSdkProbeResult(probe);
-    })();
-
-    this.claudeAgentSdkDetectionInFlight.set(cacheKey, requestPromise);
-    const value = await requestPromise;
-    this.claudeAgentSdkDetectionInFlight.delete(cacheKey);
-    this.claudeAgentSdkDetectionCache.set(cacheKey, {
-      expiresAt: Date.now() + CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
-      value,
+        const probe = await provider.probeMetadata();
+        return mapClaudeAgentSdkProbeResult(probe);
+      },
     });
-    return cloneClaudeAgentSdkCatalogProbe(value);
   }
 
   private async detectCodexAppServerCatalog(
@@ -4622,57 +1827,39 @@ export class DefaultGatewayAdminService {
     forceRefresh = false,
   ): Promise<CodexAppServerCatalogProbe> {
     const providerId = "codex-app-server";
-    const cacheKey = providerId;
-    const now = Date.now();
-    if (forceRefresh) {
-      this.codexAppServerDetectionCache.delete(cacheKey);
-      this.codexAppServerDetectionInFlight.delete(cacheKey);
-    }
-
-    const cached = this.codexAppServerDetectionCache.get(cacheKey);
-    if (!forceRefresh && cached && cached.expiresAt > now) {
-      return cloneCodexAppServerCatalogProbe(cached.value);
-    }
-
-    const inFlight = forceRefresh ? undefined : this.codexAppServerDetectionInFlight.get(cacheKey);
-    if (inFlight) {
-      return cloneCodexAppServerCatalogProbe(await inFlight);
-    }
-
-    const requestPromise = (async () => {
-      const model = withProviderPrefix(
-        providerId,
-        config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
-      );
-      const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "host_login";
-      if (this.codexAppServerMetadataProbe) {
-        return await this.codexAppServerMetadataProbe({
+    return runCachedCatalogProbe({
+      cache: this.codexAppServerDetectionCache,
+      inFlight: this.codexAppServerDetectionInFlight,
+      cacheKey: providerId,
+      forceRefresh,
+      ttlMs: CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
+      cloneValue: cloneCodexAppServerCatalogProbe,
+      buildValue: async () => {
+        const model = withProviderPrefix(
           providerId,
+          config?.model || DEFAULT_MODEL_BY_PROVIDER[providerId] || `${providerId}/default`,
+        );
+        const authMode = resolveProviderAuthMode(providerId, config?.authMode) ?? "host_login";
+        if (this.codexAppServerMetadataProbe) {
+          return await this.codexAppServerMetadataProbe({
+            providerId,
+            model,
+            authMode,
+            apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+          });
+        }
+
+        const provider = new CodexAppServerModelProvider({
+          id: providerId,
+          name: providerDisplayName(providerId),
           model,
-          authMode,
           apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
+          authMode: authMode as "api_key" | "host_login",
         });
-      }
-
-      const provider = new CodexAppServerModelProvider({
-        id: providerId,
-        name: providerDisplayName(providerId),
-        model,
-        apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
-        authMode: authMode as "api_key" | "host_login",
-      });
-      const probe = await provider.probeMetadata();
-      return mapCodexAppServerProbeResult(probe);
-    })();
-
-    this.codexAppServerDetectionInFlight.set(cacheKey, requestPromise);
-    const value = await requestPromise;
-    this.codexAppServerDetectionInFlight.delete(cacheKey);
-    this.codexAppServerDetectionCache.set(cacheKey, {
-      expiresAt: Date.now() + CLAUDE_AGENT_SDK_DETECTION_CACHE_TTL_MS,
-      value,
+        const probe = await provider.probeMetadata();
+        return mapCodexAppServerProbeResult(probe);
+      },
     });
-    return cloneCodexAppServerCatalogProbe(value);
   }
 
   private resolveConfiguredProviderApiKey(
@@ -4694,10 +1881,8 @@ export class DefaultGatewayAdminService {
   }
 
   private invalidateProviderRuntimeCaches(providerId: string): void {
-    this.localAgentSnapshotCache = undefined;
-    this.localAgentSnapshotInFlight = undefined;
-    this.providerCatalogSnapshotCache.clear();
-    this.providerCatalogSnapshotInFlight.clear();
+    this.localAgentDiscoveryService.invalidate();
+    this.providerCatalogService.invalidate();
     if (providerId === "claude-agent-sdk") {
       this.claudeAgentSdkDetectionCache.delete(providerId);
       this.claudeAgentSdkDetectionInFlight.delete(providerId);
@@ -4710,677 +1895,10 @@ export class DefaultGatewayAdminService {
   }
 
   private findExecutable(commands: string[]): string | null {
-    const resolved = this.executableResolver.resolve({
-      cacheKey: commands.join("|"),
-      commands,
-      versionProbe: { args: ["--version"], timeoutMs: 750 },
-    });
-    return resolved.path ?? null;
+    return this.localAgentDiscoveryService.findExecutable(commands);
   }
 
   private detectCodexCliModels(): string[] {
-    const home = process.env.HOME?.trim();
-    if (!home) {
-      return [];
-    }
-
-    const results: string[] = [];
-    const seen = new Set<string>();
-    const addModel = (value: unknown) => {
-      if (typeof value !== "string") return;
-      const normalized = value.trim();
-      if (!normalized) return;
-      const withPrefix = withProviderPrefix("codex", normalized);
-      const key = withPrefix.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      results.push(withPrefix);
-    };
-
-    const configPath = join(home, ".codex", "config.toml");
-    if (existsSync(configPath)) {
-      try {
-        const content = readFileSync(configPath, "utf8");
-        const match = content.match(/^\s*model\s*=\s*"([^"]+)"/m);
-        if (match?.[1]) {
-          addModel(match[1]);
-        }
-      } catch {
-        // Ignore local config parse issues.
-      }
-    }
-
-    const cachePath = join(home, ".codex", "models_cache.json");
-    if (existsSync(cachePath)) {
-      try {
-        const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as {
-          models?: Array<{ slug?: unknown; visibility?: unknown }>;
-        };
-        for (const entry of parsed.models ?? []) {
-          const visibility = typeof entry.visibility === "string"
-            ? entry.visibility.toLowerCase()
-            : "";
-          if (visibility === "hidden") {
-            continue;
-          }
-          addModel(entry.slug);
-        }
-      } catch {
-        // Ignore cache parse issues.
-      }
-    }
-
-    return results;
+    return this.localAgentDiscoveryService.detectCodexCliModels();
   }
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return undefined;
-}
-
-function asInteger(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return Math.trunc(parsed);
-    }
-  }
-  return undefined;
-}
-
-function asPositiveInteger(value: unknown): number | undefined {
-  const parsed = asInteger(value);
-  if (parsed === undefined || parsed <= 0) return undefined;
-  return parsed;
-}
-
-function normalizePercentage(value: unknown): number | undefined {
-  const numberValue = asInteger(value);
-  if (numberValue === undefined) return undefined;
-  return Math.max(0, Math.min(100, numberValue));
-}
-
-function asIsoFromEpochSeconds(value: unknown): string | undefined {
-  const seconds = asInteger(value);
-  if (seconds === undefined) return undefined;
-  if (seconds <= 0) return undefined;
-  try {
-    return new Date(seconds * 1_000).toISOString();
-  } catch {
-    return undefined;
-  }
-}
-
-function extractClaudeOAuthAccessToken(raw: string): string | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    const token = extractClaudeOAuthAccessTokenFromRecord(parsed);
-    if (token) {
-      return token;
-    }
-  } catch {
-    // Keychain output is expected to be JSON, but keep the file parser tolerant.
-  }
-
-  return undefined;
-}
-
-function extractClaudeOAuthAccessTokenFromRecord(value: unknown): string | undefined {
-  if (!isObjectRecord(value)) {
-    return undefined;
-  }
-
-  const oauth = value.claudeAiOauth;
-  if (isObjectRecord(oauth)) {
-    const expiresAt = asNumber(oauth.expiresAt);
-    if (expiresAt !== undefined && expiresAt < Date.now()) {
-      return undefined;
-    }
-    const token = asString(oauth.accessToken)
-      ?? asString(oauth.access_token);
-    if (token) {
-      return token;
-    }
-  }
-
-  return asString(value.accessToken)
-    ?? asString(value.access_token);
-}
-
-function mapClaudeOAuthUsageWindows(payload: unknown): ProviderTelemetryWindow[] {
-  if (!isObjectRecord(payload)) {
-    return [];
-  }
-
-  return [
-    mapClaudeOAuthUsageWindow(payload.five_hour, "primary", 300),
-    mapClaudeOAuthUsageWindow(payload.seven_day, "secondary", 10080),
-  ].filter((window): window is ProviderTelemetryWindow => Boolean(window));
-}
-
-function mapClaudeOAuthUsageWindow(
-  payload: unknown,
-  window: "primary" | "secondary",
-  windowDurationMins: number,
-): ProviderTelemetryWindow | null {
-  if (!isObjectRecord(payload)) {
-    return null;
-  }
-  const usedPercentRaw = asNumber(payload.utilization);
-  if (usedPercentRaw === undefined) {
-    return null;
-  }
-  const usedPercent = Math.max(0, Math.min(100, usedPercentRaw));
-  const resetsAt = parseIsoString(payload.resets_at);
-  return {
-    scopeId: "claude",
-    scopeName: "Claude",
-    window,
-    usedPercent,
-    remainingPercent: Math.max(0, Math.min(100, 100 - usedPercent)),
-    resetsAt,
-    windowDurationMins,
-  };
-}
-
-function parseIsoString(value: unknown): string | undefined {
-  const raw = asString(value);
-  if (!raw) {
-    return undefined;
-  }
-  const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
-}
-
-function joinNonEmpty(values: Array<string | undefined>, separator: string): string {
-  return values
-    .map((value) => value?.trim() || "")
-    .filter((value) => value.length > 0)
-    .join(separator);
-}
-
-function rowToProviderConfig(row: ProviderConfigRow): ProviderRuntimeConfig {
-  let allowedModels: string[] = [];
-  try {
-    const parsed = JSON.parse(row.allowed_models_json);
-    if (Array.isArray(parsed)) {
-      allowedModels = parsed;
-    }
-  } catch {
-    // ignore malformed JSON
-  }
-  return {
-    providerId: row.provider_id,
-    model: row.model,
-    apiKeySecretRef: row.api_key_secret_ref ?? undefined,
-    authMode: normalizeProviderAuthMode(row.auth_mode),
-    baseURL: row.base_url ?? undefined,
-    allowedModels,
-    allowCustomModel: row.allow_custom_model === 1,
-    nativeCliToolsEnabled: row.native_cli_tools_enabled === 1,
-    updatedAt: row.updated_at,
-    source: row.source === "env" ? "env" : "runtime",
-  };
-}
-
-function cloneClaudeAgentSdkCatalogProbe(
-  probe: ClaudeAgentSdkCatalogProbe,
-): ClaudeAgentSdkCatalogProbe {
-  return {
-    authStatus: probe.authStatus,
-    authAccount: probe.authAccount ? { ...probe.authAccount } : undefined,
-    models: (probe.models ?? []).map((model) => ({ ...model })),
-    detectionError: probe.detectionError,
-  };
-}
-
-function mapClaudeAgentSdkProbeResult(
-  probe: ClaudeAgentSdkProbeResult,
-): ClaudeAgentSdkCatalogProbe {
-  return {
-    authStatus: probe.authStatus,
-    authAccount: mapClaudeAgentSdkAuthAccount(probe.authAccount),
-    models: probe.models.map((model) => ({
-      id: model.id,
-      displayName: model.displayName,
-      contextWindow: model.contextWindow,
-    })),
-    detectionError: probe.detectionError,
-  };
-}
-
-function cloneCodexAppServerCatalogProbe(
-  probe: CodexAppServerCatalogProbe,
-): CodexAppServerCatalogProbe {
-  return {
-    authStatus: probe.authStatus,
-    authAccount: probe.authAccount ? { ...probe.authAccount } : undefined,
-    models: (probe.models ?? []).map((model) => ({ ...model })),
-    detectionError: probe.detectionError,
-  };
-}
-
-function cloneDiscoveredLocalAgent(agent: DiscoveredLocalAgent): DiscoveredLocalAgent {
-  return {
-    ...agent,
-    availableModels: agent.availableModels ? [...agent.availableModels] : undefined,
-  };
-}
-
-function cloneGatewayModelCatalogEntry(
-  entry: GatewayModelCatalogEntry,
-): GatewayModelCatalogEntry {
-  return {
-    ...entry,
-  };
-}
-
-function cloneGatewayModelProviderCatalog(
-  catalog: GatewayModelProviderCatalog,
-): GatewayModelProviderCatalog {
-  return {
-    ...catalog,
-    supportedAuthModes: [...(catalog.supportedAuthModes ?? [])],
-    authAccount: catalog.authAccount ? { ...catalog.authAccount } : undefined,
-    models: (catalog.models ?? []).map(cloneGatewayModelCatalogEntry),
-  };
-}
-
-function normalizeRuntimeDefaultSelection(
-  providerIdRaw?: string,
-  modelIdRaw?: string,
-): GatewayRuntimeDefaultSelectionPayload | null {
-  const providerId = normalizeProviderId(providerIdRaw);
-  const modelId = modelIdRaw?.trim();
-  if (!providerId || !modelId) {
-    return null;
-  }
-  return {
-    providerId,
-    modelId: withProviderPrefix(providerId, modelId),
-  };
-}
-
-function runtimeDefaultPriority(providerIdRaw: string): number {
-  const providerId = providerIdRaw.trim().toLowerCase();
-  switch (providerId) {
-    case "codex-app-server":
-      return 0;
-    case "apple":
-      return 1;
-    case "openai":
-      return 2;
-    case "openrouter":
-      return 3;
-    case "codex":
-      return 4;
-    case "gemini":
-      return 5;
-    case "lmstudio":
-      return 6;
-    case "ollama":
-      return 7;
-    case "anthropic":
-      return 8;
-    case "claude-agent-sdk":
-      return 9;
-    case "claude":
-      return 10;
-    default:
-      return 50;
-  }
-}
-
-function mapCodexAppServerProbeResult(
-  probe: CodexAppServerProbeResult,
-): CodexAppServerCatalogProbe {
-  return {
-    authStatus: probe.authStatus,
-    authAccount: mapCodexAppServerAuthAccount(probe.authAccount),
-    models: probe.models.map((model) => ({
-      id: model.id,
-      displayName: model.displayName,
-      contextWindow: model.contextWindow,
-    })),
-    detectionError: probe.detectionError,
-  };
-}
-
-function mapClaudeAgentSdkAuthAccount(
-  account?: ClaudeAgentSdkAuthAccount,
-): GatewayProviderAuthAccount | undefined {
-  if (!account) {
-    return undefined;
-  }
-  const normalized: GatewayProviderAuthAccount = {
-    email: account.email?.trim() || undefined,
-    organization: account.organization?.trim() || undefined,
-    subscriptionType: account.subscriptionType?.trim() || undefined,
-    apiProvider: account.apiProvider?.trim() || undefined,
-    tokenSource: account.tokenSource?.trim() || undefined,
-  };
-  return Object.values(normalized).some(Boolean) ? normalized : undefined;
-}
-
-function mapCodexAppServerAuthAccount(
-  account?: CodexAppServerAuthAccount,
-): GatewayProviderAuthAccount | undefined {
-  if (!account) {
-    return undefined;
-  }
-  const normalized: GatewayProviderAuthAccount = {
-    email: account.email?.trim() || undefined,
-    subscriptionType: account.subscriptionType?.trim() || undefined,
-    apiProvider: account.apiProvider?.trim() || undefined,
-    tokenSource: account.tokenSource?.trim() || undefined,
-  };
-  return Object.values(normalized).some(Boolean) ? normalized : undefined;
-}
-
-function normalizeProviderId(providerId?: string): string | undefined {
-  if (!providerId) return undefined;
-  const normalized = providerId.trim().toLowerCase();
-  if (!normalized) return undefined;
-  return normalized;
-}
-
-function normalizeProviderIds(providerIds?: string[]): string[] {
-  if (!providerIds) return [];
-  return Array.from(
-    new Set(
-      providerIds
-        .map((providerId) => normalizeProviderId(providerId))
-        .filter((providerId): providerId is string => Boolean(providerId)),
-    ),
-  );
-}
-
-function parseStringArray(value: string | null | undefined): string[] {
-  if (!value?.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((entry): entry is string => typeof entry === "string");
-  } catch {
-    return [];
-  }
-}
-
-function mergeSkillIds(existing: string[], required: readonly string[]): string[] {
-  return Array.from(new Set([...existing, ...required].map((entry) => entry.trim()).filter(Boolean)));
-}
-
-function parseModelConfig(
-  value: string | null | undefined,
-  modelHint: string | null | undefined,
-): ProfileModelConfig {
-  if (value?.trim()) {
-    try {
-      const parsed = JSON.parse(value) as Record<string, unknown>;
-      const preferredModels = normalizeStringList(parsed.preferredModels);
-      const fallbackModels = normalizeStringList(parsed.fallbackModels);
-      const constraints = isRecord(parsed.constraints) ? parsed.constraints : undefined;
-      return {
-        preferredModels: preferredModels.length > 0
-          ? preferredModels
-          : (modelHint?.trim() ? [modelHint.trim()] : []),
-        fallbackModels,
-        ...(constraints ? { constraints } : {}),
-      };
-    } catch {
-      // Fallback below.
-    }
-  }
-
-  return {
-    preferredModels: modelHint?.trim() ? [modelHint.trim()] : [],
-    fallbackModels: [],
-  };
-}
-
-function normalizeStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0),
-    ),
-  );
-}
-
-function normalizeIntegrationClass(value?: GatewayIntegrationClassPayload): "cloud" | "executor" | "local_runtime" | undefined {
-  if (value === "cloud" || value === "executor" || value === "local_runtime") {
-    return value;
-  }
-  return undefined;
-}
-
-function mapIntegrationRequestRow(row: {
-  integration_request_id: string;
-  integration_class: string;
-  requested_name: string;
-  use_case: string;
-  source_url: string;
-  notes: string;
-  principal_id: string;
-  device_id: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}): GatewayCreateIntegrationRequestResponsePayload["request"] {
-  return {
-    integrationRequestId: row.integration_request_id,
-    integrationClass: (normalizeIntegrationClass(row.integration_class as GatewayIntegrationClassPayload) ?? "cloud"),
-    requestedName: row.requested_name,
-    useCase: row.use_case || undefined,
-    sourceURL: row.source_url || undefined,
-    notes: row.notes || undefined,
-    principalId: row.principal_id || undefined,
-    deviceId: row.device_id || undefined,
-    status: row.status,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function deriveProviderFromModel(model?: string): string | undefined {
-  if (!model) return undefined;
-  const trimmed = model.trim();
-  if (!trimmed) return undefined;
-  const prefix = trimmed.includes("/") ? trimmed.split("/")[0] : "";
-  return normalizeProviderId(prefix);
-}
-
-function withProviderPrefix(providerId: string, modelId: string): string {
-  const trimmed = modelId.trim();
-  if (!trimmed) return `${providerId}/`;
-  const providerPrefix = `${providerId.toLowerCase()}/`;
-  if (trimmed.toLowerCase().startsWith(providerPrefix)) {
-    return `${providerId}/${trimmed.slice(providerPrefix.length)}`;
-  }
-  return `${providerId}/${trimmed}`;
-}
-
-function normalizeProviderBaseURL(providerId: string, baseURLRaw?: string): string | undefined {
-  const trimmed = baseURLRaw?.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-
-  if (providerId !== "lmstudio") {
-    return trimmed;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    const pathname = parsed.pathname.replace(/\/+$/, "");
-    if (!pathname) {
-      parsed.pathname = "/v1";
-    } else {
-      parsed.pathname = pathname;
-    }
-    return parsed.toString();
-  } catch {
-    return trimmed;
-  }
-}
-
-function resolveOpenAICompatibleModelsEndpoint(baseURLRaw?: string): string {
-  const baseURL = baseURLRaw?.trim() || "http://127.0.0.1:1234/v1";
-  return `${baseURL.replace(/\/+$/, "")}/models`;
-}
-
-function describeOpenAICompatibleDetectionError(error: unknown, endpoint: string): string {
-  const fallback = `Failed to discover models from OpenAI-compatible endpoint: ${endpoint}`;
-  if (!(error instanceof Error)) {
-    return fallback;
-  }
-
-  const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined;
-  if (code === "ConnectionRefused") {
-    return `Connection refused at ${endpoint}. If using LM Studio, run: lms server start --port 1234`;
-  }
-
-  const message = error.message?.trim();
-  if (message) {
-    return `${message} (endpoint: ${endpoint})`;
-  }
-
-  return fallback;
-}
-
-function normalizeProviderModelList(providerId: string, modelIds?: string[]): string[] {
-  if (!modelIds || modelIds.length === 0) {
-    return [];
-  }
-  return Array.from(
-    new Set(
-      modelIds
-        .map((modelId) => withProviderPrefix(providerId, modelId))
-        .map((modelId) => modelId.trim())
-        .filter((modelId) => modelId.length > 0),
-    ),
-  );
-}
-
-function uniqueModelIds(modelIds: string[]): string[] {
-  const result: string[] = [];
-  const seen = new Set<string>();
-  for (const modelId of modelIds) {
-    const normalized = modelId.trim();
-    if (!normalized) continue;
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(normalized);
-  }
-  return result;
-}
-
-function collectProfileModelCandidates(
-  modelHint?: string,
-  modelConfig?: ProfileModelConfig,
-): string[] {
-  const candidates = [
-    modelHint,
-    ...(modelConfig?.preferredModels ?? []),
-    ...(modelConfig?.fallbackModels ?? []),
-  ];
-  return Array.from(
-    new Set(
-      candidates
-        .map((modelId) => modelId?.trim() ?? "")
-        .filter((modelId) => modelId.length > 0),
-    ),
-  );
-}
-
-function normalizeSelectionMode(value: unknown): MainAgentSelectionMode | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim();
-  if (normalized === "provider_model" || normalized === "agent_definition") {
-    return normalized;
-  }
-  return null;
-}
-
-function providerCatalogGroup(providerId: string): GatewayProviderCatalogGroup {
-  return mapExecutionClassToCatalogGroup(classifyExecutionAdapter(providerId));
-}
-
-function providerIntegrationClass(providerId: string): GatewayIntegrationClass {
-  return classifyExecutionAdapter(providerId);
-}
-
-function mapFallbackTelemetrySource(source: ProviderTelemetrySourcePayload): string {
-  switch (source) {
-    case "codex_app_server":
-      return "codex-cli";
-    case "claude_cli":
-      return "claude-cli";
-    case "gemini_cli":
-      return "gemini-cli";
-    case "lmstudio_runtime":
-      return "runtime";
-    case "usage_snapshot":
-      return "api";
-    default:
-      return source;
-  }
-}
-
-function throwGatewayError(
-  code: "INVALID_ARGUMENT" | "NOT_FOUND" | "ALREADY_EXISTS" | "FAILED_PRECONDITION",
-  message: string,
-): never {
-  throw { code, message };
-}
-
-function isSpaceAdminErrorLike(
-  err: unknown,
-): err is { code: "INVALID_ARGUMENT" | "NOT_FOUND" | "ALREADY_EXISTS" | "FAILED_PRECONDITION"; message: string } {
-  if (typeof err !== "object" || err === null) {
-    return false;
-  }
-
-  const candidate = err as { code?: unknown; message?: unknown };
-  return (
-    typeof candidate.code === "string"
-    && typeof candidate.message === "string"
-  );
 }

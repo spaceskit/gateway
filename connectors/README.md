@@ -197,7 +197,7 @@ Add a directory under `connectors/` with a README documenting:
 | `discord-bot` | Discord Bot API | channel | connector | No |
 | `whatsapp-cloud` | WhatsApp Cloud API | channel | connector | No |
 
-### CLI Tool Bundles (separate system, see `cli-tools/`)
+### CLI Tool Bundles (separate system, see `workbench/cli-tools/`)
 
 | Bundle ID | Display Name |
 |---|---|

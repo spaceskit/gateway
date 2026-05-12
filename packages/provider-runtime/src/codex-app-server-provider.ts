@@ -5,10 +5,7 @@ import type {
   GenerateResult,
   GatewayToolBridgeConfig,
   ModelInfo,
-  ModelMessage,
   ModelProvider,
-  ProviderFeedbackRequest,
-  ProviderFeedbackResponse,
   ProviderSessionHandle,
   StreamChunk,
   TokenUsage,
@@ -16,6 +13,39 @@ import type {
   ToolResult,
 } from "@spaceskit/core";
 import { inferContextWindow } from "@spaceskit/core";
+import {
+  buildCommandApprovalRequest,
+  buildFileApprovalRequest,
+  mapCommandApprovalDecision,
+  mapFileApprovalDecision,
+  requestProviderFeedback,
+} from "./codex-app-server-approvals.js";
+import {
+  extractDeveloperInstructions,
+  mapApprovalPolicy,
+  mapReasoningEffort,
+  mapReasoningSummary,
+  mapSandboxMode,
+  toUserInputs,
+} from "./codex-app-server-request-mapping.js";
+import {
+  CodexTurnStreamContext,
+  isVisibleAssistantTextChunk,
+  mapCompletedItemToChunks,
+  normalizeTokenUsage,
+  type AppServerInboundMessage,
+} from "./codex-app-server-stream-mapping.js";
+import {
+  buildDynamicTools,
+  normalizeDynamicToolCall,
+  resolveGatewayToolBridgeConfig,
+  toDynamicToolContentItems,
+} from "./codex-app-server-tool-protocol.js";
+
+export {
+  decodeDynamicToolName,
+  encodeDynamicToolName,
+} from "./codex-app-server-tool-protocol.js";
 
 const DEFAULT_CLIENT_INFO = {
   name: "spaces-gateway",
@@ -23,8 +53,6 @@ const DEFAULT_CLIENT_INFO = {
 } as const;
 
 const DEFAULT_MODEL_LIST_LIMIT = 100;
-const DYNAMIC_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
-const DYNAMIC_TOOL_NAME_PREFIX = "spaceskit_";
 
 type JsonRpcId = number | string;
 type JsonRecord = Record<string, unknown>;
@@ -765,107 +793,6 @@ class StdioCodexAppServerClient implements CodexAppServerClientLike {
   }
 }
 
-class CodexTurnStreamContext {
-  private readonly queue: AppServerInboundMessage[] = [];
-  private readonly waiters: Array<(value: AppServerInboundMessage | undefined) => void> = [];
-  private readonly itemIdsWithDeltas = new Set<string>();
-  private closed = false;
-  latestCompletedAgentMessage?: string;
-  sawVisibleAssistantOutput = false;
-
-  push(message: AppServerInboundMessage): void {
-    if (this.closed) {
-      return;
-    }
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter(message);
-      return;
-    }
-    this.queue.push(message);
-  }
-
-  async next(): Promise<AppServerInboundMessage | undefined> {
-    if (this.queue.length > 0) {
-      return this.queue.shift();
-    }
-    if (this.closed) {
-      return undefined;
-    }
-    return await new Promise<AppServerInboundMessage | undefined>((resolve) => {
-      this.waiters.push(resolve);
-    });
-  }
-
-  noteDelta(itemId: string): void {
-    this.itemIdsWithDeltas.add(itemId);
-  }
-
-  sawDelta(itemId?: string): boolean {
-    return Boolean(itemId && this.itemIdsWithDeltas.has(itemId));
-  }
-
-  noteCompletedAgentMessage(text: string): void {
-    const normalized = text.trim();
-    if (normalized) {
-      this.latestCompletedAgentMessage = normalized;
-    }
-  }
-
-  noteVisibleAssistantOutput(): void {
-    this.sawVisibleAssistantOutput = true;
-  }
-
-  close(): void {
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      const waiter = this.waiters.shift();
-      waiter?.(undefined);
-    }
-  }
-}
-
-type AppServerInboundMessage =
-  | { kind: "request"; id: JsonRpcId; method: string; params: unknown }
-  | { kind: "notification"; method: string; params: unknown };
-
-function resolveGatewayToolBridgeConfig(options: GenerateOptions): GatewayToolBridgeConfig | undefined {
-  return options.gatewayToolBridgeConfig ?? options.mcpBridgeConfig;
-}
-
-function buildDynamicTools(config?: GatewayToolBridgeConfig): Array<{
-  name: string;
-  description: string;
-  inputSchema: unknown;
-}> {
-  if (!config) {
-    return [];
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(config.toolDefsJson);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) {
-    return [];
-  }
-  const tools: Array<{ name: string; description: string; inputSchema: unknown }> = [];
-  for (const entry of parsed) {
-    const record = asRecord(entry);
-    const name = asString(record?.name);
-    if (!name) {
-      continue;
-    }
-    tools.push({
-      name: encodeDynamicToolName(name),
-      description: asString(record?.description) || name,
-      inputSchema: record?.inputSchema ?? record?.parameters ?? { type: "object" },
-    });
-  }
-  return tools;
-}
-
 async function executeGatewayToolCall(
   config: GatewayToolBridgeConfig | undefined,
   toolCall: ToolCall,
@@ -913,288 +840,6 @@ async function executeGatewayToolCall(
   });
 }
 
-async function requestProviderFeedback(
-  feedbackHandler: GenerateOptions["feedbackHandler"],
-  request: ProviderFeedbackRequest,
-): Promise<ProviderFeedbackResponse> {
-  if (!feedbackHandler) {
-    return { action: "reject" };
-  }
-  return await feedbackHandler(request);
-}
-
-function buildCommandApprovalRequest(params: unknown): ProviderFeedbackRequest {
-  const record = asRecord(params);
-  return {
-    triggerClass: "permission_gate",
-    description: asString(record?.reason)
-      || `Command execution requires approval${asString(record?.command) ? `: ${asString(record?.command)}` : ""}.`,
-    options: ["approve", "reject"],
-    context: {
-      providerApprovalType: "command_execution",
-      itemId: asString(record?.itemId),
-      approvalId: asString(record?.approvalId),
-      command: asString(record?.command),
-      cwd: asString(record?.cwd),
-    },
-  };
-}
-
-function buildFileApprovalRequest(params: unknown): ProviderFeedbackRequest {
-  const record = asRecord(params);
-  return {
-    triggerClass: "permission_gate",
-    description: asString(record?.reason) || "File changes require approval.",
-    options: ["approve", "reject"],
-    context: {
-      providerApprovalType: "file_change",
-      itemId: asString(record?.itemId),
-      grantRoot: asString(record?.grantRoot),
-    },
-  };
-}
-
-function mapCommandApprovalDecision(feedback: ProviderFeedbackResponse):
-  | "accept"
-  | "decline"
-  | "cancel" {
-  switch (feedback.action) {
-    case "approve":
-      return "accept";
-    case "defer":
-      return "cancel";
-    default:
-      return "decline";
-  }
-}
-
-function mapFileApprovalDecision(feedback: ProviderFeedbackResponse):
-  | "accept"
-  | "decline"
-  | "cancel" {
-  switch (feedback.action) {
-    case "approve":
-      return "accept";
-    case "defer":
-      return "cancel";
-    default:
-      return "decline";
-  }
-}
-
-function toDynamicToolContentItems(result: unknown): Array<{ type: "inputText"; text: string }> {
-  if (typeof result === "string") {
-    return [{ type: "inputText", text: result }];
-  }
-  return [{
-    type: "inputText",
-    text: JSON.stringify(result ?? null),
-  }];
-}
-
-function extractDeveloperInstructions(messages: ModelMessage[]): string | undefined {
-  const systemMessages = messages
-    .filter((message) => message.role === "system")
-    .map((message) => message.content.trim())
-    .filter(Boolean);
-  if (systemMessages.length === 0) {
-    return undefined;
-  }
-  return systemMessages.join("\n\n");
-}
-
-function toUserInputs(messages: ModelMessage[], resumeThread: boolean): Array<{
-  type: "text";
-  text: string;
-  text_elements: [];
-}> {
-  const renderableMessages = messages.filter((message) => message.role !== "system");
-  const sliced = resumeThread ? toNewMessagesOnly(renderableMessages) : renderableMessages;
-  const text = renderPrompt(sliced);
-  return [{
-    type: "text",
-    text,
-    text_elements: [],
-  }];
-}
-
-function renderPrompt(messages: ModelMessage[]): string {
-  return messages
-    .map((message) => {
-      const role = message.role.toUpperCase();
-      const suffix = message.role === "tool" && message.toolName
-        ? ` (${message.toolName})`
-        : "";
-      return `${role}${suffix}:\n${message.content}`.trim();
-    })
-    .join("\n\n")
-    .trim();
-}
-
-function toNewMessagesOnly(messages: ModelMessage[]): ModelMessage[] {
-  let lastUserIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index]?.role === "user") {
-      lastUserIndex = index;
-      break;
-    }
-  }
-  return lastUserIndex >= 0 ? messages.slice(lastUserIndex) : messages.slice(-1);
-}
-
-function mapApprovalPolicy(
-  accessMode: GenerateOptions["accessMode"],
-  approvalBypassEnabled?: boolean,
-): "untrusted" | "on-request" | "never" | undefined {
-  if (accessMode === "full_access") {
-    return approvalBypassEnabled ? "never" : "on-request";
-  }
-  if (accessMode === "default") {
-    return "untrusted";
-  }
-  return undefined;
-}
-
-function mapSandboxMode(
-  accessMode: GenerateOptions["accessMode"],
-): "read-only" | "danger-full-access" | undefined {
-  if (accessMode === "full_access") {
-    return "danger-full-access";
-  }
-  if (accessMode === "default") {
-    return "read-only";
-  }
-  return undefined;
-}
-
-function mapReasoningEffort(
-  effort: GenerateOptions["effort"],
-): "low" | "medium" | "high" | "xhigh" | undefined {
-  switch (effort) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-      return "high";
-    case "max":
-      return "xhigh";
-    default:
-      return undefined;
-  }
-}
-
-function mapReasoningSummary(
-  options: GenerateOptions,
-): "none" | "concise" | undefined {
-  if (options.thinkingConfig?.display === "omitted") {
-    return "none";
-  }
-  if (options.effort || options.thinkingConfig?.enabled) {
-    return "concise";
-  }
-  return undefined;
-}
-
-function normalizeDynamicToolCall(params: unknown): ToolCall | null {
-  const record = asRecord(params);
-  const id = asString(record?.callId);
-  const name = decodeDynamicToolName(asString(record?.tool));
-  if (!id || !name) {
-    return null;
-  }
-  return {
-    id,
-    name,
-    arguments: asRecord(record?.arguments) ?? {},
-  };
-}
-
-function* mapCompletedItemToChunks(
-  params: unknown,
-  streamContext: CodexTurnStreamContext,
-): Iterable<StreamChunk> {
-  const record = asRecord(params);
-  const item = asRecord(record?.item);
-  const itemId = asString(item?.id);
-  const itemType = asString(item?.type);
-  if (!itemType) {
-    return;
-  }
-
-  if (itemType === "agentMessage") {
-    const text = asString(item?.text);
-    if (text) {
-      streamContext.noteCompletedAgentMessage(text);
-    }
-    return;
-  }
-
-  if (itemId && streamContext.sawDelta(itemId)) {
-    return;
-  }
-
-  if (itemType === "reasoning") {
-    for (const entry of asArray(item?.summary)) {
-      const text = asString(entry);
-      if (text) {
-        yield { type: "reasoning_delta", text };
-      }
-    }
-    for (const entry of asArray(item?.content)) {
-      const text = asString(entry);
-      if (text) {
-        yield { type: "reasoning_delta", text };
-      }
-    }
-    return;
-  }
-
-  if (itemType === "commandExecution") {
-    const aggregatedOutput = asString(item?.aggregatedOutput);
-    if (aggregatedOutput) {
-      yield { type: "reasoning_delta", text: aggregatedOutput };
-    }
-  }
-}
-
-function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
-  const record = asRecord(value);
-  const last = asRecord(record?.last);
-  if (!last) {
-    return undefined;
-  }
-  const promptTokens = asNumber(last.inputTokens);
-  const completionTokens = asNumber(last.outputTokens);
-  const cachedInputTokens = asNumber(last.cachedInputTokens);
-  const reasoningOutputTokens = asNumber(last.reasoningOutputTokens);
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens: asNumber(last.totalTokens) || (promptTokens + completionTokens),
-    tokenAccuracy: "reported",
-    usageSource: "ledger",
-    usageDetails: {
-      inputNoCacheTokens: Math.max(0, promptTokens - cachedInputTokens),
-      inputCacheReadTokens: cachedInputTokens,
-      outputTextTokens: completionTokens,
-      outputReasoningTokens: reasoningOutputTokens,
-      raw: record ?? undefined,
-    },
-  };
-}
-
-function isVisibleAssistantTextChunk(
-  chunk: {
-    transcriptVisibility?: "visible" | "activity_only" | "summary";
-    streamKind?: "assistant_output" | "provider_client";
-  },
-): boolean {
-  const transcriptVisibility = chunk.transcriptVisibility ?? "visible";
-  const streamKind = chunk.streamKind ?? "assistant_output";
-  return transcriptVisibility === "visible" && streamKind === "assistant_output";
-}
-
 function normalizeAuthAccount(account: unknown): CodexAppServerAuthAccount | undefined {
   const record = asRecord(account);
   if (!record) {
@@ -1216,31 +861,6 @@ function normalizeAuthAccount(account: unknown): CodexAppServerAuthAccount | und
     };
   }
   return undefined;
-}
-
-export function encodeDynamicToolName(name: string): string {
-  if (DYNAMIC_TOOL_NAME_PATTERN.test(name)) {
-    return name;
-  }
-  return `${DYNAMIC_TOOL_NAME_PREFIX}${Buffer.from(name, "utf8").toString("hex")}`;
-}
-
-export function decodeDynamicToolName(name: string | undefined): string | undefined {
-  if (!name) {
-    return undefined;
-  }
-  if (!name.startsWith(DYNAMIC_TOOL_NAME_PREFIX)) {
-    return name;
-  }
-  const encoded = name.slice(DYNAMIC_TOOL_NAME_PREFIX.length);
-  if (!encoded || encoded.length % 2 !== 0 || /[^0-9a-f]/i.test(encoded)) {
-    return name;
-  }
-  try {
-    return Buffer.from(encoded, "hex").toString("utf8");
-  } catch {
-    return name;
-  }
 }
 
 function normalizeDiscoveredModel(
@@ -1330,12 +950,6 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
-}
-
-function asNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : 0;
 }
 
 function asRecord(value: unknown): JsonRecord | null {

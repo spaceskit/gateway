@@ -34,28 +34,87 @@ import type {
 } from "../agents/agent-runtime.js";
 import type {
   ModelMessage,
-  TurnAccessMode,
-  TurnExecutionMode,
-  TurnReasoningEffort,
   ProviderSessionHandle,
 } from "../agents/model-provider.js";
-import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
 import type {
   ConversationTopology,
   SpaceConfig,
   SpaceState,
   SpaceAgentAssignment,
-  TurnModelConfig,
   TurnModelStrategy,
 } from "./types.js";
 import type { CheckpointManager } from "./checkpoint.js";
 import type { DeadLetterQueue } from "./dead-letter.js";
 import {
   renderTemplate,
-  resolveMasterModePromptTemplates as resolvePromptTemplates,
   type MasterModePromptTemplates,
 } from "./master-mode-prompts.js";
 import type { ReflectionService } from "../reflection/reflection-service.js";
+import type { OrchestratorSummaryTrace } from "./space-summary-trace.js";
+import {
+  normalizeAgentIdentifier,
+  normalizeExecutionIdentity,
+  normalizeOptionalString,
+  type TurnExecutionIdentity,
+} from "./space-manager-normalizers.js";
+import {
+  buildFallbackGuestInstruction,
+  buildFallbackPlannerInstructions,
+  buildRevisionFeedback,
+  buildRingPeerReviewAssignments,
+  checkMasterModeConvergence,
+  formatGuestList,
+  formatGuestReports,
+  formatPeerReviewResults,
+  parsePeerReviewResult,
+  parsePlannerInstructions,
+  parseSlashPlannerDirectives,
+  resolveMasterFlowAssignments,
+  resolveMasterModePromptTemplates,
+  resolvePeerReviewEnabled,
+  resolvePeerReviewTopology,
+  shouldUseMasterMode,
+  type GuestReport,
+  type MasterFlowAssignments,
+  type PeerReviewResult,
+  type PlannerInstructions,
+  type PlannerPhaseResult,
+} from "./space-manager-master-mode-helpers.js";
+import {
+  resolveTurnScopedSpace,
+  selectAgents,
+} from "./space-manager-turn-routing.js";
+import {
+  appendRedactedOrchestrationJournalEntry,
+  type OrchestrationJournalEntry,
+} from "./space-manager-orchestration-journal.js";
+import { buildCompletedSaveTurnInput } from "./space-manager-turn-records.js";
+import {
+  createSpaceManagerSummaryTrace,
+  emitSpaceManagerSummaryEvent,
+  recordSpaceManagerSummaryEvent,
+} from "./space-manager-summary-events.js";
+import {
+  buildLaunchSnapshots as buildAgentLaunchSnapshots,
+  ensureActiveSpace,
+  getActiveSpaceState as getAgentSessionStateSnapshot,
+  getOrCreateAgentSession as getOrCreateAgentSessionState,
+  getRuntimeForAgent,
+  restoreActiveSpaceFromCheckpoint,
+  resolveCommittedSessionFields as resolveAgentCommittedSessionFields,
+  updateAgentSession as updateAgentSessionState,
+  type ActiveSpace,
+  type AgentSessionRuntimeMetadata,
+  type AgentSessionState,
+  type RestoreAgentSessionCheckpointInput,
+  type SaveAgentSessionRuntimeMetadataInput,
+} from "./space-manager-agent-sessions.js";
+
+export type { TurnExecutionIdentity } from "./space-manager-normalizers.js";
+export type {
+  AgentSessionRuntimeMetadata,
+  SaveAgentSessionRuntimeMetadataInput,
+} from "./space-manager-agent-sessions.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,173 +205,6 @@ export interface SaveTurnInput {
   /** Original totalTokens from the provider (may differ from promptTokens + completionTokens). */
   totalTokens: number;
 }
-
-export interface AgentSessionRuntimeMetadata {
-  displayTitle?: string;
-  providerSessionHandle?: ProviderSessionHandle;
-}
-
-export interface SaveAgentSessionRuntimeMetadataInput {
-  spaceId: string;
-  agentId: string;
-  displayTitle?: string;
-  providerSessionHandle?: ProviderSessionHandle;
-}
-
-export interface TurnExecutionIdentity {
-  principalId?: string;
-  deviceId?: string;
-  executionOrigin?: CapabilityExecutionOrigin;
-  accessMode?: TurnAccessMode;
-  mode?: TurnExecutionMode;
-  effort?: TurnReasoningEffort;
-  targetAgentIds?: string[];
-  replyToTurnId?: string;
-  conversationTopology?: ConversationTopology;
-}
-
-interface ActiveSpace {
-  config: SpaceConfig;
-  /** When true, config will be reloaded on the next turn without tearing down sessions. */
-  configStale: boolean;
-  /** Stable orchestrator session key for the lifetime of this active space. */
-  orchestratorSessionId: string;
-  /** Round-robin index for round_robin strategy. */
-  roundRobinIndex: number;
-  /** Cached runtimes (space+agent) so session continuity survives across turns. */
-  runtimes: Map<string, AgentRuntime>;
-  /** Per-agent conversation sessions (history and continuity metadata). */
-  agentSessions: Map<string, AgentSessionState>;
-  /** Active runtimes currently executing a turn (turnId → runtime). */
-  activeTurnRuntimes: Map<string, AgentRuntime>;
-  /** Paused runtimes awaiting feedback (turnId → runtime). */
-  pausedRuntimes: Map<string, AgentRuntime>;
-  /** Feedback timeout timers (turnId → timer). */
-  feedbackTimers: Map<string, ReturnType<typeof setTimeout>>;
-  /** Agent IDs for paused runtimes (turnId → agentId). */
-  pausedRuntimeAgentIds: Map<string, string>;
-  /** Stored feedback checkpoints for paused turns (turnId → request). */
-  pausedFeedbackRequests: Map<string, RuntimeFeedbackCheckpoint>;
-}
-
-interface AgentSessionState {
-  sessionId: string;
-  agentId: string;
-  messages: ModelMessage[];
-  displayTitle?: string;
-  providerSessionHandle?: ProviderSessionHandle;
-  lastTurnId?: string;
-  lastActivityAt: Date;
-}
-
-const MAX_AGENT_SESSION_MESSAGES = 200;
-
-interface SummaryParticipantTrace {
-  agentId: string;
-  turnOrder: number;
-  isPrimary: boolean;
-  status: "pending" | "completed" | "failed";
-  promptTokens: number;
-  completionTokens: number;
-  finalMessage?: string;
-  error?: string;
-}
-
-interface SummaryHighlight {
-  agentId: string;
-  eventType: "text_delta" | "turn_completed" | "error" | "feedback_requested";
-  text: string;
-  timestamp: string;
-}
-
-interface OrchestratorSummaryTrace {
-  summaryId: string;
-  spaceId: string;
-  turnId: string;
-  turnModel: TurnModelStrategy;
-  input: string;
-  createdAt: Date;
-  participants: Map<string, SummaryParticipantTrace>;
-  highlights: SummaryHighlight[];
-  peerReview: {
-    enabled: boolean;
-    topology: "ring";
-    assignments: number;
-    completed: number;
-    failed: number;
-    status: "not_run" | "skipped" | "completed" | "degraded";
-    failureReason?: string;
-  };
-}
-
-interface MasterModeTurnModelConfig {
-  masterModeEnabled?: boolean;
-  masterPlannerPromptTemplate?: string;
-  guestAgentPromptTemplate?: string;
-  peerReviewEnabled?: boolean;
-  peerReviewTopology?: "ring";
-  peerReviewPromptTemplate?: string;
-  masterSynthesisPromptTemplate?: string;
-}
-
-interface MasterFlowAssignments {
-  master: SpaceAgentAssignment;
-  guests: SpaceAgentAssignment[];
-}
-
-interface PlannerInstructions {
-  globalInstruction: string;
-  guestInstructions: Map<string, string>;
-}
-
-interface PlannerJsonPayload {
-  globalInstruction?: unknown;
-  guestInstructions?: unknown;
-}
-
-interface PlannerPhaseResult {
-  instructions: PlannerInstructions;
-  source: "slash" | "planner" | "fallback";
-  rawOutput?: string;
-  fallbackReason?: string;
-}
-
-interface GuestReport {
-  agentId: string;
-  status: "completed" | "failed";
-  report: string;
-}
-
-interface PeerReviewAssignment {
-  reviewerAgentId: string;
-  targetAgentId: string;
-  targetReport: string;
-}
-
-interface PeerReviewResult {
-  reviewerAgentId: string;
-  targetAgentId: string;
-  status: "completed" | "failed";
-  verdict: "approve" | "needs_revision" | "conflict" | "error";
-  issues: string[];
-  confidence?: number;
-  notes?: string;
-  raw: string;
-}
-
-const SUMMARY_ELIGIBLE_TURN_MODELS = new Set<TurnModelStrategy>([
-  "sequential_all",
-  "primary_only",
-  "first_success",
-  "parallel_race",
-  "debate_synthesis",
-  "adaptive_auto",
-]);
-
-const MASTER_MODE_SUPPORTED_TURN_MODELS = new Set<TurnModelStrategy>([
-  "sequential_all",
-  "primary_only",
-]);
 
 // ---------------------------------------------------------------------------
 // SpaceManager
@@ -437,18 +329,18 @@ export class SpaceManager {
     executionIdentity?: TurnExecutionIdentity,
   ): Promise<void> {
     const space = await this.ensureActive(spaceId);
-    const turnSpace = this.resolveTurnScopedSpace(space, targetAgentId, executionIdentity);
+    const turnSpace = resolveTurnScopedSpace(space, targetAgentId, executionIdentity);
     const userMessage: ModelMessage = { role: "user", content: input };
 
     const strategy = turnSpace.config.turnModel;
     const targetingSingleAgent = normalizeAgentIdentifier(targetAgentId) !== undefined
       || turnSpace.config.agents.length === 1;
-    const masterFlow = !targetingSingleAgent && this.shouldUseMasterMode(turnSpace)
-      ? this.resolveMasterFlowAssignments(turnSpace)
+    const masterFlow = !targetingSingleAgent && shouldUseMasterMode(turnSpace, this.options.masterModeEnabled)
+      ? resolveMasterFlowAssignments(turnSpace)
       : null;
     const agents = masterFlow
       ? [masterFlow.master, ...masterFlow.guests]
-      : this.selectAgents(turnSpace, targetAgentId);
+      : selectAgents(turnSpace, targetAgentId);
 
     if (agents.length === 0) {
       throw new Error(
@@ -733,18 +625,13 @@ export class SpaceManager {
           spaceId: space.config.id,
           providerSessionHandle: result.metadata?.providerSessionHandle,
         });
-        this.options.saveTurn({
-          turnId: this.buildPersistedTurnId(turnId, assignment.agentId),
-          userTurnId: turnId,
+        this.options.saveTurn(buildCompletedSaveTurnInput({
+          turnId,
           spaceId: space.config.id,
           agentId: assignment.agentId,
-          input: userMessage.content,
-          output: result.finalMessage.content,
-          status: "completed",
-          promptTokens: result.usage.promptTokens,
-          completionTokens: result.usage.completionTokens,
-          totalTokens: result.usage.totalTokens,
-        }).catch((saveErr) => {
+          userMessage,
+          result,
+        })).catch((saveErr) => {
           this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
         });
 
@@ -765,7 +652,12 @@ export class SpaceManager {
     executionIdentity?: TurnExecutionIdentity,
     summaryTrace?: OrchestratorSummaryTrace | null,
   ): Promise<void> {
-    const promptTemplates = this.resolveMasterModePromptTemplates(space);
+    const promptTemplates = resolveMasterModePromptTemplates(space, {
+      masterPlannerPromptTemplate: this.options.masterPlannerPromptTemplate,
+      guestAgentPromptTemplate: this.options.guestAgentPromptTemplate,
+      peerReviewPromptTemplate: this.options.peerReviewPromptTemplate,
+      masterSynthesisPromptTemplate: this.options.masterSynthesisPromptTemplate,
+    });
     await this.appendOrchestrationJournalEntry({
       spaceId: space.config.id,
       turnId,
@@ -832,13 +724,13 @@ export class SpaceManager {
         const runtime = await this.getRuntime(space, guest.agentId);
         const session = await this.getOrCreateAgentSession(space, guest.agentId);
         const delegatedInstruction = plannerInstructions.guestInstructions.get(guest.agentId)
-          ?? this.buildFallbackGuestInstruction(guest.agentId);
+          ?? buildFallbackGuestInstruction(guest.agentId);
         const guestPrompt = renderTemplate(
           promptTemplates.guest,
           {
             user_input: userMessage.content,
             guest_agent_id: guest.agentId,
-            guest_list: this.formatGuestList(assignments.guests),
+            guest_list: formatGuestList(assignments.guests),
             guest_reports: "",
             global_instruction: plannerInstructions.globalInstruction,
             guest_instruction: delegatedInstruction,
@@ -937,18 +829,13 @@ export class SpaceManager {
             spaceId: space.config.id,
             providerSessionHandle: result.metadata?.providerSessionHandle,
           });
-          this.options.saveTurn({
-            turnId: this.buildPersistedTurnId(turnId, guest.agentId),
-            userTurnId: turnId,
+          this.options.saveTurn(buildCompletedSaveTurnInput({
+            turnId,
             spaceId: space.config.id,
             agentId: guest.agentId,
-            input: userMessage.content,
-            output: result.finalMessage.content,
-            status: "completed",
-            promptTokens: result.usage.promptTokens,
-            completionTokens: result.usage.completionTokens,
-            totalTokens: result.usage.totalTokens,
-          }).catch((saveErr) => {
+            userMessage,
+            result,
+          })).catch((saveErr) => {
             this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
           });
           guestReports.push({
@@ -1003,7 +890,7 @@ export class SpaceManager {
         executionIdentity,
       );
       // Check convergence
-      const converged = this.checkMasterModeConvergence(peerReviewResults.results, convergenceThreshold);
+      const converged = checkMasterModeConvergence(peerReviewResults.results, convergenceThreshold);
       const budgetExhausted = tokenBudget > 0 && totalTokensUsed >= tokenBudget * 0.8;
 
       await this.appendOrchestrationJournalEntry({
@@ -1025,11 +912,11 @@ export class SpaceManager {
       }
 
       // Build revision feedback for next iteration from peer review issues
-      revisionFeedback = this.buildRevisionFeedback(peerReviewResults.results);
+      revisionFeedback = buildRevisionFeedback(peerReviewResults.results);
     }
 
-    const peerReviewEnabled = this.resolvePeerReviewEnabled(space);
-    const peerReviewTopology = this.resolvePeerReviewTopology(space);
+    const peerReviewEnabled = resolvePeerReviewEnabled(space);
+    const peerReviewTopology = resolvePeerReviewTopology(space);
     if (summaryTrace) {
       summaryTrace.peerReview.enabled = peerReviewEnabled;
       summaryTrace.peerReview.topology = peerReviewTopology;
@@ -1055,9 +942,9 @@ export class SpaceManager {
       {
         user_input: userMessage.content,
         guest_agent_id: assignments.master.agentId,
-        guest_list: this.formatGuestList(assignments.guests),
-        guest_reports: this.formatGuestReports(guestReports),
-        peer_review_results: this.formatPeerReviewResults(peerReviewResults.results),
+        guest_list: formatGuestList(assignments.guests),
+        guest_reports: formatGuestReports(guestReports),
+        peer_review_results: formatPeerReviewResults(peerReviewResults.results),
         global_instruction: plannerInstructions.globalInstruction,
         guest_instruction: "",
       },
@@ -1069,8 +956,8 @@ export class SpaceManager {
       actorId: assignments.master.agentId,
       payload: {
         globalInstruction: plannerInstructions.globalInstruction,
-        guestReports: this.formatGuestReports(guestReports),
-        peerReviewResults: this.formatPeerReviewResults(peerReviewResults.results),
+        guestReports: formatGuestReports(guestReports),
+        peerReviewResults: formatPeerReviewResults(peerReviewResults.results),
       },
     });
     const synthesisContext: TurnContext = {
@@ -1130,18 +1017,13 @@ export class SpaceManager {
       spaceId: space.config.id,
       providerSessionHandle: synthesisResult.metadata?.providerSessionHandle,
     });
-    this.options.saveTurn({
-      turnId: this.buildPersistedTurnId(turnId, assignments.master.agentId),
-      userTurnId: turnId,
+    this.options.saveTurn(buildCompletedSaveTurnInput({
+      turnId,
       spaceId: space.config.id,
       agentId: assignments.master.agentId,
-      input: userMessage.content,
-      output: synthesisResult.finalMessage.content,
-      status: "completed",
-      promptTokens: synthesisResult.usage.promptTokens,
-      completionTokens: synthesisResult.usage.completionTokens,
-      totalTokens: synthesisResult.usage.totalTokens,
-    }).catch((saveErr) => {
+      userMessage,
+      result: synthesisResult,
+    })).catch((saveErr) => {
       this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
     });
     await this.appendOrchestrationJournalEntry({
@@ -1163,8 +1045,8 @@ export class SpaceManager {
     promptTemplates: MasterModePromptTemplates,
     executionIdentity?: TurnExecutionIdentity,
   ): Promise<PlannerPhaseResult> {
-    const fallback = this.buildFallbackPlannerInstructions(assignments.guests, userMessage.content);
-    const slashInstructions = this.parseSlashPlannerDirectives(userMessage.content, assignments.guests);
+    const fallback = buildFallbackPlannerInstructions(assignments.guests, userMessage.content);
+    const slashInstructions = parseSlashPlannerDirectives(userMessage.content, assignments.guests);
     if (slashInstructions) {
       return {
         instructions: slashInstructions,
@@ -1179,7 +1061,7 @@ export class SpaceManager {
       {
         user_input: userMessage.content,
         guest_agent_id: assignments.master.agentId,
-        guest_list: this.formatGuestList(assignments.guests),
+        guest_list: formatGuestList(assignments.guests),
         guest_reports: "",
         global_instruction: "",
         guest_instruction: "",
@@ -1226,7 +1108,7 @@ export class SpaceManager {
         fallbackReason: "planner_missing_completion",
       };
     }
-    const parsed = this.parsePlannerInstructions(plannerResult.finalMessage.content, assignments.guests);
+    const parsed = parsePlannerInstructions(plannerResult.finalMessage.content, assignments.guests);
     if (parsed) {
       return {
         instructions: parsed,
@@ -1259,12 +1141,12 @@ export class SpaceManager {
     status: "not_run" | "skipped" | "completed" | "degraded";
     failureReason?: string;
   }> {
-    const peerReviewEnabled = this.resolvePeerReviewEnabled(space);
+    const peerReviewEnabled = resolvePeerReviewEnabled(space);
     if (!peerReviewEnabled) {
       return { results: [], assignments: 0, completed: 0, failed: 0, status: "skipped" };
     }
 
-    const peerReviewAssignments = this.buildRingPeerReviewAssignments(assignments.guests, guestReports);
+    const peerReviewAssignments = buildRingPeerReviewAssignments(assignments.guests, guestReports);
     if (peerReviewAssignments.length === 0) {
       return { results: [], assignments: 0, completed: 0, failed: 0, status: "skipped" };
     }
@@ -1294,8 +1176,8 @@ export class SpaceManager {
           reviewer_agent_id: assignment.reviewerAgentId,
           target_agent_id: assignment.targetAgentId,
           target_report: assignment.targetReport,
-          guest_list: this.formatGuestList(assignments.guests),
-          guest_reports: this.formatGuestReports(guestReports),
+          guest_list: formatGuestList(assignments.guests),
+          guest_reports: formatGuestReports(guestReports),
           guest_agent_id: assignment.reviewerAgentId,
           guest_instruction: "",
           peer_review_results: "",
@@ -1372,7 +1254,7 @@ export class SpaceManager {
       }
 
       this.updateAgentSession(session, turnId, userMessage, reviewResult.finalMessage);
-      const parsed = this.parsePeerReviewResult(
+      const parsed = parsePeerReviewResult(
         assignment.reviewerAgentId,
         assignment.targetAgentId,
         reviewResult.finalMessage.content,
@@ -1410,370 +1292,12 @@ export class SpaceManager {
     };
   }
 
-  private parsePlannerInstructions(
-    rawPlannerOutput: string,
-    guests: SpaceAgentAssignment[],
-  ): PlannerInstructions | null {
-    const parsed = this.parsePlannerJsonPayload(rawPlannerOutput);
-    if (!parsed) return null;
-
-    const globalInstruction = typeof parsed.globalInstruction === "string"
-      ? parsed.globalInstruction.trim()
-      : typeof (parsed as Record<string, unknown>).global_instruction === "string"
-        ? ((parsed as Record<string, unknown>).global_instruction as string).trim()
-      : "";
-    if (!globalInstruction) return null;
-    const rawGuestInstructions = parsed.guestInstructions
-      ?? (parsed as Record<string, unknown>).guest_instructions;
-    const guestInstructionRecord = (
-      rawGuestInstructions && typeof rawGuestInstructions === "object"
-        ? rawGuestInstructions as Record<string, unknown>
-        : {}
-    );
-    const guestInstructions = new Map<string, string>();
-    const orderedInstructionValues = Object.values(guestInstructionRecord)
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0);
-
-    let orderedValueIndex = 0;
-    for (const guest of guests) {
-      const raw = guestInstructionRecord[guest.agentId];
-      let instruction = typeof raw === "string" ? raw.trim() : "";
-      if (!instruction && guests.length === 1 && orderedInstructionValues.length > 0) {
-        instruction = orderedInstructionValues[0] ?? "";
-      } else if (!instruction && orderedInstructionValues.length === guests.length) {
-        instruction = orderedInstructionValues[orderedValueIndex] ?? "";
-        orderedValueIndex += 1;
-      }
-      if (!instruction) {
-        instruction = globalInstruction;
-      }
-      guestInstructions.set(guest.agentId, instruction);
-    }
-
-    return { globalInstruction, guestInstructions };
-  }
-
-  private parsePlannerJsonPayload(rawPlannerOutput: string): PlannerJsonPayload | null {
-    const normalized = rawPlannerOutput.trim();
-    if (!normalized) return null;
-
-    const parseRecord = (candidate: string): PlannerJsonPayload | null => {
-      try {
-        const parsed = JSON.parse(candidate);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return null;
-        }
-        return parsed as PlannerJsonPayload;
-      } catch {
-        return null;
-      }
-    };
-
-    const direct = parseRecord(normalized);
-    if (direct) return direct;
-
-    const fencedMatch = normalized.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fencedMatch?.[1]) {
-      const fencedParsed = parseRecord(fencedMatch[1].trim());
-      if (fencedParsed) return fencedParsed;
-    }
-
-    const firstBrace = normalized.indexOf("{");
-    const lastBrace = normalized.lastIndexOf("}");
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-      return parseRecord(normalized.slice(firstBrace, lastBrace + 1).trim());
-    }
-
-    return null;
-  }
-
-  private buildFallbackPlannerInstructions(
-    guests: SpaceAgentAssignment[],
-    userInput?: string,
-  ): PlannerInstructions {
-    const guestInstructions = new Map<string, string>();
-    for (const guest of guests) {
-      guestInstructions.set(
-        guest.agentId,
-        this.buildFallbackGuestInstruction(guest.agentId, userInput),
-      );
-    }
-    const normalizedUserInput = userInput?.trim();
-    return {
-      globalInstruction: normalizedUserInput && normalizedUserInput.length > 0
-        ? `Coordinate guest execution to resolve the user request: "${normalizedUserInput}".`
-        : "Coordinate guest execution and prepare for final synthesis.",
-      guestInstructions,
-    };
-  }
-
-  /**
-   * Check if peer review results indicate convergence.
-   * Converges when all reviews approve with average confidence >= threshold.
-   */
-  private checkMasterModeConvergence(
-    results: Array<{ verdict?: string; confidence?: number }>,
-    threshold: number,
-  ): boolean {
-    if (results.length === 0) return true; // No reviews = trivially converged
-    const validResults = results.filter((r) => r.verdict);
-    if (validResults.length === 0) return true;
-    const allApproved = validResults.every((r) => r.verdict === "approve");
-    if (!allApproved) return false;
-    const avgConfidence = validResults.reduce((sum, r) => sum + (r.confidence ?? 0), 0) / validResults.length;
-    return avgConfidence >= threshold;
-  }
-
-  /**
-   * Build revision feedback string from peer review issues for the next convergence iteration.
-   */
-  private buildRevisionFeedback(
-    results: Array<{ verdict?: string; issues?: string[]; notes?: string }>,
-  ): string {
-    const feedbackParts: string[] = [];
-    for (const result of results) {
-      if (result.verdict === "approve") continue;
-      if (result.issues?.length) {
-        feedbackParts.push(`Issues: ${result.issues.join("; ")}`);
-      }
-      if (result.notes?.trim()) {
-        feedbackParts.push(`Notes: ${result.notes.trim()}`);
-      }
-    }
-    return feedbackParts.length > 0
-      ? feedbackParts.join("\n")
-      : "Peer review flagged issues but provided no specific feedback.";
-  }
-
-  private buildFallbackGuestInstruction(guestAgentId: string, userInput?: string): string {
-    const normalizedUserInput = userInput?.trim();
-    if (normalizedUserInput && normalizedUserInput.length > 0) {
-      return [
-        `Guest ${guestAgentId}: execute the user's request directly ("${normalizedUserInput}").`,
-        "Use available tools when they help gather concrete facts.",
-        "Return concise actionable findings plus blockers for synthesis.",
-      ].join(" ");
-    }
-    return [
-      `Guest ${guestAgentId}: execute the user's request directly.`,
-      "Use available tools when they help gather concrete facts.",
-      "Return concise actionable findings plus blockers for synthesis.",
-    ].join(" ");
-  }
-
-  private parseSlashPlannerDirectives(
-    userInput: string,
-    guests: SpaceAgentAssignment[],
-  ): PlannerInstructions | null {
-    const lines = userInput.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-    const hasDirective = lines.some((line) => line.startsWith("/global") || line.startsWith("/guest"));
-    if (!hasDirective) return null;
-
-    let globalInstruction = "";
-    const guestInstructions = new Map<string, string>();
-    for (const line of lines) {
-      if (line.startsWith("/global")) {
-        const parsed = line.replace(/^\/global\s*:?\s*/i, "").trim();
-        if (parsed.length > 0) {
-          globalInstruction = parsed;
-        }
-        continue;
-      }
-      if (line.startsWith("/guest")) {
-        const match = line.match(/^\/guest\s+([^\s:]+)\s*:?\s*(.+)$/i);
-        if (!match) continue;
-        const guestAgentId = match[1]?.trim();
-        const instruction = match[2]?.trim();
-        if (!guestAgentId || !instruction) continue;
-        guestInstructions.set(guestAgentId, instruction);
-      }
-    }
-
-    const normalizedGlobal = globalInstruction.length > 0
-      ? globalInstruction
-      : "Coordinate concise guest reports and prepare for final synthesis.";
-    const normalizedGuestInstructions = new Map<string, string>();
-    for (const guest of guests) {
-      normalizedGuestInstructions.set(
-        guest.agentId,
-        guestInstructions.get(guest.agentId) ?? this.buildFallbackGuestInstruction(guest.agentId, userInput),
-      );
-    }
-
-    return {
-      globalInstruction: normalizedGlobal,
-      guestInstructions: normalizedGuestInstructions,
-    };
-  }
-
-  private parsePeerReviewResult(
-    reviewerAgentId: string,
-    targetAgentId: string,
-    rawOutput: string,
-  ): PeerReviewResult | null {
-    const parsed = this.parsePlannerJsonPayload(rawOutput);
-    if (!parsed) return null;
-
-    const verdictRaw = typeof (parsed as Record<string, unknown>).verdict === "string"
-      ? ((parsed as Record<string, unknown>).verdict as string).trim().toLowerCase()
-      : "";
-    const verdict = verdictRaw === "approve" || verdictRaw === "needs_revision" || verdictRaw === "conflict"
-      ? verdictRaw
-      : null;
-    if (!verdict) return null;
-
-    const issuesRaw = (parsed as Record<string, unknown>).issues;
-    const issues = Array.isArray(issuesRaw)
-      ? issuesRaw.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : [];
-    const notes = typeof (parsed as Record<string, unknown>).notes === "string"
-      ? ((parsed as Record<string, unknown>).notes as string).trim()
-      : undefined;
-    const confidenceRaw = (parsed as Record<string, unknown>).confidence;
-    const confidence = typeof confidenceRaw === "number" && Number.isFinite(confidenceRaw)
-      ? Math.max(0, Math.min(1, confidenceRaw))
-      : undefined;
-
-    return {
-      reviewerAgentId,
-      targetAgentId,
-      status: "completed",
-      verdict,
-      issues,
-      confidence,
-      notes: notes && notes.length > 0 ? notes : undefined,
-      raw: rawOutput,
-    };
-  }
-
-  private buildRingPeerReviewAssignments(
-    guests: SpaceAgentAssignment[],
-    guestReports: GuestReport[],
-  ): PeerReviewAssignment[] {
-    if (guests.length < 2) return [];
-    const reportByAgentId = new Map(guestReports.map((report) => [report.agentId, report]));
-    const sortedGuests = this.sortAssignments(guests);
-    const assignments: PeerReviewAssignment[] = [];
-    for (let idx = 0; idx < sortedGuests.length; idx += 1) {
-      const reviewer = sortedGuests[idx]!;
-      const target = sortedGuests[(idx + 1) % sortedGuests.length]!;
-      const targetReport = reportByAgentId.get(target.agentId)?.report
-        ?? "Target agent did not provide a report.";
-      assignments.push({
-        reviewerAgentId: reviewer.agentId,
-        targetAgentId: target.agentId,
-        targetReport,
-      });
-    }
-    return assignments;
-  }
-
-  private formatPeerReviewResults(results: PeerReviewResult[]): string {
-    if (results.length === 0) return "(no peer-review results)";
-    return results.map((result) => {
-      const issues = result.issues.length > 0
-        ? result.issues.join("; ")
-        : "none";
-      return [
-        `- reviewer=${result.reviewerAgentId}`,
-        `target=${result.targetAgentId}`,
-        `status=${result.status}`,
-        `verdict=${result.verdict}`,
-        `issues=${issues}`,
-      ].join(" ");
-    }).join("\n");
-  }
-
-  private resolveMasterModePromptTemplates(space: ActiveSpace): MasterModePromptTemplates {
-    return resolvePromptTemplates(
-      space.config.turnModelConfig as TurnModelConfig | undefined,
-      {
-        masterPlannerPromptTemplate: this.options.masterPlannerPromptTemplate,
-        guestAgentPromptTemplate: this.options.guestAgentPromptTemplate,
-        peerReviewPromptTemplate: this.options.peerReviewPromptTemplate,
-        masterSynthesisPromptTemplate: this.options.masterSynthesisPromptTemplate,
-      },
-    );
-  }
-
-  private resolvePeerReviewEnabled(space: ActiveSpace): boolean {
-    const config = this.getMasterModeTurnModelConfig(space);
-    if (config?.peerReviewEnabled === false) {
-      return false;
-    }
-    return true;
-  }
-
-  private resolvePeerReviewTopology(space: ActiveSpace): "ring" {
-    const config = this.getMasterModeTurnModelConfig(space);
-    if (config?.peerReviewTopology === "ring") {
-      return "ring";
-    }
-    return "ring";
-  }
-
-  private async appendOrchestrationJournalEntry(entry: {
-    spaceId: string;
-    turnId: string;
-    eventType: string;
-    actorId: string;
-    lineageId?: string;
-    hopCount?: number;
-    payload: Record<string, unknown>;
-  }): Promise<void> {
-    const append = this.options.appendOrchestrationJournalEntry;
-    if (!append) return;
-    try {
-      await append({
-        ...entry,
-        payload: this.redactOrchestrationPayload(entry.payload),
-      });
-      this.recordOrchestrationMetric("orchestration_journal_write_total", 1, {
-        status: "ok",
-        spaceId: entry.spaceId,
-      });
-    } catch {
-      this.recordOrchestrationMetric("orchestration_journal_write_total", 1, {
-        status: "failed",
-        spaceId: entry.spaceId,
-      });
-    }
-  }
-
-  private redactOrchestrationPayload(payload: Record<string, unknown>): Record<string, unknown> {
-    return this.redactOrchestrationValue(payload) as Record<string, unknown>;
-  }
-
-  private redactOrchestrationValue(value: unknown, keyPath: string[] = []): unknown {
-    if (Array.isArray(value)) {
-      return value.map((entry) => this.redactOrchestrationValue(entry, keyPath));
-    }
-    if (value && typeof value === "object") {
-      const redacted: Record<string, unknown> = {};
-      for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-        const nextPath = [...keyPath, key];
-        if (this.isSensitiveOrchestrationKey(key)) {
-          redacted[key] = "[REDACTED]";
-        } else {
-          redacted[key] = this.redactOrchestrationValue(nested, nextPath);
-        }
-      }
-      return redacted;
-    }
-    if (typeof value === "string" && value.length > 2_000) {
-      return `${value.slice(0, 2_000)}...`;
-    }
-    return value;
-  }
-
-  private isSensitiveOrchestrationKey(key: string): boolean {
-    const normalized = key.trim().toLowerCase().replace(/[_-]/g, "");
-    return normalized === "messages"
-      || normalized.includes("prompt")
-      || normalized.includes("instruction")
-      || normalized.includes("tooltrace");
+  private async appendOrchestrationJournalEntry(entry: OrchestrationJournalEntry): Promise<void> {
+    await appendRedactedOrchestrationJournalEntry({
+      entry,
+      append: this.options.appendOrchestrationJournalEntry,
+      recordMetric: (name, value, tags) => this.recordOrchestrationMetric(name, value, tags),
+    });
   }
 
   private recordOrchestrationMetric(
@@ -1782,149 +1306,6 @@ export class SpaceManager {
     tags?: Record<string, string>,
   ): void {
     this.options.recordOrchestrationMetric?.({ name, value, tags });
-  }
-
-  private resolveTurnScopedSpace(
-    space: ActiveSpace,
-    targetAgentId?: string,
-    executionIdentity?: TurnExecutionIdentity,
-  ): ActiveSpace {
-    const conversationTopology = normalizeConversationTopology(executionIdentity?.conversationTopology);
-    const hasSingleTarget = normalizeAgentIdentifier(targetAgentId) !== undefined;
-    const targetAgentIds = hasSingleTarget
-      ? []
-      : normalizeAgentIdentifiers(executionIdentity?.targetAgentIds);
-    const hasAgentSubset = targetAgentIds.length > 0;
-
-    if (!conversationTopology && !hasAgentSubset) {
-      return space;
-    }
-
-    const agents = hasAgentSubset
-      ? this.filterAgentsByTargetIds(space.config.agents, targetAgentIds)
-      : space.config.agents;
-    const nextConfig: SpaceConfig = {
-      ...space.config,
-      agents,
-      ...(conversationTopology ? { conversationTopology } : {}),
-    };
-
-    if (conversationTopology) {
-      const turnModel = this.turnModelForConversationTopology(conversationTopology);
-      nextConfig.turnModel = turnModel;
-      nextConfig.turnModelConfig = {
-        ...(space.config.turnModelConfig ?? { strategy: turnModel }),
-        strategy: turnModel,
-        masterModeEnabled: conversationTopology === "broadcast_team",
-      };
-    }
-
-    return {
-      ...space,
-      config: nextConfig,
-    };
-  }
-
-  private filterAgentsByTargetIds(
-    agents: SpaceAgentAssignment[],
-    targetAgentIds: string[],
-  ): SpaceAgentAssignment[] {
-    if (targetAgentIds.length === 0) return agents;
-    const targets = new Set(targetAgentIds);
-    return this.sortAssignments(agents).filter((assignment) => {
-      const agentId = normalizeAgentIdentifier(assignment.agentId);
-      return Boolean(agentId && targets.has(agentId));
-    });
-  }
-
-  private turnModelForConversationTopology(
-    conversationTopology: ConversationTopology,
-  ): TurnModelStrategy {
-    switch (conversationTopology) {
-      case "broadcast_team":
-      case "direct":
-        return "primary_only";
-      case "shared_team_chat":
-        return "sequential_all";
-    }
-  }
-
-  private shouldUseMasterMode(space: ActiveSpace): boolean {
-    const config = this.getMasterModeTurnModelConfig(space);
-    if ((this.options.masterModeEnabled ?? true) === false) {
-      return false;
-    }
-    if (config?.masterModeEnabled === false) {
-      return false;
-    }
-    if (!MASTER_MODE_SUPPORTED_TURN_MODELS.has(space.config.turnModel)) {
-      return false;
-    }
-
-    const sortedAgents = this.sortAssignments(space.config.agents);
-    const coordinator = sortedAgents.find((assignment) => assignment.role === "global_coordinator");
-    if (coordinator) {
-      return sortedAgents.some((assignment) => assignment.agentId !== coordinator.agentId);
-    }
-
-    if (config?.masterModeEnabled !== true) {
-      return false;
-    }
-    const primaries = sortedAgents.filter((assignment) => assignment.isPrimary);
-    if (primaries.length !== 1) {
-      return false;
-    }
-    return sortedAgents.some((assignment) => assignment.agentId !== primaries[0]!.agentId);
-  }
-
-  private resolveMasterFlowAssignments(space: ActiveSpace): MasterFlowAssignments | null {
-    const sortedAgents = this.sortAssignments(space.config.agents);
-    const coordinator = sortedAgents.find((assignment) => assignment.role === "global_coordinator");
-    if (coordinator) {
-      const guests = sortedAgents.filter((assignment) => assignment.agentId !== coordinator.agentId);
-      if (guests.length === 0) return null;
-      return { master: coordinator, guests };
-    }
-
-    const config = this.getMasterModeTurnModelConfig(space);
-    if (config?.masterModeEnabled !== true) return null;
-    const primaries = sortedAgents.filter((assignment) => assignment.isPrimary);
-    if (primaries.length !== 1) return null;
-    const master = primaries[0]!;
-    const guests = sortedAgents.filter((assignment) => assignment.agentId !== master.agentId);
-    if (guests.length === 0) return null;
-    return { master, guests };
-  }
-
-  private getMasterModeTurnModelConfig(space: ActiveSpace): MasterModeTurnModelConfig | undefined {
-    const config = space.config.turnModelConfig;
-    if (!config || typeof config !== "object") return undefined;
-    return config as unknown as MasterModeTurnModelConfig;
-  }
-
-  private formatGuestList(guests: SpaceAgentAssignment[]): string {
-    if (guests.length === 0) return "(none)";
-    return guests
-      .map((guest) => `${guest.turnOrder}. ${guest.agentId}`)
-      .join("\n");
-  }
-
-  private formatGuestReports(guestReports: GuestReport[]): string {
-    if (guestReports.length === 0) return "(no guest reports)";
-    return guestReports
-      .map((entry) => {
-        const normalizedReport = entry.report.replace(/\s+/g, " ").trim();
-        const clippedReport = normalizedReport.length > 500 ? `${normalizedReport.slice(0, 500)}...` : normalizedReport;
-        return `- ${entry.agentId} [${entry.status}]: ${clippedReport || "(empty report)"}`;
-      })
-      .join("\n");
-  }
-
-  private sortAssignments(assignments: SpaceAgentAssignment[]): SpaceAgentAssignment[] {
-    return [...assignments].sort((lhs, rhs) => {
-      if (lhs.turnOrder !== rhs.turnOrder) return lhs.turnOrder - rhs.turnOrder;
-      return lhs.agentId.localeCompare(rhs.agentId);
-    });
   }
 
   /**
@@ -2003,18 +1384,13 @@ export class SpaceManager {
     }
 
     if (winner?.result) {
-      this.options.saveTurn({
-        turnId: this.buildPersistedTurnId(turnId, winner.agentId),
-        userTurnId: turnId,
+      this.options.saveTurn(buildCompletedSaveTurnInput({
+        turnId,
         spaceId: space.config.id,
         agentId: winner.agentId,
-        input: userMessage.content,
-        output: winner.result.finalMessage.content,
-        status: "completed",
-        promptTokens: winner.result.usage.promptTokens,
-        completionTokens: winner.result.usage.completionTokens,
-        totalTokens: winner.result.usage.totalTokens,
-      }).catch((saveErr) => {
+        userMessage,
+        result: winner.result,
+      })).catch((saveErr) => {
         this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
       });
     }
@@ -2136,18 +1512,13 @@ export class SpaceManager {
             spaceId: space.config.id,
             providerSessionHandle: event.result.metadata?.providerSessionHandle,
           });
-          this.options.saveTurn({
-            turnId: this.buildPersistedTurnId(turnId, synthesizerAgentId),
-            userTurnId: turnId,
+          this.options.saveTurn(buildCompletedSaveTurnInput({
+            turnId,
             spaceId: space.config.id,
             agentId: synthesizerAgentId,
-            input: userMessage.content,
-            output: event.result.finalMessage.content,
-            status: "completed",
-            promptTokens: event.result.usage.promptTokens,
-            completionTokens: event.result.usage.completionTokens,
-            totalTokens: event.result.usage.totalTokens,
-          }).catch((saveErr) => {
+            userMessage,
+            result: event.result,
+          })).catch((saveErr) => {
             this.handleTurnError(space.config.id, turnId, userMessage.content, saveErr);
           });
         }
@@ -2162,44 +1533,17 @@ export class SpaceManager {
     strategy: TurnModelStrategy,
     agents: SpaceAgentAssignment[],
   ): OrchestratorSummaryTrace | null {
-    if (!SUMMARY_ELIGIBLE_TURN_MODELS.has(strategy)) return null;
-    if (agents.length < 2) return null;
-
-    const orderedAgents = [...agents].sort((lhs, rhs) => {
-      if (lhs.turnOrder !== rhs.turnOrder) return lhs.turnOrder - rhs.turnOrder;
-      return lhs.agentId.localeCompare(rhs.agentId);
-    });
-
-    const participants = new Map<string, SummaryParticipantTrace>();
-    for (const assignment of orderedAgents) {
-      participants.set(assignment.agentId, {
-        agentId: assignment.agentId,
-        turnOrder: assignment.turnOrder,
-        isPrimary: assignment.isPrimary,
-        status: "pending",
-        promptTokens: 0,
-        completionTokens: 0,
-      });
-    }
-
-    return {
-      summaryId: randomUUID(),
+    return createSpaceManagerSummaryTrace({
       spaceId: space.config.id,
       turnId,
-      turnModel: strategy,
-      input,
-      createdAt: new Date(),
-      participants,
-      highlights: [],
+      userInput: input,
+      strategy,
+      agents,
       peerReview: {
-        enabled: this.resolvePeerReviewEnabled(space),
-        topology: this.resolvePeerReviewTopology(space),
-        assignments: 0,
-        completed: 0,
-        failed: 0,
-        status: "not_run",
+        enabled: resolvePeerReviewEnabled(space),
+        topology: resolvePeerReviewTopology(space),
       },
-    };
+    });
   }
 
   private recordSummaryEvent(
@@ -2207,65 +1551,7 @@ export class SpaceManager {
     agentId: string,
     event: TurnEvent,
   ): void {
-    if (!trace) return;
-    const participant = trace.participants.get(agentId);
-    if (!participant) return;
-
-    const nowIso = new Date().toISOString();
-    switch (event.type) {
-      case "text_delta": {
-        const text = event.text.trim();
-        if (!text) return;
-        if (trace.highlights.length >= 12) return;
-        trace.highlights.push({
-          agentId,
-          eventType: "text_delta",
-          text: text.length > 220 ? `${text.slice(0, 220)}...` : text,
-          timestamp: nowIso,
-        });
-        return;
-      }
-      case "feedback_requested": {
-        if (trace.highlights.length >= 12) return;
-        trace.highlights.push({
-          agentId,
-          eventType: "feedback_requested",
-          text: event.request.description,
-          timestamp: nowIso,
-        });
-        return;
-      }
-      case "turn_completed": {
-        participant.status = "completed";
-        participant.promptTokens += event.result.usage.promptTokens;
-        participant.completionTokens += event.result.usage.completionTokens;
-        const message = event.result.finalMessage.content.trim();
-        if (message) {
-          participant.finalMessage = message;
-          if (trace.highlights.length < 12) {
-            trace.highlights.push({
-              agentId,
-              eventType: "turn_completed",
-              text: message.length > 220 ? `${message.slice(0, 220)}...` : message,
-              timestamp: nowIso,
-            });
-          }
-        }
-        return;
-      }
-      case "error": {
-        participant.status = "failed";
-        participant.error = event.error.message;
-        if (trace.highlights.length < 12) {
-          trace.highlights.push({
-            agentId,
-            eventType: "error",
-            text: event.error.message,
-            timestamp: nowIso,
-          });
-        }
-      }
-    }
+    recordSpaceManagerSummaryEvent(trace, agentId, event);
   }
 
   private emitSummaryEvent(
@@ -2274,194 +1560,14 @@ export class SpaceManager {
     trace: OrchestratorSummaryTrace | null | undefined,
     executionError?: unknown,
   ): void {
-    if (!trace) return;
-
-    const participants = [...trace.participants.values()].sort((lhs, rhs) => {
-      if (lhs.turnOrder !== rhs.turnOrder) return lhs.turnOrder - rhs.turnOrder;
-      return lhs.agentId.localeCompare(rhs.agentId);
-    });
-
-    if (participants.length < 2) return;
-
-    const executionFailureReason = executionError instanceof Error
-      ? executionError.message
-      : executionError
-        ? String(executionError)
-        : undefined;
-    const hasParticipantFailure = participants.some((participant) => participant.status === "failed");
-    const hasPeerReviewFailure = trace.peerReview.status === "degraded" || trace.peerReview.failed > 0;
-    const summaryStatus = executionFailureReason || hasParticipantFailure || hasPeerReviewFailure
-      ? "degraded"
-      : "completed";
-    const eventType = executionFailureReason ? "summary.failed" : "summary.completed";
-
-    const summaryTextPromise = this.options.reflectionService?.runSummaryJob({
-      kind: "orchestrator",
-      conversationTopology: trace.turnModel === "primary_only" ? "broadcast_team" : "shared_team_chat",
-      turnModel: trace.turnModel,
-      userInput: trace.input,
-      participants: participants.map((participant) => ({
-        agentId: participant.agentId,
-        isPrimary: participant.isPrimary,
-        status: participant.status,
-        finalMessage: participant.finalMessage,
-        error: participant.error,
-      })),
-      peerReview: trace.peerReview,
-      highlights: trace.highlights.map((highlight) => ({
-        agentId: highlight.agentId,
-        text: highlight.text,
-      })),
-    });
-
-    const summary = {
-      summaryId: trace.summaryId,
-      version: "v1",
-      spaceId: trace.spaceId,
-      turnId: trace.turnId,
-      turnModel: trace.turnModel,
-      generatedAt: new Date().toISOString(),
-      status: summaryStatus,
-      failureReason: executionFailureReason
-        ?? (hasParticipantFailure ? "One or more participant turns failed." : undefined)
-        ?? (hasPeerReviewFailure ? "One or more peer-review turns failed." : undefined),
-      participants: participants.map((participant) => ({
-        agentId: participant.agentId,
-        turnOrder: participant.turnOrder,
-        isPrimary: participant.isPrimary,
-        status: participant.status,
-        promptTokens: participant.promptTokens,
-        completionTokens: participant.completionTokens,
-        finalMessage: participant.finalMessage,
-        error: participant.error,
-      })),
-      peerReview: trace.peerReview,
-      highlights: trace.highlights.slice(0, 8),
-      finalSummaryText: undefined as string | undefined,
-    };
-
-    const emitSummary = (finalSummaryText: string) => this.eventBus.emit({
-      type: "space.orchestrator_event",
+    emitSpaceManagerSummaryEvent({
+      eventBus: this.eventBus,
+      reflectionService: this.options.reflectionService,
       spaceId,
       turnId,
-      commandId: `summary-${turnId}`,
-      correlationId: turnId,
-      status: eventType === "summary.failed" ? "failed" : "completed",
-      createdAt: new Date().toISOString(),
-      eventType,
-      event: {
-        type: eventType,
-        summary: {
-          ...summary,
-          finalSummaryText,
-        },
-      },
-      timestamp: new Date(),
+      trace,
+      executionError,
     });
-    if (summaryTextPromise) {
-      void summaryTextPromise
-        .then((result) => emitSummary(result.summaryText))
-        .catch(() => emitSummary(this.buildSummaryText(
-          trace.turnModel,
-          trace.input,
-          participants,
-          summaryStatus,
-          trace.peerReview,
-        )));
-      return;
-    }
-    emitSummary(this.buildSummaryText(
-      trace.turnModel,
-      trace.input,
-      participants,
-      summaryStatus,
-      trace.peerReview,
-    ));
-  }
-
-  private buildSummaryText(
-    _turnModel: TurnModelStrategy,
-    _input: string,
-    participants: SummaryParticipantTrace[],
-    status: "completed" | "degraded",
-    peerReview: OrchestratorSummaryTrace["peerReview"],
-  ): string {
-    const failed = participants.filter((participant) => participant.status === "failed");
-    const primaryParticipant = participants.find((participant) => participant.isPrimary);
-    const guestCount = Math.max(
-      participants.length - (primaryParticipant ? 1 : 0),
-      0,
-    );
-    const summaryParts = [
-      `Master coordinated ${guestCount} ${guestCount === 1 ? "guest" : "guests"}`,
-      status,
-      "Full log available",
-    ];
-    if (failed.length > 0) {
-      summaryParts.push(
-        `failed: ${failed.map((participant) => participant.agentId).join(", ")}`,
-      );
-    }
-    if (peerReview.status !== "not_run" && peerReview.status !== "skipped") {
-      summaryParts.push(`peer-review: ${peerReview.completed}/${peerReview.assignments} completed`);
-      if (peerReview.failed > 0) {
-        summaryParts.push(`peer-review failed: ${peerReview.failed}`);
-      }
-    }
-    return summaryParts.join(" · ");
-  }
-
-  // ---------------------------------------------------------------------------
-  // Agent selection
-  // ---------------------------------------------------------------------------
-
-  private selectAgents(
-    space: ActiveSpace,
-    targetAgentId?: string,
-  ): SpaceAgentAssignment[] {
-    const agents = space.config.agents;
-
-    // Explicit target overrides strategy
-    if (targetAgentId) {
-      const normalizedTargetAgentId = normalizeAgentIdentifier(targetAgentId);
-      if (normalizedTargetAgentId) {
-        const match = agents.find(
-          (a) => normalizeAgentIdentifier(a.agentId) === normalizedTargetAgentId,
-        );
-        if (match) {
-          return [match];
-        }
-      }
-    }
-
-    switch (space.config.turnModel) {
-      case "primary_only": {
-        const primary = agents.find((a) => a.isPrimary);
-        return primary ? [primary] : agents.slice(0, 1);
-      }
-
-      case "round_robin": {
-        if (agents.length === 0) return [];
-        const idx = space.roundRobinIndex % agents.length;
-        space.roundRobinIndex++;
-        return [agents[idx]];
-      }
-
-      case "sequential_all":
-      case "first_success":
-        return [...agents].sort((a, b) => a.turnOrder - b.turnOrder);
-
-      case "parallel_race":
-      case "debate_synthesis":
-        return [...agents]; // All participate
-
-      case "adaptive_auto":
-        // TODO: Ask LLM which strategy to use. For now, default to sequential.
-        return [...agents].sort((a, b) => a.turnOrder - b.turnOrder);
-
-      default:
-        return agents.slice(0, 1);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2476,27 +1582,7 @@ export class SpaceManager {
     agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
     turnIds: string[];
   } | null {
-    const active = this.activeSpaces.get(spaceId);
-    if (!active) return null;
-
-    const agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }> = {};
-    for (const [agentId, session] of active.agentSessions) {
-      agentStates[agentId] = {
-        status: "active",
-        lastTurnId: session.lastTurnId,
-        messages: [...session.messages],
-      };
-    }
-
-    // Collect turn IDs from agent sessions (latest turn per agent)
-    const turnIds: string[] = [];
-    for (const session of active.agentSessions.values()) {
-      if (session.lastTurnId) {
-        turnIds.push(session.lastTurnId);
-      }
-    }
-
-    return { agentStates, turnIds };
+    return getAgentSessionStateSnapshot(this.activeSpaces, spaceId);
   }
 
   /**
@@ -2505,47 +1591,14 @@ export class SpaceManager {
    */
   async restoreFromCheckpoint(
     spaceId: string,
-    checkpoint: {
-      agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
-      configLoader?: () => Promise<SpaceConfig | null>;
-    },
+    checkpoint: RestoreAgentSessionCheckpointInput,
   ): Promise<boolean> {
-    const loader = checkpoint.configLoader ?? (() => this.options.loadSpaceConfig(spaceId));
-    const config = await loader();
-    if (!config) return false;
-
-    const active: ActiveSpace = {
-      config,
-      configStale: false,
-      orchestratorSessionId: `space:${spaceId}`,
-      roundRobinIndex: 0,
-      runtimes: new Map(),
-      agentSessions: new Map(),
-      activeTurnRuntimes: new Map(),
-      pausedRuntimes: new Map(),
-      feedbackTimers: new Map(),
-      pausedRuntimeAgentIds: new Map(),
-      pausedFeedbackRequests: new Map(),
-    };
-
-    // Populate agent sessions from checkpoint data
-    for (const [agentId, state] of Object.entries(checkpoint.agentStates)) {
-      const messages = state.messages ?? [];
-      const capped = messages.length > MAX_AGENT_SESSION_MESSAGES
-        ? messages.slice(messages.length - MAX_AGENT_SESSION_MESSAGES)
-        : [...messages];
-
-      active.agentSessions.set(agentId, {
-        sessionId: `${active.orchestratorSessionId}:agent:${agentId}`,
-        agentId,
-        messages: capped,
-        lastTurnId: state.lastTurnId,
-        lastActivityAt: new Date(),
-      });
-    }
-
-    this.activeSpaces.set(spaceId, active);
-    return true;
+    return restoreActiveSpaceFromCheckpoint({
+      activeSpaces: this.activeSpaces,
+      spaceId,
+      checkpoint,
+      loadSpaceConfig: this.options.loadSpaceConfig,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -2553,76 +1606,34 @@ export class SpaceManager {
   // ---------------------------------------------------------------------------
 
   private async ensureActive(spaceId: string): Promise<ActiveSpace> {
-    let active = this.activeSpaces.get(spaceId);
-    if (active && !active.configStale) return active;
-
-    if (active && active.configStale) {
-      // Reload config but preserve sessions and runtimes
-      const config = await this.options.loadSpaceConfig(spaceId);
-      if (!config) throw new Error(`Space ${spaceId} not found`);
-      if (config.status === "archived" || config.status === "deleted") {
-        throw new Error(`Space ${spaceId} is ${config.status}`);
-      }
-      active.config = config;
-      active.configStale = false;
-      return active;
-    }
-
-    const config = await this.options.loadSpaceConfig(spaceId);
-    if (!config) throw new Error(`Space ${spaceId} not found`);
-    if (config.status === "archived" || config.status === "deleted") {
-      throw new Error(`Space ${spaceId} is ${config.status}`);
-    }
-
-    active = {
-      config,
-      configStale: false,
-      orchestratorSessionId: `space:${spaceId}`,
-      roundRobinIndex: 0,
-      runtimes: new Map(),
-      agentSessions: new Map(),
-      activeTurnRuntimes: new Map(),
-      pausedRuntimes: new Map(),
-      feedbackTimers: new Map(),
-      pausedRuntimeAgentIds: new Map(),
-      pausedFeedbackRequests: new Map(),
-    };
-
-    this.activeSpaces.set(spaceId, active);
-    return active;
+    return ensureActiveSpace({
+      activeSpaces: this.activeSpaces,
+      spaceId,
+      loadSpaceConfig: this.options.loadSpaceConfig,
+    });
   }
 
   private async getRuntime(space: ActiveSpace, agentId: string): Promise<AgentRuntime> {
-    const cached = space.runtimes.get(agentId);
-    if (cached) return cached;
-
-    const runtime = await this.options.resolveRuntime(space.config.id, agentId);
-    space.runtimes.set(agentId, runtime);
-    return runtime;
+    return getRuntimeForAgent({
+      space,
+      agentId,
+      resolveRuntime: this.options.resolveRuntime,
+    });
   }
 
   private async getOrCreateAgentSession(
     space: ActiveSpace,
     agentId: string,
   ): Promise<AgentSessionState> {
-    const existing = space.agentSessions.get(agentId);
-    if (existing) return existing;
-
-    const loadedHistory = this.options.loadAgentHistory
-      ? await this.options.loadAgentHistory(space.config.id, agentId, 100)
-      : await this.options.loadHistory(space.config.id, 100);
-    const loadedMetadata = await this.options.loadAgentSessionMetadata?.(space.config.id, agentId);
-
-    const session: AgentSessionState = {
-      sessionId: `${space.orchestratorSessionId}:agent:${agentId}`,
+    return getOrCreateAgentSessionState({
+      space,
       agentId,
-      messages: [...loadedHistory],
-      displayTitle: normalizeOptionalString(loadedMetadata?.displayTitle),
-      providerSessionHandle: normalizeProviderSessionHandle(loadedMetadata?.providerSessionHandle),
-      lastActivityAt: new Date(),
-    };
-    space.agentSessions.set(agentId, session);
-    return session;
+      loadHistory: this.options.loadHistory,
+      ...(this.options.loadAgentHistory ? { loadAgentHistory: this.options.loadAgentHistory } : {}),
+      ...(this.options.loadAgentSessionMetadata
+        ? { loadAgentSessionMetadata: this.options.loadAgentSessionMetadata }
+        : {}),
+    });
   }
 
   private async resolveCommittedSessionFields(
@@ -2630,17 +1641,12 @@ export class SpaceManager {
     session: AgentSessionState,
     userMessage: ModelMessage,
   ): Promise<Pick<TurnContext, "providerSessionHandle" | "sessionTitle">> {
-    if (!normalizeOptionalString(session.displayTitle)) {
-      session.displayTitle = this.buildSessionTitle(space, session.agentId, userMessage.content);
-      await this.persistAgentSessionMetadata(space.config.id, session, {
-        displayTitle: session.displayTitle,
-      }).catch(() => {});
-    }
-
-    return {
-      ...(session.providerSessionHandle ? { providerSessionHandle: session.providerSessionHandle } : {}),
-      ...(session.displayTitle ? { sessionTitle: session.displayTitle } : {}),
-    };
+    return resolveAgentCommittedSessionFields({
+      space,
+      session,
+      userMessage,
+      persistAgentSessionMetadata: this.persistAgentSessionMetadata.bind(this),
+    });
   }
 
   private async persistAgentSessionMetadata(
@@ -2658,18 +1664,6 @@ export class SpaceManager {
     });
   }
 
-  private buildSessionTitle(space: ActiveSpace, agentId: string, input: string): string {
-    const baseTitle = sanitizeSessionTitle(input);
-    const fallback = sanitizeSessionTitle(`${space.config.name} · ${agentId}`) || `Space · ${agentId}`;
-    if (!baseTitle) {
-      return truncateSessionTitle(fallback);
-    }
-    if (space.config.agents.length <= 1) {
-      return truncateSessionTitle(baseTitle);
-    }
-    return truncateSessionTitle(`${baseTitle} · ${agentId}`);
-  }
-
   private async buildLaunchSnapshots(
     space: ActiveSpace,
     turnId: string,
@@ -2677,35 +1671,16 @@ export class SpaceManager {
     userMessage: ModelMessage,
     executionIdentity?: TurnExecutionIdentity,
   ): Promise<CliLaunchSnapshot[]> {
-    const snapshots = await Promise.all(
-      agents.map(async (assignment) => {
-        const runtime = await this.getRuntime(space, assignment.agentId);
-        const session = await this.getOrCreateAgentSession(space, assignment.agentId);
-        const launchContext: TurnContext = {
-          spaceId: space.config.id,
-          turnId,
-          messages: [...session.messages, userMessage],
-          lineageId: space.orchestratorSessionId,
-          hopCount: 0,
-          maxHops: this.options.maxHops ?? 5,
-          principalId: executionIdentity?.principalId,
-          deviceId: executionIdentity?.deviceId,
-          executionOrigin: executionIdentity?.executionOrigin,
-          accessMode: executionIdentity?.accessMode,
-          mode: executionIdentity?.mode,
-          effort: executionIdentity?.effort,
-        };
-
-        try {
-          const snapshot = await runtime.getLaunchSnapshot?.(launchContext);
-          return snapshot ?? undefined;
-        } catch {
-          return undefined;
-        }
-      }),
-    );
-
-    return snapshots.filter((snapshot): snapshot is CliLaunchSnapshot => Boolean(snapshot));
+    return buildAgentLaunchSnapshots({
+      space,
+      turnId,
+      agents,
+      userMessage,
+      maxHops: this.options.maxHops ?? 5,
+      getRuntime: this.getRuntime.bind(this),
+      getSession: this.getOrCreateAgentSession.bind(this),
+      ...(executionIdentity ? { executionIdentity } : {}),
+    });
   }
 
   private updateAgentSession(
@@ -2718,29 +1693,14 @@ export class SpaceManager {
       providerSessionHandle?: ProviderSessionHandle;
     },
   ): void {
-    if (session.lastTurnId !== turnId) {
-      session.messages.push(userMessage);
-    }
-    session.messages.push(assistantMessage);
-    if (session.messages.length > MAX_AGENT_SESSION_MESSAGES) {
-      session.messages = session.messages.slice(-MAX_AGENT_SESSION_MESSAGES);
-    }
-    session.lastTurnId = turnId;
-    session.lastActivityAt = new Date();
-    const providerSessionHandle = normalizeProviderSessionHandle(options?.providerSessionHandle);
-    if (providerSessionHandle) {
-      session.providerSessionHandle = providerSessionHandle;
-      void this.persistAgentSessionMetadata(options!.spaceId, session, {
-        providerSessionHandle,
-      }).catch(() => {});
-    }
-  }
-
-  private buildPersistedTurnId(turnId: string, agentId: string): string {
-    const normalizedAgentId = agentId
-      .trim()
-      .replace(/[^a-zA-Z0-9_-]/g, "_");
-    return `${turnId}:${normalizedAgentId}`;
+    updateAgentSessionState({
+      session,
+      turnId,
+      userMessage,
+      assistantMessage,
+      persistAgentSessionMetadata: this.persistAgentSessionMetadata.bind(this),
+      ...(options ? { options } : {}),
+    });
   }
 
   /**
@@ -2829,150 +1789,4 @@ export class SpaceManager {
       this.deactivate(spaceId);
     }
   }
-}
-
-function normalizeExecutionIdentity(
-  input?: TurnExecutionIdentity,
-): TurnExecutionIdentity | undefined {
-  if (!input) return undefined;
-  const principalId = normalizeOptionalString(input.principalId);
-  const deviceId = normalizeOptionalString(input.deviceId);
-  const executionOrigin = normalizeExecutionOrigin(input.executionOrigin);
-  const accessMode = normalizeAccessMode(input.accessMode);
-  const mode = normalizeExecutionMode(input.mode);
-  const effort = normalizeReasoningEffort(input.effort);
-  const targetAgentIds = normalizeAgentIdentifiers(input.targetAgentIds);
-  const replyToTurnId = normalizeOptionalString(input.replyToTurnId);
-  const conversationTopology = normalizeConversationTopology(input.conversationTopology);
-  if (
-    !principalId
-    && !deviceId
-    && !executionOrigin
-    && !accessMode
-    && !mode
-    && !effort
-    && targetAgentIds.length === 0
-    && !replyToTurnId
-    && !conversationTopology
-  ) {
-    return undefined;
-  }
-  return {
-    principalId,
-    deviceId,
-    executionOrigin,
-    accessMode,
-    mode,
-    effort,
-    ...(targetAgentIds.length > 0 ? { targetAgentIds } : {}),
-    ...(replyToTurnId ? { replyToTurnId } : {}),
-    ...(conversationTopology ? { conversationTopology } : {}),
-  };
-}
-
-function normalizeOptionalString(value?: string): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? normalized : undefined;
-}
-
-function normalizeProviderSessionHandle(value?: ProviderSessionHandle): ProviderSessionHandle | undefined {
-  if (!value || value.type === "none") {
-    return undefined;
-  }
-  if (value.type === "openai_response" && normalizeOptionalString(value.previousResponseId)) {
-    return value;
-  }
-  if (value.type === "codex_app_server_thread" && normalizeOptionalString(value.threadId)) {
-    return value;
-  }
-  return undefined;
-}
-
-function sanitizeSessionTitle(input: string): string {
-  const normalized = input
-    .replace(/```[a-zA-Z0-9_-]*\s*/g, " ")
-    .replace(/```/g, " ")
-    .replace(/^\s*(user|assistant|system|tool)\s*:\s*/gim, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  const lower = normalized.toLowerCase();
-  if (
-    normalized.length < 3
-    || lower === "hi"
-    || lower === "hello"
-    || lower === "hey"
-    || lower === "help"
-    || lower === "test"
-  ) {
-    return "";
-  }
-  return truncateSessionTitle(normalized);
-}
-
-function truncateSessionTitle(input: string): string {
-  const normalized = input.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 80) {
-    return normalized;
-  }
-  return `${normalized.slice(0, 77).trimEnd()}...`;
-}
-
-function normalizeAgentIdentifier(value?: string): string | undefined {
-  const normalized = value?.trim().toLowerCase();
-  return normalized ? normalized : undefined;
-}
-
-function normalizeAgentIdentifiers(values?: string[]): string[] {
-  if (!Array.isArray(values)) return [];
-  const normalized: string[] = [];
-  const seen = new Set<string>();
-  for (const value of values) {
-    const agentId = normalizeAgentIdentifier(value);
-    if (!agentId || seen.has(agentId)) continue;
-    seen.add(agentId);
-    normalized.push(agentId);
-  }
-  return normalized;
-}
-
-function normalizeConversationTopology(value?: ConversationTopology): ConversationTopology | undefined {
-  if (value === "direct" || value === "shared_team_chat" || value === "broadcast_team") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeExecutionOrigin(value?: CapabilityExecutionOrigin): CapabilityExecutionOrigin | undefined {
-  if (!value) return undefined;
-  if (
-    value === "owner"
-    || value === "guest"
-    || value === "connector"
-    || value === "system"
-    || value === "unknown"
-  ) {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeAccessMode(value?: TurnAccessMode): TurnAccessMode | undefined {
-  if (value === "default" || value === "full_access") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeExecutionMode(value?: TurnExecutionMode): TurnExecutionMode | undefined {
-  if (value === "ask" || value === "plan" || value === "execute") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeReasoningEffort(value?: TurnReasoningEffort): TurnReasoningEffort | undefined {
-  if (value === "low" || value === "medium" || value === "high" || value === "max") {
-    return value;
-  }
-  return undefined;
 }

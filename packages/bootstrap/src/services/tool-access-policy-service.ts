@@ -17,7 +17,6 @@ import type {
   ToolAccessPolicy,
   ToolAccessPolicyScopeType,
   ToolAccessRule,
-  ToolAccessRuleSelectorKind,
   TurnRequestAccessMode,
 } from "@spaceskit/core";
 import { DEFAULT_SAFETY_PROFILES } from "@spaceskit/core";
@@ -44,19 +43,27 @@ import type { GatewayCapabilityAccessService } from "./gateway-capability-access
 import { resolveExecutionOriginForPrincipal } from "./execution-origin-service.js";
 import type { SpaceSharingService } from "./space-sharing-service.js";
 import type { ToolApprovalGrantService } from "./tool-approval-grant-service.js";
-
-const SOURCE_SELECTOR_PREFIXES: Record<Exclude<ToolAccessRuleSelectorKind, "capability" | "mcp_server" | "tool_operation">, string> = {
-  connector_family: "connector_family:",
-  cli_bundle: "cli_bundle:",
-  connector_instance: "connector_instance:",
-};
-
-const DANGEROUS_CAPABILITIES: DangerousCapabilityId[] = [
-  "managed_shell",
-  "arbitrary_shell",
-  "approval_bypass",
-  "filesystem_escape",
-];
+import {
+  DANGEROUS_CAPABILITIES,
+  capabilitySupportsFullAccess,
+  capitalize,
+  connectorPolicyIsActive,
+  emptyPolicy,
+  findDangerousRule,
+  isRecord,
+  normalizeDangerousCapabilities,
+  normalizeGuestAccessPreset,
+  normalizeOptional,
+  normalizePolicy,
+  normalizeRequired,
+  normalizeRules,
+  normalizeSafetyProfileId,
+  normalizeSpaceShareAccessMode,
+  parseDangerousCapabilities,
+  parseLegacySpaceToolEntries,
+  parseRules,
+  rowToPolicy,
+} from "./tool-access-policy-normalizers.js";
 
 const UNSAFE_REGULAR_GATEWAY_CAPABILITIES = new Set([
   "shell.execute",
@@ -1220,237 +1227,4 @@ export class ToolAccessPolicyService {
       // Ignore audit failures.
     }
   }
-}
-
-function rowToPolicy(
-  scopeType: ToolAccessPolicyScopeType,
-  scopeId: string,
-  row: ReturnType<ToolAccessPolicyRepository["get"]>,
-): ToolAccessPolicy {
-  if (!row) {
-    return emptyPolicy(scopeType, scopeId);
-  }
-  return normalizePolicy({
-    scopeType,
-    scopeId,
-    rules: parseRules(row.rules_json),
-    dangerousCapabilities: parseDangerousCapabilities(row.dangerous_capabilities_json),
-    guestAccessPreset: scopeType === "space"
-      ? normalizeGuestAccessPreset(row.guest_access_preset) ?? "collaborator"
-      : undefined,
-    policyVersion: row.policy_version,
-    updatedBy: row.updated_by,
-    updatedAt: row.updated_at,
-  });
-}
-
-function emptyPolicy(scopeType: ToolAccessPolicyScopeType, scopeId: string): ToolAccessPolicy {
-  return {
-    scopeType,
-    scopeId,
-    rules: [],
-    dangerousCapabilities: [],
-    guestAccessPreset: scopeType === "space" ? "collaborator" : undefined,
-    policyVersion: "tool_access_policy_v1",
-  };
-}
-
-function normalizePolicy(policy: ToolAccessPolicy): ToolAccessPolicy {
-  return {
-    ...policy,
-    rules: normalizeRules(policy.rules),
-    dangerousCapabilities: normalizeDangerousCapabilities(policy.dangerousCapabilities),
-    guestAccessPreset: policy.scopeType === "space"
-      ? normalizeGuestAccessPreset(policy.guestAccessPreset) ?? "collaborator"
-      : undefined,
-  };
-}
-
-function parseRules(raw: string): ToolAccessRule[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return normalizeRules(parsed as ToolAccessRule[]);
-  } catch {
-    return [];
-  }
-}
-
-function parseDangerousCapabilities(raw: string): DangerousCapabilityRule[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return normalizeDangerousCapabilities(parsed as DangerousCapabilityRule[]);
-  } catch {
-    return [];
-  }
-}
-
-function normalizeRules(input: ToolAccessRule[]): ToolAccessRule[] {
-  const deduped = new Map<string, ToolAccessRule>();
-  for (const rule of input) {
-    if (!rule || !isSelectorKind(rule.selectorKind)) continue;
-    const selectorId = normalizeOptional(rule.selectorId);
-    if (!selectorId) continue;
-    const state = normalizeRuleState(rule.state);
-    deduped.set(`${rule.selectorKind}:${selectorId}`, {
-      selectorKind: rule.selectorKind,
-      selectorId,
-      state,
-    });
-  }
-  return Array.from(deduped.values()).sort((left, right) => (
-    left.selectorKind.localeCompare(right.selectorKind)
-    || left.selectorId.localeCompare(right.selectorId)
-  ));
-}
-
-function normalizeDangerousCapabilities(input: DangerousCapabilityRule[]): DangerousCapabilityRule[] {
-  const deduped = new Map<string, DangerousCapabilityRule>();
-  for (const rule of input) {
-    if (!rule || !DANGEROUS_CAPABILITIES.includes(rule.capabilityId)) continue;
-    deduped.set(rule.capabilityId, {
-      capabilityId: rule.capabilityId,
-      state: normalizeRuleState(rule.state),
-    });
-  }
-  return Array.from(deduped.values()).sort((left, right) => left.capabilityId.localeCompare(right.capabilityId));
-}
-
-function normalizeRuleState(value: string | undefined): DangerousCapabilityRule["state"] {
-  return value === "enabled" || value === "inherit" ? value : "disabled";
-}
-
-function normalizeRequired(value: unknown, field: string): string {
-  const normalized = normalizeOptional(value);
-  if (!normalized) {
-    throw new Error(`${field} is required`);
-  }
-  return normalized;
-}
-
-function normalizeOptional(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized ? normalized : undefined;
-}
-
-function normalizeGuestAccessPreset(value: unknown): GuestAccessPreset | undefined {
-  return value === "read_only" || value === "collaborator"
-    ? value
-    : undefined;
-}
-
-function normalizeSafetyProfileId(value: unknown): SafetyProfileId | undefined {
-  return value === "safe" || value === "workspace" || value === "operator" || value === "yolo"
-    ? value
-    : undefined;
-}
-
-function normalizeSpaceShareAccessMode(value: unknown): SpaceShareAccessMode | undefined {
-  return value === "read_only" || value === "collaborator"
-    ? value
-    : undefined;
-}
-
-function isSelectorKind(value: unknown): value is ToolAccessRuleSelectorKind {
-  return value === "capability"
-    || value === "cli_bundle"
-    || value === "connector_family"
-    || value === "connector_instance"
-    || value === "mcp_server"
-    || value === "tool_operation";
-}
-
-function parseLegacySpaceToolEntries(raw: string): ToolAccessRule[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const output: ToolAccessRule[] = [];
-    for (const entry of parsed as unknown[]) {
-      if (typeof entry !== "string") continue;
-      const normalized = entry.trim();
-      if (!normalized) continue;
-      if (normalized.startsWith(SOURCE_SELECTOR_PREFIXES.connector_family)) {
-        output.push({
-          selectorKind: "connector_family" as const,
-          selectorId: normalized.slice(SOURCE_SELECTOR_PREFIXES.connector_family.length),
-          state: "disabled" as const,
-        });
-        continue;
-      }
-      if (normalized.startsWith(SOURCE_SELECTOR_PREFIXES.cli_bundle)) {
-        output.push({
-          selectorKind: "cli_bundle" as const,
-          selectorId: normalized.slice(SOURCE_SELECTOR_PREFIXES.cli_bundle.length),
-          state: "disabled" as const,
-        });
-        continue;
-      }
-      if (normalized.startsWith(SOURCE_SELECTOR_PREFIXES.connector_instance)) {
-        output.push({
-          selectorKind: "connector_instance" as const,
-          selectorId: normalized.slice(SOURCE_SELECTOR_PREFIXES.connector_instance.length),
-          state: "disabled" as const,
-        });
-        continue;
-      }
-      if (normalized.endsWith(".*")) {
-        output.push({
-          selectorKind: "capability" as const,
-          selectorId: normalized.slice(0, -2),
-          state: "disabled" as const,
-        });
-        continue;
-      }
-      if (normalized.includes(".")) {
-        output.push({
-          selectorKind: "tool_operation" as const,
-          selectorId: normalized,
-          state: "disabled" as const,
-        });
-        continue;
-      }
-      output.push({
-        selectorKind: "capability" as const,
-        selectorId: normalized,
-        state: "disabled" as const,
-      });
-    }
-    return output;
-  } catch {
-    return [];
-  }
-}
-
-function findDangerousRule(
-  rules: DangerousCapabilityRule[],
-  capabilityId: DangerousCapabilityId,
-): DangerousCapabilityRule | undefined {
-  return rules.find((rule) => rule.capabilityId === capabilityId);
-}
-
-function capabilitySupportsFullAccess(capabilityId: DangerousCapabilityId): boolean {
-  return capabilityId === "managed_shell"
-    || capabilityId === "arbitrary_shell"
-    || capabilityId === "filesystem_escape"
-    || capabilityId === "approval_bypass";
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function connectorPolicyIsActive(disabledUntil: string | null): boolean {
-  if (!disabledUntil) {
-    return true;
-  }
-  const until = Date.parse(disabledUntil);
-  return Number.isNaN(until) || until > Date.now();
-}
-
-function capitalize(value: string): string {
-  return value ? value[0]!.toUpperCase() + value.slice(1) : value;
 }

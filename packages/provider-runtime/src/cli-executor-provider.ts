@@ -10,25 +10,14 @@ import type {
   TokenUsage,
   ToolCall,
   ToolResult,
-  TurnAccessMode,
 } from "@spaceskit/core";
+import { buildCommand } from "./cli-executor-command-builder.js";
+import type {
+  CommandSpec,
+  ModelReference,
+  SupportedProviderId,
+} from "./cli-executor-command-types.js";
 import { ToolsUnsupportedError, UnsupportedProviderError } from "./provider-errors.js";
-
-type SupportedProviderId = "claude" | "codex" | "gemini";
-type CommandMode = "generate" | "stream";
-
-interface ModelReference {
-  providerId: SupportedProviderId;
-  fullModelId: string;
-  providerModelId: string;
-}
-
-interface CommandSpec {
-  executable: string;
-  args: string[];
-  stdin?: string;
-  cwd?: string;
-}
 
 interface CommandResult {
   exitCode: number;
@@ -78,7 +67,6 @@ const MODEL_MANIFEST: Record<SupportedProviderId, string[]> = {
   ],
 };
 
-const CLAUDE_MCP_BRIDGE_SERVER_NAME = "spaceskit-gateway";
 const RAW_TOOL_ARGUMENTS_KEY = "__rawArguments";
 
 export class CliExecutorModelProvider implements ModelProvider {
@@ -328,226 +316,6 @@ function executableForProvider(providerId?: SupportedProviderId): string | undef
   }
 }
 
-function buildCommand(
-  reference: ModelReference,
-  prompt: string,
-  options: GenerateOptions,
-  mode: CommandMode,
-): CommandSpec {
-  const accessMode = resolveCliAccessMode(options);
-  const approvalBypass = options.approvalBypassEnabled === true;
-  const cwd = normalizeWorkingDirectory(options.workingDirectory);
-
-  switch (reference.providerId) {
-    case "claude": {
-      const permissionMode = resolveClaudePermissionMode(accessMode, approvalBypass);
-      const bridgeArgs = buildMcpBridgeArgs(options);
-      return {
-        executable: "claude",
-        args: [
-          "--print",
-          ...(mode === "stream" ? ["--verbose"] : []),
-          "--input-format",
-          "text",
-          "--output-format",
-          mode === "stream" ? "stream-json" : "text",
-          ...(mode === "stream" ? ["--include-partial-messages"] : []),
-          "--permission-mode",
-          permissionMode,
-          "--tools",
-          accessMode === "full_access" ? "default" : "Read,Glob,Grep,WebSearch,WebFetch",
-          ...(accessMode === "full_access" && cwd ? ["--add-dir", cwd] : []),
-          ...bridgeArgs,
-          ...buildClaudeEffortArgs(options),
-          "--model",
-          reference.providerModelId,
-        ],
-        stdin: prompt,
-        ...(cwd ? { cwd } : {}),
-      };
-    }
-    case "codex": {
-      const codexBridgeArgs = buildCodexMcpBridgeArgs(options);
-      const codexReasoningArgs = buildCodexReasoningArgs(options);
-      // When gateway bridge tools are present, bypass Codex's approval system entirely.
-      // The gateway validates tool permissions server-side via toolExecutor.checkPermission(),
-      // so Codex's own approval is redundant and blocks MCP tool calls in non-interactive mode.
-      // --full-auto alone is insufficient — it only auto-approves native tools, not MCP server calls.
-      const hasBridgeTools = codexBridgeArgs.length > 0;
-      const needsFullBypass = hasBridgeTools;
-      const needsAutoApproval = !needsFullBypass && (accessMode === "full_access" && approvalBypass);
-      return {
-        executable: "codex",
-        args: [
-          "exec",
-          "--skip-git-repo-check",
-          ...(needsFullBypass
-            ? ["--dangerously-bypass-approvals-and-sandbox"]
-            : [
-              "--sandbox",
-              accessMode === "full_access" ? "workspace-write" : "read-only",
-              ...(needsAutoApproval ? ["--full-auto"] : []),
-            ]),
-          ...(mode === "stream" ? ["--json"] : []),
-          "--color",
-          "never",
-          ...(cwd ? ["-C", cwd] : []),
-          ...codexReasoningArgs,
-          ...codexBridgeArgs,
-          "--model",
-          reference.providerModelId,
-          "-",
-        ],
-        stdin: prompt,
-        ...(cwd ? { cwd } : {}),
-      };
-    }
-    case "gemini":
-      return {
-        executable: "gemini",
-        args: [
-          "--prompt",
-          "",
-          "--output-format",
-          mode === "stream" ? "stream-json" : "text",
-          "--approval-mode",
-          resolveGeminiApprovalMode(accessMode, approvalBypass),
-          ...(accessMode === "full_access" && cwd ? ["--include-directories", cwd] : []),
-          ...buildGeminiThinkingArgs(options),
-          "--model",
-          reference.providerModelId,
-        ],
-        stdin: prompt,
-        ...(cwd ? { cwd } : {}),
-      };
-  }
-}
-
-/**
- * Build --mcp-config and --strict-mcp-config args when the gateway has
- * an MCP bridge configured for this turn. This makes gateway-registered
- * tools available to the CLI subprocess as real callable MCP tools.
- */
-function buildMcpBridgeArgs(options: GenerateOptions): string[] {
-  if (!options.mcpBridgeConfig) return [];
-  const { bridgeScriptPath, toolDefsJson, socketPath } = options.mcpBridgeConfig;
-  const mcpConfig = JSON.stringify({
-    mcpServers: {
-      [CLAUDE_MCP_BRIDGE_SERVER_NAME]: {
-        command: "bun",
-        args: ["run", bridgeScriptPath],
-        env: {
-          GATEWAY_TOOLS_JSON: toolDefsJson,
-          GATEWAY_SOCKET_PATH: socketPath,
-        },
-      },
-    },
-  });
-  const allowedTools = buildClaudeAllowedBridgeToolNames(toolDefsJson);
-  return [
-    "--mcp-config",
-    mcpConfig,
-    "--strict-mcp-config",
-    ...(allowedTools.length > 0
-      ? ["--allowedTools", allowedTools.join(",")]
-      : []),
-  ];
-}
-
-/**
- * Build Codex `-c` config overrides to inject the gateway MCP bridge server.
- * Codex reads MCP servers from config.toml `[mcp_servers]` sections, and
- * `-c key=value` overrides these at runtime without touching the user's config.
- *
- * GATEWAY_TOOLS_JSON is written to a temp file and the path passed via env
- * to avoid TOML escaping issues with large JSON payloads. The bridge script
- * reads from GATEWAY_TOOLS_PATH when GATEWAY_TOOLS_JSON is not set directly.
- */
-function buildCodexMcpBridgeArgs(options: GenerateOptions): string[] {
-  if (!options.mcpBridgeConfig) return [];
-  const { bridgeScriptPath, toolDefsJson, socketPath } = options.mcpBridgeConfig;
-
-  // Write tool defs to a temp file to avoid TOML escaping issues
-  const toolDefsPath = writeToolDefsToTempFile(toolDefsJson);
-
-  // Codex -c flag uses TOML syntax for values
-  return [
-    "-c", `mcp_servers.spaceskit-gateway.command="bun"`,
-    "-c", `mcp_servers.spaceskit-gateway.args=["run", ${JSON.stringify(bridgeScriptPath)}]`,
-    "-c", `mcp_servers.spaceskit-gateway.env.GATEWAY_TOOLS_PATH=${JSON.stringify(toolDefsPath)}`,
-    "-c", `mcp_servers.spaceskit-gateway.env.GATEWAY_SOCKET_PATH=${JSON.stringify(socketPath)}`,
-  ];
-}
-
-function buildCodexReasoningArgs(options: GenerateOptions): string[] {
-  const effort = normalizeCodexEffort(options.effort) ?? "high";
-  return ["-c", `model_reasoning_effort=${JSON.stringify(effort)}`];
-}
-
-function writeToolDefsToTempFile(toolDefsJson: string): string {
-  const tmpDir = require("node:os").tmpdir();
-  const filePath = require("node:path").join(tmpDir, `spaceskit-tool-defs-${crypto.randomUUID().slice(0, 8)}.json`);
-  require("node:fs").writeFileSync(filePath, toolDefsJson, "utf-8");
-  return filePath;
-}
-
-// NOTE: Claude CLI does not currently expose thinking/reasoning content in
-// stream-json output. The parser at parseClaudeStreamRecord() handles
-// thinking_delta events and will surface them when the CLI adds support.
-// The --effort flag controls the API-level thinking budget.
-function buildClaudeEffortArgs(options: GenerateOptions): string[] {
-  const effort = normalizeClaudeEffort(options.effort);
-  if (effort) return ["--effort", effort];
-  // If thinking is enabled but no effort specified, default to high
-  if (options.thinkingConfig?.enabled) return ["--effort", "high"];
-  return [];
-}
-
-function normalizeClaudeEffort(value?: GenerateOptions["effort"]): "low" | "medium" | "high" | "max" | undefined {
-  if (value === "low" || value === "medium" || value === "high" || value === "max") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeCodexEffort(value?: GenerateOptions["effort"]): "low" | "medium" | "high" | undefined {
-  if (value === "low" || value === "medium" || value === "high") {
-    return value;
-  }
-  if (value === "max") {
-    return "high";
-  }
-  return undefined;
-}
-
-// Gemini CLI does not have a --thinking-level flag.
-// Thinking level is configured via ~/.gemini/config.json (thinkingLevel: "HIGH").
-// AgentThoughtChunk events are also not currently emitted in stream-json
-// output (see https://github.com/google-gemini/gemini-cli/issues/20977).
-function buildGeminiThinkingArgs(_options: GenerateOptions): string[] {
-  return [];
-}
-
-function buildClaudeAllowedBridgeToolNames(toolDefsJson: string): string[] {
-  try {
-    const toolDefs = JSON.parse(toolDefsJson) as Array<{ name?: string }>;
-    return toolDefs
-      .map((tool) => normalizeClaudeBridgeToolName(tool.name))
-      .filter((toolName): toolName is string => Boolean(toolName))
-      .map((toolName) => `mcp__${CLAUDE_MCP_BRIDGE_SERVER_NAME}__${toolName}`);
-  } catch {
-    return [];
-  }
-}
-
-function normalizeClaudeBridgeToolName(value: string | undefined): string | undefined {
-  const normalized = value?.trim()
-    .replace(/[^A-Za-z0-9_-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return normalized && normalized.length > 0 ? normalized : undefined;
-}
-
 function renderPrompt(messages: ModelMessage[]): string {
   return messages
     .map((message) => {
@@ -709,32 +477,6 @@ function defaultRunCommandSync(command: string, args: string[]): SpawnSyncReturn
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 1_500,
   });
-}
-
-function normalizeWorkingDirectory(value?: string): string | undefined {
-  const normalized = value?.trim();
-  return normalized && normalized.length > 0 ? normalized : undefined;
-}
-
-function resolveCliAccessMode(options: GenerateOptions): TurnAccessMode {
-  if (options.accessMode === "default" || options.accessMode === "full_access") {
-    return options.accessMode;
-  }
-  return options.nativeCliToolsEnabled === true ? "full_access" : "default";
-}
-
-function resolveClaudePermissionMode(accessMode: TurnAccessMode, approvalBypassEnabled: boolean): string {
-  if (accessMode !== "full_access") {
-    return "plan";
-  }
-  return approvalBypassEnabled ? "bypassPermissions" : "acceptEdits";
-}
-
-function resolveGeminiApprovalMode(accessMode: TurnAccessMode, approvalBypassEnabled: boolean): string {
-  if (accessMode !== "full_access") {
-    return "plan";
-  }
-  return approvalBypassEnabled ? "yolo" : "auto_edit";
 }
 
 function commandPreview(spec: CommandSpec): string {

@@ -22,3 +22,12 @@ workbench/reports/
 
 # Private / non-open-source files (do not commit)
 _private/
+
+# Per-space runtime state (manifests, policies, overrides)
+/spaces/
+
+# SwiftPM build cache for the Apple foundation helper
+/native/apple-foundation-helper/.build/
+
+# Stale legacy materialization target; canonical path is workbench/cli-tools/
+/cli-tools/
