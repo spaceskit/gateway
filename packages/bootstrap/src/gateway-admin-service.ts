@@ -8,7 +8,6 @@ import type {
   SpaceRepository,
 } from "@spaceskit/persistence";
 import type { SpaceAdminService } from "@spaceskit/core";
-import { USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
 import type { GatewayCoreProfileId } from "@spaceskit/gateway-core";
 import type {
   GatewayConciergeAgentStatePayload,
@@ -74,13 +73,8 @@ import {
   fetchClaudeOAuthUsage as fetchClaudeOAuthUsageWindowPayloads,
   readClaudeOAuthAccessTokenFromCredentialsFile as readClaudeOAuthAccessTokenFromCredentialsFilePayload,
   readClaudeOAuthAccessTokenFromKeychain as readClaudeOAuthAccessTokenFromKeychainPayload,
-  type ClaudeOAuthAccessTokenResult,
-  type ClaudeOAuthUsageResult,
 } from "./services/claude-oauth-telemetry.js";
-import {
-  queryCodexAppServerTelemetry,
-  type CodexAppServerTelemetryResult,
-} from "./services/codex-app-server-telemetry.js";
+import { queryCodexAppServerTelemetry } from "./services/codex-app-server-telemetry.js";
 import {
   isLocalProvider,
   keyFromEnvironment,
@@ -93,17 +87,9 @@ import {
   type OpenAICompatibleDetectionResult,
 } from "./services/local-agent-discovery-service.js";
 import {
-  deriveProviderFromModel,
-  isSpaceAdminErrorLike,
-  mergeSkillIds,
   normalizeProviderId,
-  normalizeSelectionMode,
-  parseModelConfig,
-  parseStringArray,
-  resolveOpenAICompatibleModelsEndpoint,
   throwGatewayError,
   uniqueModelIds,
-  withProviderPrefix,
 } from "./gateway-admin-model-normalizers.js";
 import type {
   ClaudeAgentSdkCatalogProbe,
@@ -114,16 +100,6 @@ import {
   mergeAllowedProviderModels,
   providerRuntimeConfigToPayload,
 } from "./gateway-admin-provider-config-support.js";
-import {
-  ensureGatewayAdminConciergeSpace,
-  ensureGatewayAdminMainSpace,
-  type GatewayAdminManagedSpaceRepairContext,
-} from "./gateway-admin-managed-space-repair.js";
-import {
-  applyManagedAgentDefinitionSelection,
-  applyManagedAgentProviderModelSelection,
-  type ManagedAgentSelectionContext,
-} from "./gateway-admin-managed-agent-selection.js";
 import {
   loadGatewayAdminProfileRuntime,
   provisionGatewayAdminLocalProfile,
@@ -136,12 +112,6 @@ import {
   type ProvisionLocalProfileInput,
   type ProvisionLocalProfileResult,
 } from "./gateway-admin-profile-runtime.js";
-import {
-  resolveGatewayAdminRuntimeDefaults,
-  updateGatewayAdminManagedRuntimeProfile,
-  validateGatewayAdminRuntimeDefaultSelection,
-  type GatewayAdminRuntimeDefaultsContext,
-} from "./gateway-admin-runtime-defaults.js";
 import {
   deleteGatewayAdminSecretRef,
   getGatewayAdminProviderSettings,
@@ -405,18 +375,59 @@ export class DefaultGatewayAdminService {
         this.resolveProviderBaseURL(providerId, configuredBaseURL),
       detectOpenAICompatibleModels: (baseURL) =>
         this.detectOpenAICompatibleModels(baseURL),
-      queryCodexAppServer: (executablePath) =>
-        this.queryCodexAppServer(executablePath),
-      readClaudeOAuthAccessToken: () =>
-        this.readClaudeOAuthAccessToken(),
-      fetchClaudeOAuthUsage: (accessToken) =>
-        this.fetchClaudeOAuthUsage(accessToken),
+      queryCodexAppServer: (executablePath) => queryCodexAppServerTelemetry(executablePath),
+      readClaudeOAuthAccessToken: async () => {
+        const fromKeychain = readClaudeOAuthAccessTokenFromKeychainPayload();
+        if (fromKeychain.accessToken) return fromKeychain;
+        const fromFile = readClaudeOAuthAccessTokenFromCredentialsFilePayload();
+        if (fromFile.accessToken) return fromFile;
+        return {
+          message: "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
+        };
+      },
+      fetchClaudeOAuthUsage: (accessToken) => fetchClaudeOAuthUsageWindowPayloads(accessToken),
     });
     this.catalogDetectionService = new GatewayAdminCatalogDetectionService({
       claudeAgentSdkMetadataProbe: options.claudeAgentSdkMetadataProbe,
       codexAppServerMetadataProbe: options.codexAppServerMetadataProbe,
       resolveConfiguredProviderApiKey: (providerId, config) =>
         this.resolveConfiguredProviderApiKey(providerId, config),
+    });
+    this.managedAgentRuntimeService = new GatewayAdminManagedAgentRuntimeService({
+      profileRepo: this.profileRepo,
+      spaceAdminService: this.spaceAdminService,
+      spaceRepo: this.spaceRepo,
+      gatewayRuntimeDefaultsRepo: this.gatewayRuntimeDefaultsRepo,
+      gatewayProfile: this.gatewayProfile,
+      defaultProviderId: this.defaultProviderId,
+      defaultModelId: this.defaultModelId,
+      mainSpaceId: this.mainSpaceId,
+      mainSpaceName: this.mainSpaceName,
+      mainSpaceResourceId: this.mainSpaceResourceId,
+      mainSpaceGoal: this.mainSpaceGoal,
+      mainProfileId: this.mainProfileId,
+      mainAgentId: this.mainAgentId,
+      conciergeSpaceId: this.conciergeSpaceId,
+      conciergeSpaceName: this.conciergeSpaceName,
+      conciergeSpaceResourceId: this.conciergeSpaceResourceId,
+      conciergeSpaceGoal: this.conciergeSpaceGoal,
+      conciergeProfileId: this.conciergeProfileId,
+      conciergeAgentId: this.conciergeAgentId,
+      mainAgentSwapEnabled: this.mainAgentSwapEnabled,
+      mainAgentAutoRepairEnabled: this.mainAgentAutoRepairEnabled,
+      providerConfigs: this.providerConfigs,
+      listProviderConfigs: () => this.listProviderConfigs(),
+      listProviderCatalogs: (input) => this.listProviderCatalogs(input),
+      isProviderConfigAllowed: (providerId) => this.isProviderConfigAllowed(providerId),
+      mergeAllowedModels: (providerId, model, modelIds) =>
+        this.mergeAllowedModels(providerId, model, modelIds),
+      ensureAppleFoundationAvailability: () => this.ensureAppleFoundationAvailability(),
+      appleProviderRuntimeEligibleSync: () => this.appleProviderRuntimeEligibleSync(),
+      resolveProviderBaseURL: (providerId, configuredBaseURL) =>
+        this.resolveProviderBaseURL(providerId, configuredBaseURL),
+      detectOpenAICompatibleModels: (baseURL, detectionOptions) =>
+        this.detectOpenAICompatibleModels(baseURL, detectionOptions),
+      validateProfileModelSelection: (input) => this.validateProfileModelSelection(input),
     });
 
     seedGatewayAdminProvidersFromEnvironment({
@@ -497,625 +508,48 @@ export class DefaultGatewayAdminService {
       }));
   }
 
-  private runtimeDefaultsContext(): GatewayAdminRuntimeDefaultsContext {
-    return {
-      profileRepo: this.profileRepo,
-      gatewayRuntimeDefaultsRepo: this.gatewayRuntimeDefaultsRepo,
-      mainProfileId: this.mainProfileId,
-      conciergeProfileId: this.conciergeProfileId,
-      defaultProviderId: this.defaultProviderId,
-      defaultModelId: this.defaultModelId,
-      listProviderConfigs: () => this.listProviderConfigs(),
-      listProviderCatalogs: (input) => this.listProviderCatalogs(input),
-      isProviderConfigAllowed: (providerId) => this.isProviderConfigAllowed(providerId),
-      mergeAllowedModels: (providerId, model, modelIds) =>
-        this.mergeAllowedModels(providerId, model, modelIds),
-      validateProviderRuntimeSelection: (providerId, modelId) =>
-        this.validateProviderRuntimeSelection(providerId, modelId),
-      requireProfileRepo: () => this.requireProfileRepo(),
-    };
-  }
-
   async getRuntimeDefaults(
-    _input: GatewayGetRuntimeDefaultsPayload = {},
+    input: GatewayGetRuntimeDefaultsPayload = {},
   ): Promise<GatewayRuntimeDefaultsPayload> {
-    return resolveGatewayAdminRuntimeDefaults(this.runtimeDefaultsContext());
+    return this.managedAgentRuntimeService.getRuntimeDefaults(input);
   }
 
   async setRuntimeDefaults(
     input: GatewaySetRuntimeDefaultsPayload,
   ): Promise<GatewaySetRuntimeDefaultsResponsePayload> {
-    if (!input.main && !input.concierge) {
-      throwGatewayError(
-        "INVALID_ARGUMENT",
-        "At least one runtime-default branch must be provided.",
-      );
-    }
-
-    const runtimeDefaultsContext = this.runtimeDefaultsContext();
-    const current = await resolveGatewayAdminRuntimeDefaults(runtimeDefaultsContext);
-    const main = input.main
-      ? await validateGatewayAdminRuntimeDefaultSelection(runtimeDefaultsContext, input.main, "main")
-      : current.main;
-    const concierge = input.concierge
-      ? await validateGatewayAdminRuntimeDefaultSelection(runtimeDefaultsContext, input.concierge, "concierge")
-      : current.concierge;
-
-    const persisted = this.gatewayRuntimeDefaultsRepo?.set({
-      mainProviderId: main.providerId,
-      mainModelId: main.modelId,
-      conciergeProviderId: concierge.providerId,
-      conciergeModelId: concierge.modelId,
-    });
-
-    const mainSpaceId = this.resolveMainTargetSpaceId(undefined);
-    const conciergeSpaceId = this.resolveConciergeTargetSpaceId(undefined);
-    await this.ensureMainProfileActive(true);
-    await this.ensureConciergeProfileActive(true);
-    await this.ensureMainSpace(true);
-    await this.ensureConciergeSpace(true);
-
-    updateGatewayAdminManagedRuntimeProfile(
-      runtimeDefaultsContext,
-      this.mainProfileId,
-      main,
-      true,
-      "gateway_runtime_defaults",
-    );
-    updateGatewayAdminManagedRuntimeProfile(
-      runtimeDefaultsContext,
-      this.conciergeProfileId,
-      concierge,
-      false,
-      "gateway_runtime_defaults",
-    );
-
-    await this.normalizeMainAssignment(mainSpaceId);
-    await this.normalizeConciergeAssignment(conciergeSpaceId);
-
-    const mainAgentState = await this.resolveMainAgentState({
-      spaceId: mainSpaceId,
-      repairIfMissing: true,
-    });
-    const conciergeAgentState = await this.resolveConciergeAgentState({
-      spaceId: conciergeSpaceId,
-      repairIfMissing: true,
-    });
-
-    return {
-      defaults: {
-        main,
-        concierge,
-        updatedAt: persisted?.updated_at ?? new Date().toISOString(),
-      },
-      mainAgentState,
-      conciergeAgentState,
-    };
+    return this.managedAgentRuntimeService.setRuntimeDefaults(input);
   }
 
   resolveMainSpaceId(): string {
-    return this.mainSpaceId;
+    return this.managedAgentRuntimeService.resolveMainSpaceId();
   }
 
   resolveConciergeSpaceId(): string {
-    return this.conciergeSpaceId;
+    return this.managedAgentRuntimeService.resolveConciergeSpaceId();
   }
 
   async getMainAgent(input: GetMainAgentInput = {}): Promise<GatewayMainAgentStatePayload> {
-    const spaceId = this.resolveMainTargetSpaceId(input.spaceId);
-    const repairIfMissing = input.repairIfMissing ?? this.mainAgentAutoRepairEnabled;
-    return this.resolveMainAgentState({
-      spaceId,
-      repairIfMissing,
-    });
+    return this.managedAgentRuntimeService.getMainAgent(input);
   }
 
   async getConciergeAgent(
     input: GatewayGetConciergeAgentPayload = {},
   ): Promise<GatewayConciergeAgentStatePayload> {
-    const spaceId = this.resolveConciergeTargetSpaceId(input.spaceId);
-    const repairIfMissing = input.repairIfMissing ?? this.mainAgentAutoRepairEnabled;
-    return this.resolveConciergeAgentState({
-      spaceId,
-      repairIfMissing,
-    });
+    return this.managedAgentRuntimeService.getConciergeAgent(input);
   }
 
   async setMainAgent(input: SetMainAgentInput): Promise<GatewayMainAgentStatePayload> {
-    if (!this.mainAgentSwapEnabled) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        "Main-agent swap is disabled by SPACESKIT_MAIN_AGENT_SWAP_V1",
-      );
-    }
-
-    const selectionMode = normalizeSelectionMode(input.selectionMode);
-    if (!selectionMode) {
-      throwGatewayError(
-        "INVALID_ARGUMENT",
-        "selectionMode must be either provider_model or agent_definition",
-      );
-    }
-
-    const spaceId = this.resolveMainTargetSpaceId(input.spaceId);
-    await this.resolveMainAgentState({
-      spaceId,
-      repairIfMissing: true,
-    });
-    const profileRepo = this.requireProfileRepo();
-    const selectionContext = this.managedAgentSelectionContext(
-      profileRepo,
-      this.mainProfileId,
-      "gateway_main_agent_swap",
-    );
-
-    if (selectionMode === "provider_model") {
-      await applyManagedAgentProviderModelSelection(input, selectionContext);
-    } else {
-      await applyManagedAgentDefinitionSelection(input, selectionContext);
-    }
-
-    await this.normalizeMainAssignment(spaceId);
-    return this.resolveMainAgentState({
-      spaceId,
-      repairIfMissing: true,
-    });
+    return this.managedAgentRuntimeService.setMainAgent(input);
   }
 
   async setConciergeAgent(
     input: GatewaySetConciergeAgentPayload,
   ): Promise<GatewayConciergeAgentStatePayload> {
-    if (!this.mainAgentSwapEnabled) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        "Concierge-agent swap is disabled by SPACESKIT_MAIN_AGENT_SWAP_V1",
-      );
-    }
-
-    const selectionMode = normalizeSelectionMode(input.selectionMode);
-    if (!selectionMode) {
-      throwGatewayError(
-        "INVALID_ARGUMENT",
-        "selectionMode must be either provider_model or agent_definition",
-      );
-    }
-
-    const spaceId = this.resolveConciergeTargetSpaceId(input.spaceId);
-    await this.resolveConciergeAgentState({
-      spaceId,
-      repairIfMissing: true,
-    });
-    const profileRepo = this.requireProfileRepo();
-    const selectionContext = this.managedAgentSelectionContext(
-      profileRepo,
-      this.conciergeProfileId,
-      "gateway_concierge_agent_swap",
-    );
-
-    if (selectionMode === "provider_model") {
-      await applyManagedAgentProviderModelSelection(input, selectionContext);
-    } else {
-      await applyManagedAgentDefinitionSelection(input, selectionContext);
-    }
-
-    await this.normalizeConciergeAssignment(spaceId);
-    return this.resolveConciergeAgentState({
-      spaceId,
-      repairIfMissing: true,
-    });
-  }
-
-  private resolveMainTargetSpaceId(spaceId?: string): string {
-    const normalized = spaceId?.trim();
-    if (!normalized) {
-      return this.mainSpaceId;
-    }
-    if (normalized !== this.mainSpaceId) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Main-agent operations are restricted to configured main space: ${this.mainSpaceId}`,
-      );
-    }
-    return normalized;
-  }
-
-  private resolveConciergeTargetSpaceId(spaceId?: string): string {
-    const normalized = spaceId?.trim();
-    if (!normalized) {
-      return this.conciergeSpaceId;
-    }
-    if (normalized !== this.conciergeSpaceId) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Concierge-agent operations are restricted to configured concierge space: ${this.conciergeSpaceId}`,
-      );
-    }
-    return normalized;
-  }
-
-  private requireProfileRepo(): ProfileRepository {
-    if (!this.profileRepo) {
-      throwGatewayError("FAILED_PRECONDITION", "Profile repository unavailable");
-    }
-    return this.profileRepo;
-  }
-
-  private managedAgentSelectionContext(
-    profileRepo: ProfileRepository,
-    profileId: string,
-    updateSource: string,
-  ): ManagedAgentSelectionContext {
-    return {
-      profileRepo,
-      profileId,
-      updateSource,
-      listProviderConfigs: () => this.listProviderConfigs(),
-      mergeAllowedModels: (providerId, model, modelIds) => this.mergeAllowedModels(
-        providerId,
-        model,
-        modelIds,
-      ),
-      validateProviderRuntimeSelection: (providerId, modelId) => (
-        this.validateProviderRuntimeSelection(providerId, modelId)
-      ),
-      validateProfileModelSelection: (input) => this.validateProfileModelSelection(input),
-      validatePinnedProviderModel: (providerHint, modelHint) => this.validatePinnedProviderModel(
-        providerHint,
-        modelHint,
-      ),
-    };
-  }
-
-  private async ensureMainProfileActive(
-    repairIfMissing: boolean,
-  ): Promise<{ repaired: boolean; updatedAt: string }> {
-    const profileRepo = this.requireProfileRepo();
-    const profileLabel = this.gatewayProfile === "external" ? "External" : "Embedded";
-    const existing = profileRepo.getById(this.mainProfileId);
-    if (!existing) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Main profile is missing: ${this.mainProfileId}`,
-        );
-      }
-      profileRepo.create({
-        profileId: this.mainProfileId,
-        name: `${profileLabel} Main Agent`,
-        description: `Default ${this.gatewayProfile} gateway startup profile for the main agent.`,
-        canModerate: true,
-        personalityPrompt: `You are the default ${this.gatewayProfile} main gateway agent. Coordinate spaces clearly and safely.`,
-        defaultSkillIds: [USER_ESCALATION_SKILL_ID],
-      });
-      const created = profileRepo.getById(this.mainProfileId);
-      if (!created) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to create main profile: ${this.mainProfileId}`,
-        );
-      }
-      return {
-        repaired: true,
-        updatedAt: created.updated_at,
-      };
-    }
-
-    if (existing.archived !== 1) {
-      this.ensureProfileDefaultSkills(this.mainProfileId, [USER_ESCALATION_SKILL_ID], "gateway_main_defaults");
-      return {
-        repaired: false,
-        updatedAt: existing.updated_at,
-      };
-    }
-
-    if (!repairIfMissing) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Main profile is archived: ${this.mainProfileId}`,
-      );
-    }
-    profileRepo.restore(this.mainProfileId);
-    const restored = profileRepo.getById(this.mainProfileId);
-    if (!restored || restored.archived === 1) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Unable to restore archived main profile: ${this.mainProfileId}`,
-      );
-    }
-    this.ensureProfileDefaultSkills(this.mainProfileId, [USER_ESCALATION_SKILL_ID], "gateway_main_defaults");
-    return {
-      repaired: true,
-      updatedAt: restored.updated_at,
-    };
-  }
-
-  private async ensureConciergeProfileActive(
-    repairIfMissing: boolean,
-  ): Promise<{ repaired: boolean; updatedAt: string }> {
-    const profileRepo = this.requireProfileRepo();
-    const profileLabel = this.gatewayProfile === "external" ? "External" : "Embedded";
-    const existing = profileRepo.getById(this.conciergeProfileId);
-    if (!existing) {
-      if (!repairIfMissing) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Concierge profile is missing: ${this.conciergeProfileId}`,
-        );
-      }
-
-      const legacyProfile = this.findLegacyConciergeProfile();
-      const legacyRevision = legacyProfile
-        ? profileRepo.getActiveRevision(legacyProfile.profile_id)
-        : undefined;
-      profileRepo.create({
-        profileId: this.conciergeProfileId,
-        personaId: legacyProfile?.persona_id || "",
-        name: `${profileLabel} Concierge`,
-        description: "General-purpose system concierge for workspace status, routing, and setup.",
-        canModerate: true,
-        personalityPrompt: legacyRevision?.personality_prompt
-          || "You are the Spaces concierge. Be concise, route users to the right workspace or settings surface, and escalate runtime issues clearly.",
-        defaultSkillIds: mergeSkillIds(
-          legacyRevision ? parseStringArray(legacyRevision.default_skill_set_ids_json) : [],
-          [USER_ESCALATION_SKILL_ID],
-        ),
-        providerHint: legacyRevision?.provider_hint?.trim() || undefined,
-        modelHint: legacyRevision?.model_hint?.trim() || undefined,
-        modelConfig: legacyRevision
-          ? parseModelConfig(legacyRevision.model_config_json, legacyRevision.model_hint)
-          : undefined,
-        source: legacyProfile ? "gateway_concierge_profile_migration" : "gateway_concierge_defaults",
-      });
-      const created = profileRepo.getById(this.conciergeProfileId);
-      if (!created) {
-        throwGatewayError(
-          "FAILED_PRECONDITION",
-          `Unable to create concierge profile: ${this.conciergeProfileId}`,
-        );
-      }
-      return {
-        repaired: true,
-        updatedAt: created.updated_at,
-      };
-    }
-
-    if (existing.archived !== 1) {
-      this.ensureProfileDefaultSkills(this.conciergeProfileId, [USER_ESCALATION_SKILL_ID], "gateway_concierge_defaults");
-      return {
-        repaired: false,
-        updatedAt: existing.updated_at,
-      };
-    }
-
-    if (!repairIfMissing) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Concierge profile is archived: ${this.conciergeProfileId}`,
-      );
-    }
-    profileRepo.restore(this.conciergeProfileId);
-    const restored = profileRepo.getById(this.conciergeProfileId);
-    if (!restored || restored.archived === 1) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Unable to restore archived concierge profile: ${this.conciergeProfileId}`,
-      );
-    }
-    this.ensureProfileDefaultSkills(this.conciergeProfileId, [USER_ESCALATION_SKILL_ID], "gateway_concierge_defaults");
-    return {
-      repaired: true,
-      updatedAt: restored.updated_at,
-    };
-  }
-
-  private ensureProfileDefaultSkills(
-    profileId: string,
-    requiredSkillIds: readonly string[],
-    source: string,
-  ): void {
-    const profileRepo = this.requireProfileRepo();
-    const activeRevision = profileRepo.getActiveRevision(profileId);
-    if (!activeRevision) return;
-    const existingSkillIds = parseStringArray(activeRevision.default_skill_set_ids_json);
-    const mergedSkillIds = mergeSkillIds(existingSkillIds, requiredSkillIds);
-    if (mergedSkillIds.length === existingSkillIds.length) {
-      return;
-    }
-    profileRepo.update({
-      profileId,
-      defaultSkillIds: mergedSkillIds,
-      source,
-    });
-  }
-
-  private async ensureMainSpace(
-    repairIfMissing: boolean,
-  ): Promise<{ spaceUid: string; repaired: boolean; assignedProfileId?: string; updatedAt: string }> {
-    return ensureGatewayAdminMainSpace(this.managedSpaceRepairContext(), repairIfMissing);
-  }
-
-  private async ensureConciergeSpace(
-    repairIfMissing: boolean,
-  ): Promise<{ spaceUid: string; repaired: boolean; assignedProfileId?: string; updatedAt: string }> {
-    return ensureGatewayAdminConciergeSpace(this.managedSpaceRepairContext(), repairIfMissing);
-  }
-
-  private managedSpaceRepairContext(): GatewayAdminManagedSpaceRepairContext {
-    return {
-      spaceAdminService: this.spaceAdminService,
-      spaceRepo: this.spaceRepo,
-      main: {
-        spaceId: this.mainSpaceId,
-        resourceId: this.mainSpaceResourceId,
-        name: this.mainSpaceName,
-        goal: this.mainSpaceGoal,
-        profileId: this.mainProfileId,
-        agentId: this.mainAgentId,
-      },
-      concierge: {
-        spaceId: this.conciergeSpaceId,
-        resourceId: this.conciergeSpaceResourceId,
-        name: this.conciergeSpaceName,
-        goal: this.conciergeSpaceGoal,
-        profileId: this.conciergeProfileId,
-        agentId: this.conciergeAgentId,
-      },
-    };
-  }
-
-  private async normalizeMainAssignment(spaceId: string): Promise<void> {
-    if (spaceId !== this.mainSpaceId) {
-      return;
-    }
-    await this.ensureMainSpace(true);
-  }
-
-  private async normalizeConciergeAssignment(spaceId: string): Promise<void> {
-    if (spaceId !== this.conciergeSpaceId) {
-      return;
-    }
-    await this.ensureConciergeSpace(true);
+    return this.managedAgentRuntimeService.setConciergeAgent(input);
   }
 
   private resolveFallbackProviderModel(): { providerHint: string; modelHint: string } | null {
-    const providerConfigs = this.listProviderConfigs();
-    if (providerConfigs.length > 0) {
-      // Prefer non-Apple provider as fallback; Apple is always-available on macOS
-      // but should not shadow user-configured or detected CLI providers.
-      const fallback = providerConfigs.find((c) => c.providerId !== "apple")
-        ?? providerConfigs[0];
-      return {
-        providerHint: fallback.providerId,
-        modelHint: fallback.model,
-      };
-    }
-
-    const defaultProvider = normalizeProviderId(this.defaultProviderId)
-      || deriveProviderFromModel(this.defaultModelId)
-      || this.resolveEmbeddedMacDefaultProvider();
-    const defaultModelRaw = this.defaultModelId?.trim();
-    if (defaultProvider && defaultModelRaw) {
-      return {
-        providerHint: defaultProvider,
-        modelHint: withProviderPrefix(defaultProvider, defaultModelRaw),
-      };
-    }
-
-    return null;
-  }
-
-  private resolveEmbeddedMacDefaultProvider(): string | undefined {
-    // CLI providers are now auto-seeded during bootstrap; Apple should only
-    // be selected through the normal priority order in providerConfigs,
-    // not silently injected as a hidden default.
-    return undefined;
-  }
-
-  private validatePinnedProviderModel(
-    providerHintRaw?: string,
-    modelHintRaw?: string,
-  ): { valid: boolean; providerHint?: string; modelHint?: string; reason?: string } {
-    const providerHint = deriveProviderFromModel(modelHintRaw) || normalizeProviderId(providerHintRaw);
-    if (!providerHint) {
-      return {
-        valid: false,
-        reason: "Main profile is missing runtime/model hints.",
-      };
-    }
-
-    const providerConfig = this.listProviderConfigs()
-      .find((entry) => entry.providerId.trim().toLowerCase() === providerHint);
-    if (!providerConfig) {
-      return {
-        valid: false,
-        reason: `Configured provider is unavailable: ${providerHint}`,
-      };
-    }
-
-    const modelHint = withProviderPrefix(
-      providerHint,
-      modelHintRaw?.trim() || providerConfig.model,
-    );
-    const allowedModels = this.mergeAllowedModels(
-      providerHint,
-      providerConfig.model,
-      providerConfig.allowedModels,
-    );
-    if (!providerConfig.allowCustomModel && !allowedModels.includes(modelHint)) {
-      return {
-        valid: false,
-        reason: `Configured model is unavailable for provider ${providerHint}: ${modelHint}`,
-      };
-    }
-
-    return {
-      valid: true,
-      providerHint,
-      modelHint,
-    };
-  }
-
-  private async validateProviderRuntimeSelection(
-    providerId: string,
-    modelIdRaw: string,
-  ): Promise<ProviderRuntimeValidationResult> {
-    if (providerId === "apple") {
-      await this.ensureAppleFoundationAvailability();
-      const eligibility = this.appleProviderRuntimeEligibleSync();
-      if (!eligibility.eligible) {
-        return {
-          valid: false,
-          reason: `Apple Foundation Models runtime is unavailable: ${eligibility.reason}`,
-        };
-      }
-      return { valid: true };
-    }
-
-    if (providerId !== "lmstudio") {
-      return { valid: true };
-    }
-
-    const modelId = withProviderPrefix(providerId, modelIdRaw);
-    const baseURL = this.resolveProviderBaseURL(
-      providerId,
-      this.providerConfigs.get(providerId)?.baseURL,
-    );
-    const endpoint = resolveOpenAICompatibleModelsEndpoint(baseURL);
-    const detection = await this.detectOpenAICompatibleModels(baseURL, {
-      forceRefresh: true,
-    });
-    if (!detection.serviceReachable) {
-      return {
-        valid: false,
-        reason: detection.detectionError
-          || `LM Studio runtime is unreachable at ${endpoint}. Start LM Studio server and retry.`,
-      };
-    }
-
-    const detectedModels = uniqueModelIds(
-      detection.models.map((entry) => withProviderPrefix(providerId, entry.id)),
-    );
-    if (detectedModels.length === 0) {
-      return {
-        valid: false,
-        reason: `LM Studio runtime is reachable at ${endpoint} but returned no models. Load a model in LM Studio and retry.`,
-      };
-    }
-
-    const normalizedModelId = modelId.toLowerCase();
-    if (detectedModels.some((candidate) => candidate.toLowerCase() === normalizedModelId)) {
-      return { valid: true };
-    }
-
-    const preview = detectedModels.slice(0, 3);
-    const overflowCount = detectedModels.length - preview.length;
-    const overflowSuffix = overflowCount > 0 ? ` (+${overflowCount} more)` : "";
-
-    return {
-      valid: false,
-      reason: `Model ${modelId} is not loaded in LM Studio runtime. Available models: ${preview.join(", ")}${overflowSuffix}. Load the model in LM Studio or select an available model.`,
-      fallbackModelHint: detectedModels[0],
-    };
+    return this.managedAgentRuntimeService.resolveFallbackProviderModel();
   }
 
   private async resolveValidatedProviderModel(input: {
@@ -1123,259 +557,16 @@ export class DefaultGatewayAdminService {
     modelHintRaw?: string;
     repairIfInvalid: boolean;
     allowFallbackRepair?: boolean;
-  }): Promise<ResolvedProviderModelHint> {
-    const allowFallbackRepair = input.allowFallbackRepair ?? true;
-    let fallbackApplied = false;
-    let fallbackReason: string | undefined;
-
-    let pinned = this.validatePinnedProviderModel(
-      input.providerHintRaw,
-      input.modelHintRaw,
-    );
-    if (!pinned.valid) {
-      if (!input.repairIfInvalid || !allowFallbackRepair) {
-        return {
-          valid: false,
-          fallbackApplied: false,
-          reason: pinned.reason || "Runtime/model selection is invalid",
-        };
-      }
-
-      const fallback = this.resolveFallbackProviderModel();
-      if (!fallback) {
-        return {
-          valid: false,
-          fallbackApplied: false,
-          reason: "Unable to repair runtime/model selection: no runtimes configured",
-        };
-      }
-
-      fallbackApplied = true;
-      fallbackReason = pinned.reason ?? "Configured runtime/model unavailable";
-      pinned = {
-        valid: true,
-        providerHint: fallback.providerHint,
-        modelHint: fallback.modelHint,
-      };
-    }
-
-    if (!pinned.valid || !pinned.providerHint || !pinned.modelHint) {
-      return {
-        valid: false,
-        fallbackApplied,
-        fallbackReason,
-        reason: pinned.reason || "Runtime/model selection is invalid",
-      };
-    }
-
-    const runtimeValidation = await this.validateProviderRuntimeSelection(
-      pinned.providerHint,
-      pinned.modelHint,
-    );
-    if (!runtimeValidation.valid) {
-      if (!input.repairIfInvalid || !allowFallbackRepair) {
-        return {
-          valid: false,
-          fallbackApplied,
-          fallbackReason,
-          reason: runtimeValidation.reason || "Runtime model selection is invalid",
-        };
-      }
-
-      let fallbackProviderHint: string | undefined;
-      let fallbackModelHint: string | undefined;
-      const runtimeFallbackModel = runtimeValidation.fallbackModelHint;
-      if (
-        runtimeFallbackModel
-        && runtimeFallbackModel.trim().length > 0
-        && runtimeFallbackModel.trim().toLowerCase() !== pinned.modelHint.trim().toLowerCase()
-      ) {
-        fallbackProviderHint = pinned.providerHint;
-        fallbackModelHint = runtimeFallbackModel.trim();
-      } else {
-        const fallback = this.resolveFallbackProviderModel();
-        if (fallback) {
-          const sameProvider = fallback.providerHint === pinned.providerHint;
-          const sameModel = fallback.modelHint.trim().toLowerCase() === pinned.modelHint.trim().toLowerCase();
-          if (!(sameProvider && sameModel)) {
-            fallbackProviderHint = fallback.providerHint;
-            fallbackModelHint = fallback.modelHint;
-          }
-        }
-      }
-
-      if (!fallbackProviderHint || !fallbackModelHint) {
-        return {
-          valid: false,
-          fallbackApplied,
-          fallbackReason,
-          reason: runtimeValidation.reason || "Unable to repair runtime model selection",
-        };
-      }
-
-      const fallbackPinned = this.validatePinnedProviderModel(
-        fallbackProviderHint,
-        fallbackModelHint,
-      );
-      if (!fallbackPinned.valid || !fallbackPinned.providerHint || !fallbackPinned.modelHint) {
-        return {
-          valid: false,
-          fallbackApplied,
-          fallbackReason,
-          reason: fallbackPinned.reason
-            || runtimeValidation.reason
-            || "Fallback runtime/model selection is invalid",
-        };
-      }
-
-      const fallbackRuntimeValidation = await this.validateProviderRuntimeSelection(
-        fallbackPinned.providerHint,
-        fallbackPinned.modelHint,
-      );
-      if (!fallbackRuntimeValidation.valid) {
-        return {
-          valid: false,
-          fallbackApplied,
-          fallbackReason,
-          reason: fallbackRuntimeValidation.reason
-            || runtimeValidation.reason
-            || "Fallback runtime model selection is invalid",
-        };
-      }
-
-      fallbackApplied = true;
-      fallbackReason = runtimeValidation.reason ?? "Configured runtime model unavailable";
-      pinned = fallbackPinned;
-    }
-
-    return {
-      valid: true,
-      providerHint: pinned.providerHint,
-      modelHint: pinned.modelHint,
-      fallbackApplied,
-      fallbackReason,
-    };
+  }) {
+    return this.managedAgentRuntimeService.resolveValidatedProviderModel(input);
   }
 
-  private async resolveMainAgentState(input: {
-    spaceId: string;
-    repairIfMissing: boolean;
-  }): Promise<GatewayMainAgentStatePayload> {
-    const profileRepo = this.requireProfileRepo();
-    const profileRepair = await this.ensureMainProfileActive(input.repairIfMissing);
-    const spaceRepair = await this.ensureMainSpace(input.repairIfMissing);
-    let repaired = profileRepair.repaired || spaceRepair.repaired;
-    let fallbackApplied = false;
-    let fallbackReason: string | undefined;
-
-    const activeRevision = profileRepo.getActiveRevision(this.mainProfileId);
-    if (!activeRevision) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Active main profile revision missing: ${this.mainProfileId}`,
-      );
-    }
-
-    const resolvedPinned = await this.resolveValidatedProviderModel({
-      providerHintRaw: activeRevision.provider_hint,
-      modelHintRaw: activeRevision.model_hint,
-      repairIfInvalid: input.repairIfMissing,
-      allowFallbackRepair: true,
-    });
-    if (!resolvedPinned.valid || !resolvedPinned.providerHint || !resolvedPinned.modelHint) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        resolvedPinned.reason || "Main profile runtime/model selection is invalid",
-      );
-    }
-    if (resolvedPinned.fallbackApplied) {
-      repaired = true;
-    }
-    fallbackApplied = resolvedPinned.fallbackApplied;
-    fallbackReason = resolvedPinned.fallbackReason;
-
-    const refreshedProfile = profileRepo.getById(this.mainProfileId);
-    const updatedAt = new Date().toISOString();
-    return {
-      spaceId: input.spaceId,
-      spaceUid: spaceRepair.spaceUid,
-      mainAgentId: this.mainAgentId,
-      mainProfileId: this.mainProfileId,
-      assignedProfileId: spaceRepair.assignedProfileId,
-      providerHint: resolvedPinned.providerHint,
-      modelHint: resolvedPinned.modelHint,
-      status: fallbackApplied ? "fallback" : repaired ? "repaired" : "healthy",
-      repaired,
-      fallbackApplied,
-      fallbackReason,
-      updatedAt: refreshedProfile?.updated_at || updatedAt,
-    };
-  }
-
-  private async resolveConciergeAgentState(input: {
-    spaceId: string;
-    repairIfMissing: boolean;
-  }): Promise<GatewayConciergeAgentStatePayload> {
-    const profileRepo = this.requireProfileRepo();
-    const profileRepair = await this.ensureConciergeProfileActive(input.repairIfMissing);
-    const spaceRepair = await this.ensureConciergeSpace(input.repairIfMissing);
-    let repaired = profileRepair.repaired || spaceRepair.repaired;
-    let fallbackApplied = false;
-    let fallbackReason: string | undefined;
-
-    const activeRevision = profileRepo.getActiveRevision(this.conciergeProfileId);
-    if (!activeRevision) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        `Active concierge profile revision missing: ${this.conciergeProfileId}`,
-      );
-    }
-
-    const resolvedPinned = await this.resolveValidatedProviderModel({
-      providerHintRaw: activeRevision.provider_hint,
-      modelHintRaw: activeRevision.model_hint,
-      repairIfInvalid: input.repairIfMissing,
-      allowFallbackRepair: false,
-    });
-    if (!resolvedPinned.valid || !resolvedPinned.providerHint || !resolvedPinned.modelHint) {
-      throwGatewayError(
-        "FAILED_PRECONDITION",
-        resolvedPinned.reason || "Concierge profile runtime/model selection is invalid",
-      );
-    }
-    if (resolvedPinned.fallbackApplied) {
-      repaired = true;
-    }
-    fallbackApplied = resolvedPinned.fallbackApplied;
-    fallbackReason = resolvedPinned.fallbackReason;
-
-    const refreshedProfile = profileRepo.getById(this.conciergeProfileId);
-    const updatedAt = new Date().toISOString();
-    return {
-      spaceId: input.spaceId,
-      spaceUid: spaceRepair.spaceUid,
-      conciergeAgentId: this.conciergeAgentId,
-      conciergeProfileId: this.conciergeProfileId,
-      assignedProfileId: spaceRepair.assignedProfileId,
-      providerHint: resolvedPinned.providerHint,
-      modelHint: resolvedPinned.modelHint,
-      status: fallbackApplied ? "fallback" : repaired ? "repaired" : "healthy",
-      repaired,
-      fallbackApplied,
-      fallbackReason,
-      updatedAt: refreshedProfile?.updated_at || updatedAt,
-    };
-  }
-
-  private findLegacyConciergeProfile() {
-    const profileRepo = this.requireProfileRepo();
-    const candidates = profileRepo
-      .list({ includeArchived: true })
-      .filter((entry) => entry.profile_id.startsWith("system.concierge.profile."));
-    if (candidates.length === 0) {
-      return undefined;
-    }
-    return candidates.sort((lhs, rhs) => rhs.updated_at.localeCompare(lhs.updated_at))[0];
+  private async ensureAgentAssignment(
+    spaceId: string,
+    agentId: string,
+    profileId: string,
+  ): Promise<boolean> {
+    return this.managedAgentRuntimeService.ensureAgentAssignment(spaceId, agentId, profileId);
   }
 
   async listProviderCatalogs(input?: {
@@ -1568,7 +759,10 @@ export class DefaultGatewayAdminService {
       embeddedLocalIntegrationsAllowed: () => this.embeddedLocalIntegrationsAllowed(),
       ensureAgentAssignment: (spaceId, agentId, profileId) =>
         this.ensureAgentAssignment(spaceId, agentId, profileId),
-      resolveEmbeddedMacDefaultProvider: () => this.resolveEmbeddedMacDefaultProvider(),
+      // CLI providers are now auto-seeded during bootstrap; Apple should only
+      // be selected through the normal priority order in providerConfigs,
+      // not silently injected as a hidden default.
+      resolveEmbeddedMacDefaultProvider: () => undefined,
       providerPolicyRestrictionReason: (providerId) =>
         this.providerPolicyRestrictionReason(providerId),
       resolveFallbackProviderModel: () => this.resolveFallbackProviderModel(),
@@ -1620,78 +814,6 @@ export class DefaultGatewayAdminService {
     modelConfig?: ProfileModelConfig;
   }): void {
     validateGatewayAdminProfileModelSelection(this.profileRuntimeContext(), input);
-  }
-
-  private async queryCodexAppServer(executablePath: string): Promise<CodexAppServerTelemetryResult> {
-    return queryCodexAppServerTelemetry(executablePath);
-  }
-
-  private async readClaudeOAuthAccessToken(): Promise<ClaudeOAuthAccessTokenResult> {
-    const fromKeychain = this.readClaudeOAuthAccessTokenFromKeychain();
-    if (fromKeychain.accessToken) {
-      return fromKeychain;
-    }
-
-    const fromFile = this.readClaudeOAuthAccessTokenFromCredentialsFile();
-    if (fromFile.accessToken) {
-      return fromFile;
-    }
-
-    return {
-      message: "No Claude OAuth token found; API-key billing does not expose session or weekly quota windows.",
-    };
-  }
-
-  private readClaudeOAuthAccessTokenFromKeychain(): ClaudeOAuthAccessTokenResult {
-    return readClaudeOAuthAccessTokenFromKeychainPayload();
-  }
-
-  private readClaudeOAuthAccessTokenFromCredentialsFile(): ClaudeOAuthAccessTokenResult {
-    return readClaudeOAuthAccessTokenFromCredentialsFilePayload();
-  }
-
-  private async fetchClaudeOAuthUsage(accessToken: string): Promise<ClaudeOAuthUsageResult> {
-    return fetchClaudeOAuthUsageWindowPayloads(accessToken);
-  }
-
-  private async ensureAgentAssignment(
-    spaceId: string,
-    agentId: string,
-    profileId: string,
-  ): Promise<boolean> {
-    try {
-      const space = await this.spaceAdminService.getSpace(spaceId);
-      if (!space) {
-        throw new Error(`Space not found: ${spaceId}`);
-      }
-
-      const existing = space.agents.find((assignment) => assignment.agentId === agentId);
-      if (!existing) {
-        await this.spaceAdminService.addAgent({
-          spaceId,
-          agentId,
-          profileId,
-          role: "participant",
-        });
-        return true;
-      }
-
-      if (existing.profileId !== profileId) {
-        await this.spaceAdminService.updateAgentAssignment({
-          spaceId,
-          agentId,
-          profileId,
-        });
-        return true;
-      }
-
-      return false;
-    } catch (err) {
-      if (isSpaceAdminErrorLike(err) && err.code === "ALREADY_EXISTS") {
-        return false;
-      }
-      throw err;
-    }
   }
 
   private mergeAllowedModels(providerId: string, model: string, modelIds: string[]): string[] {
