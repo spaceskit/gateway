@@ -45,38 +45,53 @@ interface EventMapping {
   message: (event: GatewayEvent) => string;
 }
 
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
 const EVENT_MAPPINGS: Record<string, EventMapping> = {
   "space.turn_started": {
     category: "space.started",
     severity: "info",
     title: () => "Space started",
-    message: (e) => `Turn started in space ${(e as any).spaceId}`,
+    message: (e) => `Turn started in space ${readString(e.spaceId)}`,
   },
   "space.completed": {
     category: "space.completed",
     severity: "info",
     title: () => "Space completed",
-    message: (e) => `Space ${(e as any).spaceId} completed successfully`,
+    message: (e) => `Space ${readString(e.spaceId)} completed successfully`,
   },
   "task.progress": {
     category: "task.progress",
     severity: "info",
     title: () => "Task progress",
-    message: (e) => normalizeEventMessage((e as any).data?.message) ?? "Task is still running",
+    message: (e) => normalizeEventMessage(readRecord(e.data)?.message) ?? "Task is still running",
   },
   "task.input-required": {
     category: "task.input-required",
     severity: "warning",
     title: () => "Task input required",
-    message: (e) => normalizeEventMessage((e as any).data?.message) ?? "Task needs additional input",
+    message: (e) => normalizeEventMessage(readRecord(e.data)?.message) ?? "Task needs additional input",
   },
   "space.turn_event": {
     category: "turn.completed",
     severity: "info",
     title: () => "Turn update",
     message: (e) => {
-      const event = (e as any).event;
-      if (event?.type === "error") return `Turn failed: ${event.error?.message ?? "Unknown error"}`;
+      const event = readRecord(e.event);
+      if (event?.type === "error") {
+        const errorMessage = readString(readRecord(event.error)?.message) ?? "Unknown error";
+        return `Turn failed: ${errorMessage}`;
+      }
       if (event?.type === "turn_completed") return "Agent completed turn";
       if (event?.type === "feedback_requested") return "Agent needs your input";
       return "Turn progress update";
@@ -86,7 +101,7 @@ const EVENT_MAPPINGS: Record<string, EventMapping> = {
     category: "budget.warning",
     severity: "warning",
     title: () => "Budget warning",
-    message: (e) => `Token budget at ${(e as any).percentUsed ?? "?"}%`,
+    message: (e) => `Token budget at ${readNumber(e.percentUsed) ?? "?"}%`,
   },
   "budget.blocked": {
     category: "budget.exceeded",
@@ -98,13 +113,13 @@ const EVENT_MAPPINGS: Record<string, EventMapping> = {
     category: "security.alert",
     severity: "critical",
     title: () => "Security alert",
-    message: (e) => `Secrets detected in output: ${(e as any).count ?? "?"} items`,
+    message: (e) => `Secrets detected in output: ${readNumber(e.count) ?? "?"} items`,
   },
   "experience.created": {
     category: "experience.created",
     severity: "info",
     title: () => "Experience saved",
-    message: (e) => `New experience from space ${(e as any).spaceId}`,
+    message: (e) => `New experience from space ${readString(e.spaceId)}`,
   },
 };
 
@@ -158,24 +173,25 @@ export class DefaultNotificationService implements NotificationService {
   private hookEventBus(eventBus: EventBus): void {
     for (const [eventType, mapping] of Object.entries(EVENT_MAPPINGS)) {
       eventBus.on(eventType, async (event: GatewayEvent) => {
-        const spaceId = (event as any).spaceId as string | undefined;
+        const spaceId = readString(event.spaceId);
 
         // For turn events, only notify on significant sub-events
         if (eventType === "space.turn_event") {
-          const subEvent = (event as any).event;
+          const subEvent = readRecord(event.event);
           if (!subEvent) return;
           // Only notify on completions, errors, and feedback requests
-          if (!["turn_completed", "error", "feedback_requested"].includes(subEvent.type)) {
+          const subEventType = readString(subEvent.type);
+          if (!subEventType || !["turn_completed", "error", "feedback_requested"].includes(subEventType)) {
             return;
           }
 
           // Upgrade severity for errors and feedback
           let severity = mapping.severity;
           let category = mapping.category;
-          if (subEvent.type === "error") {
+          if (subEventType === "error") {
             severity = "error";
             category = "turn.failed";
-          } else if (subEvent.type === "feedback_requested") {
+          } else if (subEventType === "feedback_requested") {
             severity = "warning";
             category = "feedback.requested";
           }

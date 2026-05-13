@@ -6,6 +6,12 @@ import {
   NotificationHandler,
   WorkflowVisualizer,
 } from "@spaceskit/server";
+import type { GatewayEvent, SpaceConfig } from "@spaceskit/core";
+import type {
+  OrchestrationJournalRow,
+  ProfileRow,
+  SpaceAgentAssignmentRow,
+} from "@spaceskit/persistence";
 import type { BootstrapState } from "./bootstrap-state.js";
 import { GatewayObservabilityApiService } from "./services/gateway-observability-api-service.js";
 import { issueHttpPrincipalToken } from "./services/http-principal-auth.js";
@@ -72,7 +78,7 @@ export function initializeTransportServices(state: BootstrapState): void {
         listEntries: async ({ spaceId, turnId, limit, offset }) => {
           const rows = state.orchestrationJournalRepo.list({ spaceId, turnId, limit, offset });
           return {
-            entries: rows.map((row: any) => ({
+            entries: rows.map((row: OrchestrationJournalRow) => ({
               eventId: row.event_id,
               spaceId: row.space_id,
               turnId: row.turn_id,
@@ -128,7 +134,7 @@ export function initializeTransportServices(state: BootstrapState): void {
       ? (profileId) =>
         state.spaceAssignmentRepo
           .listByProfile(profileId)
-          .map((row: any) => ({
+          .map((row: SpaceAgentAssignmentRow) => ({
             spaceId: row.space_id,
             agentId: row.agent_id,
             profileId: row.profile_id,
@@ -158,7 +164,7 @@ export function initializeTransportServices(state: BootstrapState): void {
     },
     listProfiles: async () => {
       if (!state.profileRepo) return [];
-      return state.profileRepo.listActive().map((row: any) => ({
+      return state.profileRepo.listActive().map((row: ProfileRow) => ({
         profileId: row.profile_id,
         name: row.name,
         description: row.description ?? undefined,
@@ -194,7 +200,7 @@ export function initializeTransportServices(state: BootstrapState): void {
     }
 
     const spaces = await state.spaceAdminService.listSpaces({ limit: 500 });
-    const matched = spaces.find((space: any) => space.spaceUid.trim().toLowerCase() === normalizedUid);
+    const matched = spaces.find((space: SpaceConfig) => space.spaceUid.trim().toLowerCase() === normalizedUid);
     if (!matched) return undefined;
     spaceIdByUidCache.set(normalizedUid, matched.id);
     return matched.id;
@@ -314,7 +320,7 @@ export function initializeTransportServices(state: BootstrapState): void {
   }
 
   if (state.spaceTurnTraceService) {
-    state.eventBus.on("space.turn_started", (event: any) => {
+    state.eventBus.on("space.turn_started", (event: GatewayEvent) => {
       const spaceId = typeof event?.spaceId === "string" ? event.spaceId.trim() : "";
       const turnId = typeof event?.turnId === "string" ? event.turnId.trim() : "";
       if (!spaceId || !turnId) return;
@@ -333,15 +339,17 @@ export function initializeTransportServices(state: BootstrapState): void {
       });
     });
 
-    state.eventBus.on("space.turn_event", (event: any) => {
+    state.eventBus.on("space.turn_event", (event: GatewayEvent) => {
       const spaceId = typeof event?.spaceId === "string" ? event.spaceId.trim() : "";
       const turnId = typeof event?.turnId === "string" ? event.turnId.trim() : "";
       if (!spaceId || !turnId) return;
       if (state.spaceMemoryPolicyService && !state.spaceMemoryPolicyService.shouldPersistTurnTrace(spaceId)) {
         return;
       }
-      const eventPayload = event?.event ?? {};
-      const eventType = typeof eventPayload?.type === "string" ? eventPayload.type : "space.turn_event";
+      const eventPayload: Record<string, unknown> = (typeof event?.event === "object" && event.event !== null)
+        ? (event.event as Record<string, unknown>)
+        : {};
+      const eventType = typeof eventPayload.type === "string" ? eventPayload.type : "space.turn_event";
       const thinkingCapturePolicy = state.spaceMemoryPolicyService?.getEffectiveThinkingCapturePolicy(spaceId);
       state.spaceTurnTraceService?.recordTurnEvent({
         spaceId,
@@ -354,7 +362,7 @@ export function initializeTransportServices(state: BootstrapState): void {
       });
     });
 
-    state.eventBus.on("space.self_check", (event: any) => {
+    state.eventBus.on("space.self_check", (event: GatewayEvent) => {
       const spaceId = typeof event?.spaceId === "string" ? event.spaceId.trim() : "";
       const turnId = typeof event?.turnId === "string" ? event.turnId.trim() : "";
       if (!spaceId || !turnId) return;
@@ -377,7 +385,7 @@ export function initializeTransportServices(state: BootstrapState): void {
   }
 
   if (state.runtimeLedgerService) {
-    state.eventBus.on("space.turn_started", (event: any) => {
+    state.eventBus.on("space.turn_started", (event: GatewayEvent) => {
       const spaceId = typeof event?.spaceId === "string" ? event.spaceId.trim() : "";
       const turnId = typeof event?.turnId === "string" ? event.turnId.trim() : "";
       if (!spaceId || !turnId) return;
@@ -388,15 +396,19 @@ export function initializeTransportServices(state: BootstrapState): void {
       });
     });
 
-    state.eventBus.on("space.turn_event", (event: any) => {
+    state.eventBus.on("space.turn_event", (event: GatewayEvent) => {
       const spaceId = typeof event?.spaceId === "string" ? event.spaceId.trim() : "";
       const turnId = typeof event?.turnId === "string" ? event.turnId.trim() : "";
-      if (!spaceId || !turnId || !event?.event || typeof event.event.type !== "string") return;
+      if (!spaceId || !turnId) return;
+      const innerEvent = event?.event;
+      if (typeof innerEvent !== "object" || innerEvent === null) return;
+      const innerRecord = innerEvent as Record<string, unknown>;
+      if (typeof innerRecord.type !== "string") return;
       state.runtimeLedgerService?.recordTurnEvent({
         spaceId,
         turnId,
         agentId: typeof event?.agentId === "string" ? event.agentId : undefined,
-        event: event.event,
+        event: innerRecord,
       });
     });
   }
