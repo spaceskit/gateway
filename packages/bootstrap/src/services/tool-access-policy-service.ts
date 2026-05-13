@@ -21,11 +21,8 @@ import type {
 } from "@spaceskit/core";
 import { DEFAULT_SAFETY_PROFILES } from "@spaceskit/core";
 import {
-  capabilityRequestFromInvocation,
   createGatewayCoreState,
-  evaluateCapabilityRequest,
   getGatewayCoreProfile,
-  type CapabilityRequestDecision,
   type GatewayCoreProfileId,
 } from "@spaceskit/gateway-core";
 import type {
@@ -33,14 +30,19 @@ import type {
   AuditEventsRepository,
   ConnectorPolicyRepository,
   SafetyProfileRepository,
-  SpaceShareAccessMode,
   SpaceToolPolicyRepository,
   ToolAccessPolicyRepository,
 } from "@spaceskit/persistence";
 import type { DefaultGatewayPolicyService } from "./gateway-policy-service.js";
 import type { CliToolService } from "./cli-tool-service.js";
 import type { GatewayCapabilityAccessService } from "./gateway-capability-access-service.js";
-import { resolveExecutionOriginForPrincipal } from "./execution-origin-service.js";
+import {
+  resolveEffectiveAccessMode as resolveEffectiveAccessModeHelper,
+  resolveExecutionOrigin as resolveExecutionOriginHelper,
+  resolveGatewayCapabilityAccess as resolveGatewayCapabilityAccessHelper,
+  type GatewayCapabilityAccessDecision,
+  type GatewayCapabilityAccessEvaluatorDeps,
+} from "./gateway-capability-access-evaluator.js";
 import type { SpaceSharingService } from "./space-sharing-service.js";
 import type { ToolApprovalGrantService } from "./tool-approval-grant-service.js";
 import {
@@ -58,20 +60,11 @@ import {
   normalizeRequired,
   normalizeRules,
   normalizeSafetyProfileId,
-  normalizeSpaceShareAccessMode,
   parseDangerousCapabilities,
   parseLegacySpaceToolEntries,
   parseRules,
   rowToPolicy,
 } from "./tool-access-policy-normalizers.js";
-
-const UNSAFE_REGULAR_GATEWAY_CAPABILITIES = new Set([
-  "shell.execute",
-  "mcp.execute",
-  "gateway.multi",
-  "model.custom",
-  "plugin.dynamic-load",
-]);
 
 export interface ToolAccessPolicyServiceOptions {
   capabilities: CapabilityRegistry;
@@ -975,96 +968,21 @@ export class ToolAccessPolicyService {
     accessMode?: TurnRequestAccessMode;
     capability: CapabilityType;
     operation: string;
-  }): {
-    allowed: boolean;
-    reasonCode?: string;
-    reason?: string;
-    requiredGrantId: string;
-    decision: CapabilityRequestDecision["decision"];
-    effectiveAccessMode: TurnRequestAccessMode;
-  } {
-    const principalId = normalizeOptional(input.principalId);
-    const resolvedExecutionOrigin = this.resolveExecutionOrigin(
-      input.spaceId,
-      principalId,
-      input.executionOrigin,
-    );
-    const effectiveAccessMode = this.resolveEffectiveAccessMode(resolvedExecutionOrigin, input.accessMode);
-    const request = capabilityRequestFromInvocation(input.capability, input.operation);
+  }): GatewayCapabilityAccessDecision {
+    return resolveGatewayCapabilityAccessHelper(this.gatewayCapabilityAccessEvaluatorDeps(), input);
+  }
 
-    if (this.gatewayProfile.hardBlockedCapabilities.includes(request.capabilityId)) {
-      return {
-        allowed: false,
-        reasonCode: "gateway_capability_blocked",
-        reason: `Capability ${request.capabilityId} is blocked by gateway profile ${this.gatewayProfile.id}`,
-        requiredGrantId: request.capabilityId,
-        decision: "deny",
-        effectiveAccessMode,
-      };
-    }
-
-    if (resolvedExecutionOrigin === "owner") {
-      return {
-        allowed: true,
-        requiredGrantId: request.capabilityId,
-        decision: "allow",
-        effectiveAccessMode,
-      };
-    }
-
-    const participantMode = this.resolveParticipantMode(input.spaceId, principalId);
-    if (resolvedExecutionOrigin === "guest" && participantMode) {
-      const guestAccessPreset = this.resolveEffectiveGuestAccessPreset(input.spaceId, participantMode);
-      if (this.isSafeNonDangerousCapabilityRequest(input.capability, input.operation, request.capabilityId)) {
-        if (guestAccessPreset === "collaborator" || request.level === "read") {
-          return {
-            allowed: true,
-            requiredGrantId: request.capabilityId,
-            decision: "allow",
-            effectiveAccessMode,
-          };
-        }
-      }
-
-      return {
-        allowed: false,
-        reasonCode: "guest_access_preset_denied",
-        reason: guestAccessPreset === "read_only"
-          ? `Guest read-only access does not allow ${input.capability}.${input.operation}`
-          : `Guest access does not allow ${input.capability}.${input.operation}`,
-        requiredGrantId: request.capabilityId,
-        decision: "deny",
-        effectiveAccessMode,
-      };
-    }
-
-    const explicitGrantDecision = this.options.gatewayCapabilityAccessService
-      ? this.options.gatewayCapabilityAccessService.evaluateInvocation({
-        capability: input.capability,
-        operation: input.operation,
-        principalId,
-        deviceId: normalizeOptional(input.deviceId),
-      }).decision
-      : evaluateCapabilityRequest(this.defaultGatewayCoreState, request, this.now());
-
-    if (explicitGrantDecision.decision === "allow") {
-      return {
-        allowed: true,
-        requiredGrantId: request.capabilityId,
-        decision: explicitGrantDecision.decision,
-        effectiveAccessMode,
-      };
-    }
-
+  private gatewayCapabilityAccessEvaluatorDeps(): GatewayCapabilityAccessEvaluatorDeps {
     return {
-      allowed: false,
-      reasonCode: explicitGrantDecision.decision === "prompt"
-        ? "gateway_capability_not_granted"
-        : "gateway_capability_denied",
-      reason: `${explicitGrantDecision.reason} (required grant: ${request.capabilityId})`,
-      requiredGrantId: request.capabilityId,
-      decision: explicitGrantDecision.decision,
-      effectiveAccessMode,
+      gatewayProfile: this.gatewayProfile,
+      defaultGatewayCoreState: this.defaultGatewayCoreState,
+      gatewayCapabilityAccessService: this.options.gatewayCapabilityAccessService ?? null,
+      spaceSharingService: this.options.spaceSharingService ?? null,
+      getSpacePolicy: (spaceId) => this.getToolPolicy({ scopeType: "space", scopeId: spaceId }),
+      isRequiredDangerousCapability: (capability, operation) => (
+        this.requiredDangerousCapability(capability, operation) != null
+      ),
+      now: this.now,
     };
   }
 
@@ -1133,61 +1051,19 @@ export class ToolAccessPolicyService {
     principalId?: string,
     executionOrigin?: CapabilityExecutionOrigin,
   ): CapabilityExecutionOrigin {
-    if (executionOrigin) {
-      return executionOrigin;
-    }
-    return resolveExecutionOriginForPrincipal({
+    return resolveExecutionOriginHelper(
+      { spaceSharingService: this.options.spaceSharingService ?? null },
       spaceId,
       principalId,
-      getActiveParticipant: this.options.spaceSharingService
-        ? (candidateSpaceId, candidatePrincipalId) => this.options.spaceSharingService!.getActiveParticipant(
-          candidateSpaceId,
-          candidatePrincipalId,
-        )
-        : null,
-      evaluateAccess: this.options.spaceSharingService
-        ? (candidateSpaceId, candidatePrincipalId) => this.options.spaceSharingService!.evaluateAccess({
-          spaceId: candidateSpaceId,
-          principalId: candidatePrincipalId,
-          action: "read",
-        })
-        : null,
-    });
+      executionOrigin,
+    );
   }
 
   private resolveEffectiveAccessMode(
     executionOrigin: CapabilityExecutionOrigin,
     accessMode?: TurnRequestAccessMode,
   ): TurnRequestAccessMode {
-    if (executionOrigin === "owner" && accessMode === "full_access") {
-      return "full_access";
-    }
-    return "default";
-  }
-
-  private resolveParticipantMode(
-    spaceId: string,
-    principalId?: string,
-  ): SpaceShareAccessMode | undefined {
-    if (!principalId) {
-      return undefined;
-    }
-    return normalizeSpaceShareAccessMode(
-      this.options.spaceSharingService?.getActiveParticipant(spaceId, principalId)?.mode,
-    );
-  }
-
-  private resolveEffectiveGuestAccessPreset(
-    spaceId: string,
-    participantMode?: SpaceShareAccessMode,
-  ): GuestAccessPreset {
-    const spacePreset = normalizeGuestAccessPreset(
-      this.getToolPolicy({ scopeType: "space", scopeId: spaceId }).guestAccessPreset,
-    ) ?? "collaborator";
-    if (participantMode === "read_only" || spacePreset === "read_only") {
-      return "read_only";
-    }
-    return "collaborator";
+    return resolveEffectiveAccessModeHelper(executionOrigin, accessMode);
   }
 
   private isManagedCliTool(capability: CapabilityType, operation: string): boolean {
@@ -1198,15 +1074,6 @@ export class ToolAccessPolicyService {
     // The operation in the capability request matches the tool ID
     const tool = cliToolService.getTool(operation);
     return tool != null;
-  }
-
-  private isSafeNonDangerousCapabilityRequest(
-    capability: CapabilityType,
-    operation: string,
-    capabilityId: string,
-  ): boolean {
-    return !UNSAFE_REGULAR_GATEWAY_CAPABILITIES.has(capabilityId)
-      && !this.requiredDangerousCapability(capability, operation);
   }
 
   private recordAudit(

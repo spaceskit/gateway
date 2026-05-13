@@ -21,16 +21,34 @@ import type {
 import {
   COMMUNICATION_MODE_TO_TURN_MODEL,
   TURN_MODEL_TO_COMMUNICATION_MODE,
-  conversationTopologyForCommunicationMode,
   normalizeStringArray,
   normalizeTemplateAgents,
   parseAgentPresetConfig,
   parseTemplateConfig,
-  promptPackIdForConversationTopology,
   toPresetSummary,
   type StoredAgentPresetConfig,
   type StoredTemplateConfig,
 } from "./space-configurator-normalizers.js";
+import {
+  loadAgentPresetAccessOrThrow,
+  loadAgentPresetDetailRecord,
+  loadOwnedTemplateAccessOrThrow,
+  loadReadableTemplateAccessOrThrow,
+  loadTemplateDetailRecord,
+} from "./space-configurator-access.js";
+import {
+  materializeTemplateAgentsForOwner,
+  publicTemplateAgents,
+  resolveProfileId,
+  systemPresetCatalog,
+  templateDetailFromLoaded,
+  toAgentPresetDetail,
+  toTemplateRecord,
+  toTemplateSummary,
+  userAgentPresetCatalog,
+  userTemplatePresetCatalog,
+  type PresenterContext,
+} from "./space-configurator-presenters.js";
 
 export type PresetKind = "agent" | "space";
 export type PresetSource = "system" | "user";
@@ -289,15 +307,25 @@ export class SpaceConfiguratorService {
     this.now = options.now ?? (() => new Date());
   }
 
+  private get presenterCtx(): PresenterContext {
+    return {
+      templates: this.templates,
+      agentPresets: this.agentPresets,
+      profileRepo: this.profileRepo,
+      defaultProfileId: this.defaultProfileId,
+      defaultAgentId: this.defaultAgentId,
+    };
+  }
+
   listPresets(input: ListPresetsInput = {}, principalId?: string): PresetSummary[] {
     const kindFilter = input.kind ?? "all";
     const sourceFilter = input.source ?? "all";
     const tagsFilter = normalizeStringArray(input.tags);
 
     const all: PresetSummary[] = [
-      ...this.systemPresetCatalog().map((preset) => toPresetSummary(preset)),
-      ...this.userTemplatePresetCatalog(principalId).map((preset) => toPresetSummary(preset)),
-      ...this.userAgentPresetCatalog(principalId).map((preset) => toPresetSummary(preset)),
+      ...systemPresetCatalog(this.presenterCtx).map((preset) => toPresetSummary(preset)),
+      ...userTemplatePresetCatalog(this.presenterCtx, principalId).map((preset) => toPresetSummary(preset)),
+      ...userAgentPresetCatalog(this.presenterCtx, principalId).map((preset) => toPresetSummary(preset)),
     ];
 
     return all.filter((preset) => {
@@ -872,151 +900,26 @@ export class SpaceConfiguratorService {
   }
 
   private resolveProfileId(definition: TemplateAgentDefinition | string | undefined): string {
-    const requestedProfileId = typeof definition === "string"
-      ? definition
-      : definition?.profileBinding === "gateway_default_main"
-        ? this.defaultProfileId
-        : definition?.profileId;
-    const candidate = requestedProfileId?.trim() || this.defaultProfileId;
-    if (!this.profileRepo) {
-      return candidate;
-    }
-
-    const profile = this.profileRepo.getById(candidate);
-    if (profile && profile.archived === 0) {
-      return candidate;
-    }
-
-    return this.defaultProfileId;
+    return resolveProfileId(this.presenterCtx, definition);
   }
 
   private materializeTemplateAgentsForOwner(
     baseAgents: TemplateAgentDefinition[],
     ownerPrincipalId: string,
   ): TemplateAgentDefinition[] {
-    if (ownerPrincipalId.trim() === "system") {
-      return baseAgents;
-    }
-
-    return baseAgents.map((definition) => ({
-      ...definition,
-      profileId: this.resolveProfileId(definition),
-      profileBinding: "explicit",
-    }));
+    return materializeTemplateAgentsForOwner(this.presenterCtx, baseAgents, ownerPrincipalId);
   }
 
   private systemPresetCatalog(): PresetDetail[] {
-    const coordinatorAgent: TemplateAgentDefinition = {
-      agentId: this.defaultAgentId,
-      profileId: this.defaultProfileId,
-      profileBinding: "explicit",
-      role: "global_coordinator",
-      turnOrder: 0,
-      isPrimary: true,
-    };
-
-    return [
-      {
-        presetId: "system.space.chat_first",
-        kind: "space",
-        title: "Chat First Space",
-        description: "Primary coordinator flow with one default agent.",
-        source: "system",
-        version: 1,
-        tags: ["starter", "chat"],
-        spacePreset: {
-          communicationMode: "chat_first",
-          turnModel: "primary_only",
-          baseAgents: [coordinatorAgent],
-          agentPresetIds: ["system.agent.coordinator"],
-        },
-      },
-      {
-        presetId: "system.space.structured_handoff",
-        kind: "space",
-        title: "Structured Handoff",
-        description: "Round-robin collaboration starter for explicit turn-taking.",
-        source: "system",
-        version: 1,
-        tags: ["handoff", "collaboration"],
-        spacePreset: {
-          communicationMode: "structured_handoff",
-          turnModel: "round_robin",
-          baseAgents: [coordinatorAgent],
-          agentPresetIds: ["system.agent.coordinator"],
-        },
-      },
-      {
-        presetId: "system.agent.coordinator",
-        kind: "agent",
-        title: "Coordinator Agent",
-        description: "Default coordinator assignment for existing spaces.",
-        source: "system",
-        version: 1,
-        tags: ["agent", "coordinator"],
-        agentPreset: {
-          defaultAgents: [coordinatorAgent],
-        },
-      },
-    ];
+    return systemPresetCatalog(this.presenterCtx);
   }
 
   private userTemplatePresetCatalog(principalId?: string): PresetDetail[] {
-    if (!this.templates) {
-      return [];
-    }
-    const normalizedPrincipalId = principalId?.trim();
-    if (!normalizedPrincipalId) {
-      return [];
-    }
-
-    const presets: PresetDetail[] = [];
-    for (const template of this.templates.list({
-      includeArchived: false,
-      ownerPrincipalId: normalizedPrincipalId,
-    })) {
-      const revision = this.templates.getActiveRevision(template.template_id);
-      if (!revision) continue;
-      const config = parseTemplateConfig(revision.space_config_json);
-      presets.push({
-        presetId: `${USER_TEMPLATE_PRESET_PREFIX}${template.template_id}`,
-        kind: "space",
-        title: template.name,
-        description: template.description,
-        source: "user",
-        version: revision.revision,
-        tags: config.tags,
-        spacePreset: {
-          communicationMode: config.communicationMode,
-          turnModel: config.turnModel,
-          baseAgents: this.publicTemplateAgents(config.baseAgents, template.owner_principal_id),
-          agentPresetIds: config.agentPresetIds,
-        },
-      });
-    }
-    return presets;
+    return userTemplatePresetCatalog(this.presenterCtx, principalId);
   }
 
   private userAgentPresetCatalog(principalId?: string): PresetDetail[] {
-    if (!this.agentPresets) {
-      return [];
-    }
-    const normalizedPrincipalId = principalId?.trim();
-    if (!normalizedPrincipalId) {
-      return [];
-    }
-
-    const presets: PresetDetail[] = [];
-    for (const preset of this.agentPresets.list({
-      includeArchived: false,
-      ownerPrincipalId: normalizedPrincipalId,
-    })) {
-      const revision = this.agentPresets.getActiveRevision(preset.preset_id);
-      if (!revision) continue;
-      const config = parseAgentPresetConfig(revision.preset_config_json);
-      presets.push(this.toAgentPresetDetail(preset, revision, config));
-    }
-    return presets;
+    return userAgentPresetCatalog(this.presenterCtx, principalId);
   }
 
   private loadTemplateOrThrow(templateId: string, principalId: string): {
@@ -1024,7 +927,7 @@ export class SpaceConfiguratorService {
     revision: SpaceTemplateRevisionRow;
     config: StoredTemplateConfig;
   } {
-    return this.loadReadableTemplateAccessOrThrow(templateId, principalId);
+    return loadReadableTemplateAccessOrThrow(this.templates, templateId, principalId);
   }
 
   private loadReadableTemplateAccessOrThrow(
@@ -1036,54 +939,7 @@ export class SpaceConfiguratorService {
     revision: SpaceTemplateRevisionRow;
     config: StoredTemplateConfig;
   } {
-    const normalizedTemplateId = templateId.trim();
-    if (!normalizedTemplateId) {
-      throw new SpaceConfiguratorError("INVALID_ARGUMENT", "templateId is required");
-    }
-
-    if (!this.templates) {
-      throw new SpaceConfiguratorError("FAILED_PRECONDITION", "Template persistence is unavailable");
-    }
-
-    const normalizedPrincipalId = principalId.trim();
-    if (!normalizedPrincipalId) {
-      throw new SpaceConfiguratorError("INVALID_ARGUMENT", "principalId is required");
-    }
-
-    const template = this.templates.getById(normalizedTemplateId);
-    if (!template || (!options.includeArchived && template.archived === 1)) {
-      throw new SpaceConfiguratorError("NOT_FOUND", `Template not found: ${normalizedTemplateId}`);
-    }
-
-    const revision = this.templates.getActiveRevision(normalizedTemplateId);
-    if (!revision) {
-      throw new SpaceConfiguratorError(
-        "FAILED_PRECONDITION",
-        `Active template revision missing: ${normalizedTemplateId}`,
-      );
-    }
-
-    const config = parseTemplateConfig(revision.space_config_json);
-    const ownedByPrincipal = template.owner_principal_id === normalizedPrincipalId;
-    const ownerMissing = template.owner_principal_id.trim().length === 0;
-    const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
-    const isSystemTemplate = template.owner_principal_id.trim() === "system";
-
-    if (!ownedByPrincipal && !legacyOwnerMatch && !isSystemTemplate) {
-      throw new SpaceConfiguratorError(
-        "PERMISSION_DENIED",
-        `Template is not accessible for principal: ${normalizedTemplateId}`,
-      );
-    }
-    if (legacyOwnerMatch) {
-      this.templates.claimOwnerIfUnowned(normalizedTemplateId, normalizedPrincipalId);
-    }
-
-    return {
-      template: this.templates.getById(normalizedTemplateId) ?? template,
-      revision,
-      config,
-    };
+    return loadReadableTemplateAccessOrThrow(this.templates, templateId, principalId, options);
   }
 
   private loadOwnedTemplateAccessOrThrow(
@@ -1095,66 +951,15 @@ export class SpaceConfiguratorService {
     revision: SpaceTemplateRevisionRow;
     config: StoredTemplateConfig;
   } {
-    const loaded = this.loadReadableTemplateAccessOrThrow(templateId, principalId, options);
-    const normalizedPrincipalId = principalId.trim();
-    const ownedByPrincipal = loaded.template.owner_principal_id === normalizedPrincipalId;
-    const ownerMissing = loaded.template.owner_principal_id.trim().length === 0;
-    const legacyOwnerMatch = ownerMissing && loaded.config.metadata.createdBy === normalizedPrincipalId;
-
-    if (!ownedByPrincipal && !legacyOwnerMatch) {
-      throw new SpaceConfiguratorError(
-        "PERMISSION_DENIED",
-        `Template is not accessible for principal: ${loaded.template.template_id}`,
-      );
-    }
-
-    return loaded;
+    return loadOwnedTemplateAccessOrThrow(this.templates, templateId, principalId, options);
   }
 
   private loadTemplateDetail(templateId: string, principalId?: string): PresetDetail | null {
-    if (!this.templates) {
+    const loaded = loadTemplateDetailRecord(this.templates, templateId, principalId);
+    if (!loaded) {
       return null;
     }
-    const normalizedPrincipalId = principalId?.trim();
-    if (!normalizedPrincipalId) {
-      return null;
-    }
-
-    const template = this.templates.getById(templateId);
-    if (!template || template.archived === 1) {
-      return null;
-    }
-
-    const revision = this.templates.getActiveRevision(templateId);
-    if (!revision) {
-      return null;
-    }
-
-    const config = parseTemplateConfig(revision.space_config_json);
-    if (template.owner_principal_id !== normalizedPrincipalId) {
-      const ownerMissing = template.owner_principal_id.trim().length === 0;
-      const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
-      if (!legacyOwnerMatch) {
-        return null;
-      }
-      this.templates.claimOwnerIfUnowned(templateId, normalizedPrincipalId);
-    }
-
-    return {
-      presetId: `${USER_TEMPLATE_PRESET_PREFIX}${template.template_id}`,
-      kind: "space",
-      title: template.name,
-      description: template.description,
-      source: "user",
-      version: revision.revision,
-      tags: config.tags,
-      spacePreset: {
-        communicationMode: config.communicationMode,
-        turnModel: config.turnModel,
-        baseAgents: this.publicTemplateAgents(config.baseAgents, template.owner_principal_id),
-        agentPresetIds: config.agentPresetIds,
-      },
-    };
+    return templateDetailFromLoaded(this.presenterCtx, loaded.template, loaded.revision, loaded.config);
   }
 
   private loadAgentPresetOrThrow(presetId: string, principalId: string): {
@@ -1162,86 +967,15 @@ export class SpaceConfiguratorService {
     revision: AgentPresetRevisionRow;
     config: StoredAgentPresetConfig;
   } {
-    const normalizedPresetId = presetId.trim();
-    if (!normalizedPresetId) {
-      throw new SpaceConfiguratorError("INVALID_ARGUMENT", "presetId is required");
-    }
-
-    if (!this.agentPresets) {
-      throw new SpaceConfiguratorError("FAILED_PRECONDITION", "Agent preset persistence is unavailable");
-    }
-
-    const normalizedPrincipalId = principalId.trim();
-    if (!normalizedPrincipalId) {
-      throw new SpaceConfiguratorError("INVALID_ARGUMENT", "principalId is required");
-    }
-
-    const preset = this.agentPresets.getById(normalizedPresetId);
-    if (!preset || preset.archived === 1) {
-      throw new SpaceConfiguratorError("NOT_FOUND", `Agent preset not found: ${normalizedPresetId}`);
-    }
-
-    const revision = this.agentPresets.getActiveRevision(normalizedPresetId);
-    if (!revision) {
-      throw new SpaceConfiguratorError(
-        "FAILED_PRECONDITION",
-        `Active agent preset revision missing: ${normalizedPresetId}`,
-      );
-    }
-
-    const config = parseAgentPresetConfig(revision.preset_config_json);
-    const ownedByPrincipal = preset.owner_principal_id === normalizedPrincipalId;
-    const ownerMissing = preset.owner_principal_id.trim().length === 0;
-    const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
-
-    if (!ownedByPrincipal && !legacyOwnerMatch) {
-      throw new SpaceConfiguratorError(
-        "PERMISSION_DENIED",
-        `Agent preset is not accessible for principal: ${normalizedPresetId}`,
-      );
-    }
-    if (legacyOwnerMatch) {
-      this.agentPresets.claimOwnerIfUnowned(normalizedPresetId, normalizedPrincipalId);
-    }
-
-    return {
-      preset: this.agentPresets.getById(normalizedPresetId) ?? preset,
-      revision,
-      config,
-    };
+    return loadAgentPresetAccessOrThrow(this.agentPresets, presetId, principalId);
   }
 
   private loadAgentPresetDetail(presetId: string, principalId?: string): PresetDetail | null {
-    if (!this.agentPresets) {
+    const loaded = loadAgentPresetDetailRecord(this.agentPresets, presetId, principalId);
+    if (!loaded) {
       return null;
     }
-
-    const normalizedPrincipalId = principalId?.trim();
-    if (!normalizedPrincipalId) {
-      return null;
-    }
-
-    const preset = this.agentPresets.getById(presetId);
-    if (!preset || preset.archived === 1) {
-      return null;
-    }
-
-    const revision = this.agentPresets.getActiveRevision(presetId);
-    if (!revision) {
-      return null;
-    }
-
-    const config = parseAgentPresetConfig(revision.preset_config_json);
-    if (preset.owner_principal_id !== normalizedPrincipalId) {
-      const ownerMissing = preset.owner_principal_id.trim().length === 0;
-      const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
-      if (!legacyOwnerMatch) {
-        return null;
-      }
-      this.agentPresets.claimOwnerIfUnowned(presetId, normalizedPrincipalId);
-    }
-
-    return this.toAgentPresetDetail(preset, revision, config);
+    return toAgentPresetDetail(this.presenterCtx, loaded.preset, loaded.revision, loaded.config);
   }
 
   private toAgentPresetDetail(
@@ -1249,84 +983,27 @@ export class SpaceConfiguratorService {
     revision: { revision: number },
     config: StoredAgentPresetConfig,
   ): PresetDetail {
-    return {
-      presetId: `${USER_AGENT_PRESET_PREFIX}${preset.preset_id}`,
-      kind: "agent",
-      title: preset.name,
-      description: preset.description,
-      source: "user",
-      version: revision.revision,
-      tags: config.tags,
-      agentPreset: {
-        defaultAgents: config.defaultAgents.map((definition) => ({
-          ...definition,
-          profileId: this.resolveProfileId(definition),
-          profileBinding: "explicit",
-        })),
-      },
-    };
+    return toAgentPresetDetail(this.presenterCtx, preset, revision, config);
   }
 
   private toTemplateSummary(
     template: { template_id: string; name: string; updated_at: string },
     config: StoredTemplateConfig,
   ): SpaceTemplateSummary {
-    const conversationTopology = conversationTopologyForCommunicationMode(config.communicationMode);
-    return {
-      templateId: template.template_id,
-      title: template.name,
-      communicationMode: config.communicationMode,
-      conversationTopology,
-      promptPackId: promptPackIdForConversationTopology(conversationTopology),
-      agentPresetIds: config.agentPresetIds,
-      createdBy: config.metadata.createdBy,
-      updatedAt: template.updated_at,
-    };
+    return toTemplateSummary(template, config);
   }
 
   private toTemplateRecord(
     template: SpaceTemplateRow,
     config: StoredTemplateConfig,
   ): SpaceTemplateRecord {
-    const summary = this.toTemplateSummary(template, config);
-    return {
-      templateId: summary.templateId,
-      name: template.name,
-      description: template.description || undefined,
-      status: template.archived === 1 ? "archived" : "active",
-      activeRevision: template.active_revision,
-      communicationMode: config.communicationMode,
-      conversationTopology: summary.conversationTopology,
-      promptPackId: summary.promptPackId,
-      turnModel: config.turnModel,
-      agentDefinitions: this.publicTemplateAgents(config.baseAgents, template.owner_principal_id),
-      createdBy: config.metadata.createdBy,
-      createdAt: template.created_at,
-      updatedAt: template.updated_at,
-      category: config.metadata.category,
-      complexityTier: config.metadata.complexityTier,
-      icon: config.metadata.icon,
-      featured: config.metadata.featured,
-      sortOrder: config.metadata.sortOrder,
-      agentCount: config.baseAgents.length,
-    };
+    return toTemplateRecord(this.presenterCtx, template, config);
   }
 
   private publicTemplateAgents(
     baseAgents: TemplateAgentDefinition[],
     ownerPrincipalIdRaw: string,
   ): TemplateAgentDefinition[] {
-    const preserveManagedBinding = ownerPrincipalIdRaw.trim() === "system";
-    return baseAgents.map((definition) => {
-      const profileBinding: TemplateAgentProfileBinding = preserveManagedBinding
-        && definition.profileBinding === "gateway_default_main"
-        ? "gateway_default_main"
-        : "explicit";
-      return {
-        ...definition,
-        profileId: this.resolveProfileId(definition),
-        profileBinding,
-      };
-    });
+    return publicTemplateAgents(this.presenterCtx, baseAgents, ownerPrincipalIdRaw);
   }
 }

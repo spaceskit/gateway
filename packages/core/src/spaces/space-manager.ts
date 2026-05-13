@@ -98,6 +98,11 @@ import {
   executeMasterModeFlow,
   type MasterModeContext,
 } from "./space-manager-master-mode.js";
+import {
+  cancelActiveOrPausedTurn,
+  resumePausedTurnFeedback,
+  startPausedFeedbackTimeout,
+} from "./space-manager-feedback.js";
 
 export type { TurnExecutionIdentity } from "./space-manager-normalizers.js";
 export type {
@@ -459,40 +464,16 @@ export class SpaceManager {
       deviceId?: string;
     },
   ): Promise<void> {
-    const space = this.activeSpaces.get(spaceId);
-    if (!space) throw new Error(`Space ${spaceId} not active`);
-
-    const runtime = space.pausedRuntimes.get(turnId);
-    if (!runtime) throw new Error(`No paused turn ${turnId} in space ${spaceId}`);
-    const pausedAgentId = space.pausedRuntimeAgentIds.get(turnId);
-    const pausedRequest = space.pausedFeedbackRequests.get(turnId);
-
-    space.pausedRuntimes.delete(turnId);
-    space.pausedRuntimeAgentIds.delete(turnId);
-    space.pausedFeedbackRequests.delete(turnId);
-
-    // Clear feedback timeout timer
-    const timer = space.feedbackTimers.get(turnId);
-    if (timer) {
-      clearTimeout(timer);
-      space.feedbackTimers.delete(turnId);
-    }
-
-    await this.options.handleFeedbackResolution?.({
+    return resumePausedTurnFeedback({
+      activeSpaces: this.activeSpaces,
       spaceId,
       turnId,
-      request: pausedRequest,
       response,
       revision,
-      approvalGrant: options?.approvalGrant,
-      principalId: options?.principalId,
-      deviceId: options?.deviceId,
+      options,
+      handleFeedbackResolution: this.options.handleFeedbackResolution,
+      forwardEvent: this.forwardEvent.bind(this),
     });
-
-    // Resume — events will flow through the original generator
-    for await (const event of runtime.resumeWithFeedback(turnId, response, revision)) {
-      this.forwardEvent(spaceId, turnId, event, pausedAgentId);
-    }
   }
 
   /**
@@ -500,47 +481,12 @@ export class SpaceManager {
    * Returns true if the turn was found and cancelled, false otherwise.
    */
   async cancelTurn(spaceId: string, turnId: string): Promise<boolean> {
-    const space = this.activeSpaces.get(spaceId);
-    if (!space) return false;
-
-    // Check active (executing) turns first
-    const activeRuntime = space.activeTurnRuntimes.get(turnId);
-    if (activeRuntime) {
-      await activeRuntime.cancel();
-      space.activeTurnRuntimes.delete(turnId);
-      this.eventBus.emit({
-        type: "space.turn_event",
-        spaceId,
-        turnId,
-        event: { type: "turn_cancelled" },
-        timestamp: new Date(),
-      });
-      return true;
-    }
-
-    // Check paused (awaiting feedback) turns
-    const pausedRuntime = space.pausedRuntimes.get(turnId);
-    if (pausedRuntime) {
-      await pausedRuntime.cancel();
-      space.pausedRuntimes.delete(turnId);
-      space.pausedRuntimeAgentIds.delete(turnId);
-      space.pausedFeedbackRequests.delete(turnId);
-      const timer = space.feedbackTimers.get(turnId);
-      if (timer) {
-        clearTimeout(timer);
-        space.feedbackTimers.delete(turnId);
-      }
-      this.eventBus.emit({
-        type: "space.turn_event",
-        spaceId,
-        turnId,
-        event: { type: "turn_cancelled" },
-        timestamp: new Date(),
-      });
-      return true;
-    }
-
-    return false;
+    return cancelActiveOrPausedTurn({
+      activeSpaces: this.activeSpaces,
+      eventBus: this.eventBus,
+      spaceId,
+      turnId,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -876,36 +822,18 @@ export class SpaceManager {
    * within the timeout, auto-reject the turn and emit a warning.
    */
   private startFeedbackTimeout(spaceId: string, turnId: string): void {
-    const space = this.activeSpaces.get(spaceId);
-    if (!space) return;
-
-    const timeoutMs = this.options.feedbackTimeoutMs ?? 300_000; // 5 minutes
-
-    const timer = setTimeout(() => {
-      space.feedbackTimers.delete(turnId);
-      const runtime = space.pausedRuntimes.get(turnId);
-      if (!runtime) {
-        space.pausedRuntimeAgentIds.delete(turnId);
-        space.pausedFeedbackRequests.delete(turnId);
-        return; // Already resumed
-      }
-
-      // Auto-reject the paused turn
-      this.eventBus.emit({
-        type: "space.feedback_timeout",
-        spaceId,
-        turnId,
-        timeoutMs,
-        timestamp: new Date(),
-      });
-
-      // Resume with rejection
-      this.resumeFeedback(spaceId, turnId, "reject").catch((err) => {
-        console.error(`Failed to auto-reject timed-out feedback for turn ${turnId}:`, err);
-      });
-    }, timeoutMs);
-
-    space.feedbackTimers.set(turnId, timer);
+    startPausedFeedbackTimeout({
+      activeSpaces: this.activeSpaces,
+      eventBus: this.eventBus,
+      spaceId,
+      turnId,
+      timeoutMs: this.options.feedbackTimeoutMs ?? 300_000, // 5 minutes
+      onTimeout: (sId, tId) => {
+        this.resumeFeedback(sId, tId, "reject").catch((err) => {
+          console.error(`Failed to auto-reject timed-out feedback for turn ${tId}:`, err);
+        });
+      },
+    });
   }
 
   private forwardEvent(spaceId: string, turnId: string, event: TurnEvent, agentId?: string): void {

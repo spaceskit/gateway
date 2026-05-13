@@ -55,19 +55,29 @@ import {
   type WorkbenchCommandEvidence,
 } from "./workbench-verification-executor.js";
 import {
-  buildGeneratedDocsKnowledgeArtifact,
-  runWorkbenchDocsPreflight,
-} from "./workbench-docs-evidence.js";
-import {
-  centralTasksRoot,
-  extractNextAction,
-  itemsConflict,
-  loadCentralTasks,
   resolvePlanningRepoRoot,
   tryParseTaskFile,
   updateCentralTaskFile,
-  type CentralTaskRecord,
 } from "./workbench-task-metadata.js";
+import {
+  assertWorkbenchAutonomousEligibility,
+  assertWorkbenchBatchConflictFree,
+  assertWorkbenchNoActiveRunConflict,
+  assertWorkbenchParallelCapacity,
+  loadWorkbenchQueueItems,
+  resolveWorkbenchQueueItems,
+} from "./workbench-queue-loader.js";
+import {
+  executeWorkbenchAgentLoopIfConfigured,
+  type WorkbenchAgentLoopContext,
+  type WorkbenchExecutionLoopResult,
+} from "./workbench-agent-loop.js";
+import {
+  persistWorkbenchDocsPreflightArtifact,
+  persistWorkbenchGeneratedDocsKnowledgeArtifact,
+  persistWorkbenchRunArtifacts,
+  persistWorkbenchVerificationLog,
+} from "./workbench-run-artifacts.js";
 export {
   auditWorkbenchOpenBacklog,
   auditWorkbenchPlanningRepo,
@@ -78,13 +88,8 @@ export type {
   WorkbenchPlanningAuditReport,
 } from "./workbench-planning-audit.js";
 import {
-  WORKBENCH_IMPLEMENTATION_AGENTS,
-  WORKBENCH_IMPLEMENTATION_AGENT_IDS,
-  WORKBENCH_PLANNING_AGENTS,
-  WORKBENCH_PLANNING_AGENT_IDS,
   WorkbenchServiceError,
   initialRunStateForMode,
-  isWorkbenchAgentTurnPaused,
   modePatchForRun,
   normalizeExecutionMode,
   normalizeLimit,
@@ -93,15 +98,9 @@ import {
   parseJson,
   parseJsonArray,
   sanitizeSlug,
-  type WorkbenchAgentTurnPaused,
 } from "./workbench-service-normalizers.js";
 
 export { WorkbenchServiceError } from "./workbench-service-normalizers.js";
-
-interface WorkbenchExecutionLoopResult {
-  row: WorkbenchRunRow;
-  continueToVerification: boolean;
-}
 
 export interface WorkbenchServiceOptions {
   batches: WorkbenchBatchRepository;
@@ -500,345 +499,27 @@ export class WorkbenchService {
     return updated ?? run;
   }
 
-  private async executeWorkbenchAgentLoopIfConfigured(
+  private executeWorkbenchAgentLoopIfConfigured(
     run: WorkbenchRunRow,
     worktree: WorkbenchWorktreeRefPayload,
     suites: WorkbenchVerificationSuitePayload[],
   ): Promise<WorkbenchExecutionLoopResult> {
-    if (!this.options.spaceAdminService || !this.options.spaceManager) {
-      return { row: run, continueToVerification: true };
-    }
-
-    const existingContext = run.execution_context_json
-      ? parseJson<WorkbenchExecutionContextPayload>(run.execution_context_json)
-      : null;
-    if (existingContext?.implementationTurnId) {
-      return { row: run, continueToVerification: true };
-    }
-
-    const queueItem = this.resolveQueueItems([run.queue_item_id])[0]!;
-    const spaceName = `Workbench: ${queueItem.queueItemId}`;
-    let executionContext: WorkbenchExecutionContextPayload | null = existingContext;
-
-    try {
-      const space = await this.options.spaceAdminService.createSpace({
-        idempotencyKey: `${run.run_id}:execution-space`,
-        resourceId: worktree.path,
-        name: spaceName,
-        goal: `Execute Workbench run ${run.run_id} for ${queueItem.queueItemId}.`,
-        templateId: "workbench/execution-loop",
-        turnModel: "sequential_all",
-        conversationTopology: "shared_team_chat",
-        visibility: "shared",
-        turnModelConfig: {
-          strategy: "sequential_all",
-          masterModeEnabled: false,
-          peerReviewEnabled: true,
-        },
-        initialAgents: [
-          ...WORKBENCH_PLANNING_AGENTS,
-          ...WORKBENCH_IMPLEMENTATION_AGENTS,
-        ],
-      });
-
-      executionContext = {
-        spaceId: space.id,
-        spaceUid: space.spaceUid,
-        spaceName: space.name,
-        stage: "planning",
-      };
-      let row = this.options.runs.update(run.run_id, {
-        status: "running",
-        currentStage: "plan",
-        executionContextJson: JSON.stringify(executionContext),
-        verificationResultJson: JSON.stringify({
-          status: "pending",
-          summary: "Planning agents are discussing the Workbench run.",
-        } satisfies WorkbenchVerificationResultPayload),
-      }) ?? run;
-
-      const planningTurnId = await this.executeWorkbenchTurn({
-        spaceId: space.id,
-        input: this.buildPlanningPrompt(queueItem, worktree, suites),
-        expectedAgentCount: this.countAssignedAgents(space, WORKBENCH_PLANNING_AGENT_IDS),
-        executionIdentity: {
-          principalId: run.created_by_principal_id,
-          executionOrigin: "system",
-          mode: "plan",
-          effort: "high",
-          conversationTopology: "broadcast_team",
-          targetAgentIds: WORKBENCH_PLANNING_AGENT_IDS,
-        },
-        stage: "planning",
-      });
-      executionContext = {
-        ...executionContext,
-        planningTurnId,
-        stage: "implementation",
-      };
-      this.persistAgentPlanningArtifact(run.run_id, executionContext, queueItem);
-      row = this.options.runs.update(run.run_id, {
-        currentStage: "execute",
-        executionContextJson: JSON.stringify(executionContext),
-        verificationResultJson: JSON.stringify({
-          status: "pending",
-          summary: "Implementation agents are editing the allocated Workbench worktree.",
-        } satisfies WorkbenchVerificationResultPayload),
-      }) ?? row;
-
-      const implementationTurnId = await this.executeWorkbenchTurn({
-        spaceId: space.id,
-        input: this.buildImplementationPrompt(queueItem, worktree, suites, planningTurnId),
-        expectedAgentCount: this.countAssignedAgents(space, WORKBENCH_IMPLEMENTATION_AGENT_IDS),
-        executionIdentity: {
-          principalId: run.created_by_principal_id,
-          executionOrigin: "system",
-          mode: "execute",
-          effort: "high",
-          conversationTopology: "shared_team_chat",
-          targetAgentIds: WORKBENCH_IMPLEMENTATION_AGENT_IDS,
-          replyToTurnId: planningTurnId,
-        },
-        stage: "implementation",
-      });
-      executionContext = {
-        ...executionContext,
-        implementationTurnId,
-        stage: "verification",
-      };
-      row = this.options.runs.update(run.run_id, {
-        currentStage: "execute",
-        executionContextJson: JSON.stringify(executionContext),
-      }) ?? row;
-      return { row, continueToVerification: true };
-    } catch (error) {
-      if (isWorkbenchAgentTurnPaused(error)) {
-        const pausedContext = {
-          ...(executionContext ?? {
-            spaceId: "",
-            spaceName: spaceName,
-          }),
-          stage: "paused" as const,
-          ...(error.stage === "planning" ? { planningTurnId: error.turnId } : {}),
-          ...(error.stage === "implementation" ? { implementationTurnId: error.turnId } : {}),
-        };
-        const row = this.options.runs.update(run.run_id, {
-          status: "running",
-          currentStage: error.stage === "planning" ? "plan" : "execute",
-          executionContextJson: JSON.stringify(pausedContext),
-          verificationResultJson: JSON.stringify({
-            status: "pending",
-            summary: `Agent turn paused for approval or input: ${error.reason}`,
-          } satisfies WorkbenchVerificationResultPayload),
-        }) ?? run;
-        this.persistAgentLoopReportArtifact(run.run_id, "paused", error.reason);
-        return { row, continueToVerification: false };
-      }
-
-      const message = error instanceof Error ? error.message : String(error);
-      const failedContext = executionContext
-        ? { ...executionContext, stage: "failed" as const }
-        : undefined;
-      const row = this.options.runs.update(run.run_id, {
-        status: "failed",
-        currentStage: "report",
-        finishedAt: this.now().toISOString(),
-        executionContextJson: failedContext ? JSON.stringify(failedContext) : undefined,
-        lastErrorCode: "AGENT_TURN_FAILED",
-        lastErrorMessage: message,
-        verificationResultJson: JSON.stringify({
-          status: "failed",
-          summary: `Agent execution failed before verification: ${message}`,
-        } satisfies WorkbenchVerificationResultPayload),
-        landingResultJson: JSON.stringify({
-          status: "blocked",
-          summary: "Automatic landing is not enabled for this Workbench executor slice.",
-          completedAt: this.now().toISOString(),
-        } satisfies WorkbenchLandingResultPayload),
-      }) ?? run;
-      const queueItem = this.resolveQueueItems([run.queue_item_id])[0];
-      if (queueItem) {
-        this.updateCentralTaskStatus(queueItem, "blocked", `Workbench run ${run.run_id} failed before verification: ${message}`);
-      }
-      this.persistAgentLoopReportArtifact(run.run_id, "failed", message);
-      return { row, continueToVerification: false };
-    }
+    return executeWorkbenchAgentLoopIfConfigured(this.agentLoopContext(), run, worktree, suites);
   }
 
-  private async executeWorkbenchTurn(input: {
-    spaceId: string;
-    input: string;
-    expectedAgentCount: number;
-    executionIdentity: TurnExecutionIdentity;
-    stage: Extract<WorkbenchExecutionContextStagePayload, "planning" | "implementation">;
-  }): Promise<string> {
-    const result = await this.options.spaceManager!.executeTurn(
-      input.spaceId,
-      input.input,
-      undefined,
-      input.executionIdentity,
-    );
-    await this.waitForWorkbenchTurn(input.spaceId, result.turnId, input.stage, input.expectedAgentCount);
-    return result.turnId;
-  }
-
-  private async waitForWorkbenchTurn(
-    spaceId: string,
-    turnId: string,
-    stage: Extract<WorkbenchExecutionContextStagePayload, "planning" | "implementation">,
-    expectedAgentCount: number,
-  ): Promise<void> {
-    const eventBus = this.options.eventBus;
-    if (!eventBus) return;
-
-    await new Promise<void>((resolve, reject) => {
-      let unsubscribeOrchestrator: (() => void) | undefined;
-      let unsubscribeTurn: (() => void) | undefined;
-      const completedAgentIds = new Set<string>();
-      let anonymousCompletionCount = 0;
-      const cleanup = () => {
-        clearTimeout(timer);
-        unsubscribeOrchestrator?.();
-        unsubscribeTurn?.();
-      };
-      const finish = (error?: unknown) => {
-        cleanup();
-        if (error) reject(error);
-        else resolve();
-      };
-      const timer = setTimeout(() => {
-        finish(new Error(`Timed out waiting for ${stage} turn ${turnId} to complete.`));
-      }, this.agentTurnCompletionTimeoutMs);
-
-      unsubscribeOrchestrator = eventBus.on("space.orchestrator_event", (event) => {
-        const typed = event as { spaceId?: string; turnId?: string; status?: string; eventType?: string };
-        if (typed.spaceId !== spaceId || typed.turnId !== turnId) return;
-        if (typed.status === "completed" || typed.eventType === "summary.completed") {
-          finish();
-          return;
-        }
-        if (typed.status === "failed" || typed.eventType === "summary.failed") {
-          finish(new Error(`${stage} turn ${turnId} failed.`));
-        }
-      });
-
-      unsubscribeTurn = eventBus.on("space.turn_event", (event) => {
-        const typed = event as { spaceId?: string; turnId?: string; event?: { type?: string; request?: { description?: string }; error?: { message?: string } } };
-        if (typed.spaceId !== spaceId || typed.turnId !== turnId) return;
-        const eventType = typed.event?.type;
-        if (eventType === "feedback_requested") {
-          finish({
-            kind: "paused",
-            stage,
-            turnId,
-            reason: typed.event?.request?.description ?? "Agent requested approval or input.",
-          } satisfies WorkbenchAgentTurnPaused);
-          return;
-        }
-        if (eventType === "error") {
-          finish(new Error(typed.event?.error?.message ?? `${stage} turn ${turnId} failed.`));
-          return;
-        }
-        if (eventType === "turn_completed") {
-          const agentId = (event as { agentId?: string }).agentId?.trim();
-          if (agentId) {
-            completedAgentIds.add(agentId);
-          } else {
-            anonymousCompletionCount += 1;
-          }
-          if (completedAgentIds.size + anonymousCompletionCount >= Math.max(1, expectedAgentCount)) {
-            finish();
-          }
-        }
-      });
-    });
-  }
-
-  private countAssignedAgents(space: SpaceConfig, agentIds: string[]): number {
-    const assigned = new Set(space.agents.map((agent) => agent.agentId));
-    return Math.max(1, agentIds.filter((agentId) => assigned.has(agentId)).length);
-  }
-
-  private buildPlanningPrompt(
-    queueItem: WorkbenchQueueItemPayload,
-    worktree: WorkbenchWorktreeRefPayload,
-    suites: WorkbenchVerificationSuitePayload[],
-  ): string {
-    return [
-      "# Workbench Planning Discussion",
-      "",
-      `Task file: ${queueItem.taskFilePath}`,
-      `Allocated worktree: ${worktree.path}`,
-      `Queue item: ${queueItem.queueItemId}`,
-      "",
-      "Discuss the implementation plan, risks, and verification approach. Produce a concise plan artifact for the implementation team.",
-      "",
-      "Verification commands:",
-      ...suites.map((suite) => `- ${suite.command}`),
-    ].join("\n");
-  }
-
-  private buildImplementationPrompt(
-    queueItem: WorkbenchQueueItemPayload,
-    worktree: WorkbenchWorktreeRefPayload,
-    suites: WorkbenchVerificationSuitePayload[],
-    planningTurnId: string,
-  ): string {
-    return [
-      "# Workbench Implementation Turn",
-      "",
-      `Task file: ${queueItem.taskFilePath}`,
-      `Allocated worktree: ${worktree.path}`,
-      `Planning turn: ${planningTurnId}`,
-      "",
-      "Edit only the allocated Workbench worktree. Do not modify the source checkout outside that path.",
-      "Follow the task file and the planning discussion. Work autonomously within the existing review gate; do not merge or land changes.",
-      "",
-      "Verification commands Workbench will run after this turn completes:",
-      ...suites.map((suite) => `- ${suite.command}`),
-    ].join("\n");
-  }
-
-  private persistAgentPlanningArtifact(
-    runId: string,
-    executionContext: WorkbenchExecutionContextPayload,
-    queueItem: WorkbenchQueueItemPayload,
-  ): void {
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId,
-      kind: "plan",
-      title: "Agent Planning Turn",
-      contentType: "text/markdown",
-      contentText: [
-        "# Agent Planning Turn",
-        "",
-        `- Execution Space: \`${executionContext.spaceName}\``,
-        `- Space ID: \`${executionContext.spaceId}\``,
-        `- Planning turn: \`${executionContext.planningTurnId ?? ""}\``,
-        `- Queue item: \`${queueItem.queueItemId}\``,
-      ].join("\n"),
-    });
-  }
-
-  private persistAgentLoopReportArtifact(
-    runId: string,
-    status: "paused" | "failed",
-    reason: string,
-  ): void {
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId,
-      kind: "report",
-      title: status === "paused" ? "Agent Turn Paused" : "Agent Turn Failed",
-      contentType: "text/markdown",
-      contentText: [
-        `# Agent Turn ${status === "paused" ? "Paused" : "Failed"}`,
-        "",
-        `- Status: \`${status}\``,
-        `- Reason: ${reason}`,
-      ].join("\n"),
-    });
+  private agentLoopContext(): WorkbenchAgentLoopContext {
+    return {
+      runs: this.options.runs,
+      artifacts: this.options.artifacts,
+      spaceAdminService: this.options.spaceAdminService,
+      spaceManager: this.options.spaceManager,
+      eventBus: this.options.eventBus,
+      agentTurnCompletionTimeoutMs: this.agentTurnCompletionTimeoutMs,
+      now: this.now,
+      resolveQueueItems: (queueItemIds) => this.resolveQueueItems(queueItemIds),
+      updateCentralTaskStatus: (queueItem, status, logMessage) =>
+        this.updateCentralTaskStatus(queueItem, status, logMessage),
+    };
   }
 
   private persistVerificationLog(
@@ -846,95 +527,22 @@ export class WorkbenchService {
     suite: WorkbenchVerificationSuitePayload,
     evidence: WorkbenchCommandEvidence,
   ): string {
-    const artifactId = `wb-artifact-${randomUUID()}`;
-    this.options.artifacts.create({
-      artifactId,
-      runId,
-      kind: "verification_log",
-      title: `${suite.name} Log`,
-      contentType: "text/plain",
-      contentText: [
-        `$ ${evidence.command}`,
-        ``,
-        `status: ${evidence.status}`,
-        `exitCode: ${evidence.exitCode ?? "null"}`,
-        `durationMs: ${evidence.durationMs}`,
-        `timedOut: ${evidence.timedOut}`,
-        ``,
-        `# stdout`,
-        evidence.stdout || "(empty)",
-        ``,
-        `# stderr`,
-        evidence.stderr || "(empty)",
-      ].join("\n"),
-    });
-    return artifactId;
+    return persistWorkbenchVerificationLog(this.options.artifacts, runId, suite, evidence);
   }
 
-  private async persistDocsPreflightArtifact(runId: string, worktreePath: string): Promise<void> {
-    const preflight = await runWorkbenchDocsPreflight({
+  private persistDocsPreflightArtifact(runId: string, worktreePath: string): Promise<void> {
+    return persistWorkbenchDocsPreflightArtifact({
+      artifacts: this.options.artifacts,
+      runId,
       worktreePath,
-      timeoutMs: this.verificationCommandTimeoutMs,
+      verificationCommandTimeoutMs: this.verificationCommandTimeoutMs,
       now: this.now,
       verificationExecutor: this.verificationExecutor,
-    });
-    if (!preflight.check) {
-      this.options.artifacts.create({
-        artifactId: `wb-artifact-${randomUUID()}`,
-        runId,
-        kind: "docs",
-        title: "Docs Freshness Preflight",
-        contentType: "text/markdown",
-        contentText: [
-          "# Docs Freshness Preflight",
-          "",
-          "- Status: `not_available`",
-          "- Command: `bun run docs:check`",
-          "- Blocking: `false`",
-        ].join("\n"),
-      });
-      return;
-    }
-
-    const evidence = preflight.evidence!;
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId,
-      kind: "docs",
-      title: "Docs Freshness Preflight",
-      contentType: "text/markdown",
-      contentText: [
-        "# Docs Freshness Preflight",
-        "",
-        `- Status: \`${preflight.status}\``,
-        `- Command: \`${preflight.check.displayCommand}\``,
-        `- Exit code: \`${evidence.exitCode ?? "null"}\``,
-        `- Duration: \`${evidence.durationMs}ms\``,
-        `- Timed out: \`${evidence.timedOut}\``,
-        "- Blocking: `false`",
-        "",
-        "## stdout",
-        "```text",
-        evidence.stdout || "(empty)",
-        "```",
-        "",
-        "## stderr",
-        "```text",
-        evidence.stderr || "(empty)",
-        "```",
-      ].join("\n"),
     });
   }
 
   private persistGeneratedDocsKnowledgeArtifact(runId: string, worktreePath: string): void {
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId,
-      kind: "knowledge",
-      title: "Attached Generated Docs Knowledge",
-      contentType: "text/markdown",
-      contentText: buildGeneratedDocsKnowledgeArtifact(worktreePath),
-    });
+    persistWorkbenchGeneratedDocsKnowledgeArtifact(this.options.artifacts, runId, worktreePath);
   }
 
   async rejectStage(
@@ -1027,47 +635,16 @@ export class WorkbenchService {
   }
 
   private resolveQueueItems(queueItemIds: string[]): WorkbenchQueueItemPayload[] {
-    const itemsById = new Map(this.loadQueueItems().map((item) => [item.queueItemId, item]));
-    return queueItemIds.map((queueItemId) => {
-      const item = itemsById.get(queueItemId);
-      if (!item) {
-        throw new WorkbenchServiceError("NOT_FOUND", `Workbench queue item not found: ${queueItemId}`);
-      }
-      return item;
-    });
+    return resolveWorkbenchQueueItems(queueItemIds, this.loadQueueItems());
   }
 
   private loadQueueItems(): WorkbenchQueueItemPayload[] {
-    const tasks = this.loadCentralTasks();
-    const items: WorkbenchQueueItemPayload[] = [];
-    for (const [index, task] of tasks.entries()) {
-      const taskMetadata = task.metadata;
-      items.push({
-        queueItemId: taskMetadata.id,
-        queueIndex: index + 1,
-        title: taskMetadata.title,
-        type: task.frontmatter.get("spaces-item-type") ?? taskMetadata.priority ?? "task",
-        status: taskMetadata.status,
-        nextAction: taskMetadata.summary ?? extractNextAction(task.body) ?? taskMetadata.title,
-        taskFilePath: task.path,
-        delegation: taskMetadata.delegation,
-        parallelKeys: taskMetadata.parallelKeys,
-        aiShippable: taskMetadata.aiShippable,
-        executionModeEligibility: {
-          supervised: true,
-          autonomous: taskMetadata.executionModeBlockers.length === 0,
-        },
-        verificationMode: taskMetadata.verificationMode,
-        executionModeBlockers: taskMetadata.executionModeBlockers,
-        products: taskMetadata.products,
-        verificationCommands: taskMetadata.verificationCommands,
-      } satisfies WorkbenchQueueItemPayload);
-    }
-    return items;
-  }
-
-  private loadCentralTasks(): CentralTaskRecord[] {
-    return loadCentralTasks(this.workProjectsRoot, this.workbenchProjectSlug, this.now(), this.logger);
+    return loadWorkbenchQueueItems({
+      workProjectsRoot: this.workProjectsRoot,
+      workbenchProjectSlug: this.workbenchProjectSlug,
+      now: this.now(),
+      logger: this.logger,
+    });
   }
 
   private updateCentralTaskStatus(
@@ -1095,69 +672,26 @@ export class WorkbenchService {
   }
 
   private assertBatchConflictFree(items: WorkbenchQueueItemPayload[]): void {
-    for (let index = 0; index < items.length; index += 1) {
-      for (let inner = index + 1; inner < items.length; inner += 1) {
-        if (itemsConflict(items[index]!, items[inner]!)) {
-          throw new WorkbenchServiceError(
-            "FAILED_PRECONDITION",
-            `Queue items conflict and cannot share a batch: ${items[index]!.queueItemId} vs ${items[inner]!.queueItemId}`,
-          );
-        }
-      }
-    }
+    assertWorkbenchBatchConflictFree(items);
   }
 
   private assertNoActiveRunConflict(queueItem: WorkbenchQueueItemPayload): void {
-    const activeRuns = this.options.runs.listActive();
-    const activeQueueItemIds = Array.from(new Set(activeRuns.map((row) => row.queue_item_id)));
-    const activeItems = activeQueueItemIds.length > 0 ? this.resolveQueueItems(activeQueueItemIds) : [];
-    const conflict = activeItems.find((item) => itemsConflict(queueItem, item));
-    if (conflict) {
-      throw new WorkbenchServiceError(
-        "FAILED_PRECONDITION",
-        `Queue item conflicts with active run: ${queueItem.queueItemId} vs ${conflict.queueItemId}`,
-      );
-    }
+    assertWorkbenchNoActiveRunConflict({
+      queueItem,
+      runs: this.options.runs,
+      resolveQueueItems: (queueItemIds) => this.resolveQueueItems(queueItemIds),
+    });
   }
 
   private assertParallelCapacity(policy: WorkbenchPolicyRow): void {
-    const activeRuns = this.options.runs.listActive();
-    if (activeRuns.length >= policy.max_parallel_runs) {
-      throw new WorkbenchServiceError(
-        "FAILED_PRECONDITION",
-        `Workbench is at max parallel capacity (${policy.max_parallel_runs})`,
-      );
-    }
+    assertWorkbenchParallelCapacity(policy, this.options.runs);
   }
 
   private assertAutonomousEligibility(
     queueItem: WorkbenchQueueItemPayload,
     policy: WorkbenchPolicyRow,
   ): void {
-    if (!policy.autonomous_enabled) {
-      throw new WorkbenchServiceError("FAILED_PRECONDITION", "Autonomous execution is disabled by policy");
-    }
-    if (policy.require_ai_shippable_for_autonomous && !queueItem.aiShippable) {
-      throw new WorkbenchServiceError("FAILED_PRECONDITION", `Queue item is not AI-shippable: ${queueItem.queueItemId}`);
-    }
-    if (queueItem.delegation !== "autonomous") {
-      throw new WorkbenchServiceError("FAILED_PRECONDITION", `Queue item does not allow autonomous execution: ${queueItem.queueItemId}`);
-    }
-    const centralBlocker = queueItem.executionModeBlockers.find((blocker) =>
-      blocker.startsWith("Task status is ")
-      || blocker.startsWith("Unmet dependencies:")
-      || blocker === "Task has an active unexpired claim.");
-    if (centralBlocker) {
-      throw new WorkbenchServiceError("FAILED_PRECONDITION", centralBlocker);
-    }
-    if (queueItem.verificationMode !== "machine_readable") {
-      throw new WorkbenchServiceError(
-        "FAILED_PRECONDITION",
-        queueItem.executionModeBlockers.find((blocker) =>
-          blocker.includes("machine-readable verification"))
-          ?? `Queue item requires review-only execution: ${queueItem.queueItemId}`,
-      );
-    }
+    assertWorkbenchAutonomousEligibility(queueItem, policy);
   }
 
   private requireBatch(batchId: string): WorkbenchBatchRow {
@@ -1228,53 +762,15 @@ export class WorkbenchService {
     verificationSuites: WorkbenchVerificationSuitePayload[],
     executionMode: WorkbenchExecutionMode,
   ): void {
-    const queuePath = centralTasksRoot(this.workProjectsRoot, this.workbenchProjectSlug);
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId: row.run_id,
-      kind: "plan",
-      title: "Execution Plan",
-      contentType: "text/markdown",
-      contentText: [
-        `# Workbench Plan`,
-        ``,
-        `- Queue item: \`${queueItem.queueItemId}\``,
-        `- Task file: \`${queueItem.taskFilePath}\``,
-        `- Queue source: \`${queuePath}\``,
-        `- Requested mode: \`${executionMode}\``,
-        `- Next action: ${queueItem.nextAction}`,
-      ].join("\n"),
-    });
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId: row.run_id,
-      kind: "verification",
-      title: "Verification Suites",
-      contentType: "text/markdown",
-      contentText: [
-        `# Verification`,
-        ``,
-        `- Mode: \`${queueItem.verificationMode}\``,
-        ...queueItem.executionModeBlockers.map((blocker) => `- Blocker: ${blocker}`),
-        ...verificationSuites.map((suite) => `- [${suite.status}] \`${suite.command}\``),
-        ...(verificationSuites.length === 0 ? ["- No machine-readable verification commands declared."] : []),
-      ].join("\n"),
-    });
-    this.options.artifacts.create({
-      artifactId: `wb-artifact-${randomUUID()}`,
-      runId: row.run_id,
-      kind: "report",
-      title: "Run Report",
-      contentType: "text/markdown",
-      contentText: [
-        `# Run Report`,
-        ``,
-        `- Run ID: \`${row.run_id}\``,
-        `- Stage: \`${row.current_stage}\``,
-        `- Status: \`${row.status}\``,
-        `- Worktree: \`${worktree.path}\``,
-        `- Branch: \`${worktree.branchName}\``,
-      ].join("\n"),
+    persistWorkbenchRunArtifacts({
+      artifacts: this.options.artifacts,
+      workProjectsRoot: this.workProjectsRoot,
+      workbenchProjectSlug: this.workbenchProjectSlug,
+      row,
+      queueItem,
+      worktree,
+      verificationSuites,
+      executionMode,
     });
   }
 
