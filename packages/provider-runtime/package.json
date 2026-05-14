@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.96",
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "^0.96.0",
     "@lmstudio/sdk": "^1.5.0",
     "@meridius-labs/apple-on-device-ai": "^1.6.2",
     "@spaceskit/core": "*",
