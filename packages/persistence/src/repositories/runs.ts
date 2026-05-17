@@ -11,7 +11,7 @@ export type RunStatus =
 export interface RunRow {
   run_id: string;
   space_id: string;
-  compatibility_turn_id: string;
+  turn_id: string;
   status: RunStatus;
   trigger_source: string;
   requested_by_principal_id: string;
@@ -28,7 +28,7 @@ export interface RunRow {
 export interface CreateRunInput {
   runId: string;
   spaceId: string;
-  compatibilityTurnId?: string;
+  turnId?: string;
   status?: RunStatus;
   triggerSource?: string;
   requestedByPrincipalId?: string;
@@ -55,7 +55,7 @@ export class RunRepository {
       INSERT INTO runs(
         run_id,
         space_id,
-        compatibility_turn_id,
+        turn_id,
         status,
         trigger_source,
         requested_by_principal_id,
@@ -71,7 +71,7 @@ export class RunRepository {
     `).run(
       input.runId,
       input.spaceId,
-      input.compatibilityTurnId ?? "",
+      input.turnId ?? "",
       status,
       input.triggerSource ?? "space_input",
       input.requestedByPrincipalId ?? "",
@@ -90,10 +90,10 @@ export class RunRepository {
     `).get(runId) as RunRow | undefined ?? undefined;
   }
 
-  getByCompatibilityTurnId(turnId: string): RunRow | undefined {
+  getByTurnId(turnId: string): RunRow | undefined {
     return this.db.query(`
       SELECT * FROM runs
-      WHERE compatibility_turn_id = ?
+      WHERE turn_id = ?
       ORDER BY created_at DESC
       LIMIT 1
     `).get(turnId) as RunRow | undefined ?? undefined;

@@ -86,42 +86,18 @@ export class TurnRepository {
 
   create(input: CreateTurnInput): TurnRow {
     const now = new Date().toISOString();
-    try {
-      this.stmtCreate.run(
-        input.turnId,
-        input.spaceId,
-        input.actorType,
-        input.actorId,
-        input.inputJson ?? null,
-        input.userTurnId ?? "",
-        input.connectorProvider ?? "",
-        input.requestedConnector ?? "",
-        now,
-        input.replyToTurnId ?? null,
-      );
-    } catch (error) {
-      if (!isMissingReplyToTurnColumnError(error)) {
-        throw error;
-      }
-      // Backward-compatibility path for older DBs that have not yet applied
-      // the additive reply_to_turn_id migration.
-      this.db.query(`
-        INSERT INTO turns(
-          turn_id, space_id, actor_type, actor_id, input_json, status,
-          user_turn_id, connector_provider, requested_connector, created_at
-        ) VALUES (?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)
-      `).run(
-        input.turnId,
-        input.spaceId,
-        input.actorType,
-        input.actorId,
-        input.inputJson ?? null,
-        input.userTurnId ?? "",
-        input.connectorProvider ?? "",
-        input.requestedConnector ?? "",
-        now,
-      );
-    }
+    this.stmtCreate.run(
+      input.turnId,
+      input.spaceId,
+      input.actorType,
+      input.actorId,
+      input.inputJson ?? null,
+      input.userTurnId ?? "",
+      input.connectorProvider ?? "",
+      input.requestedConnector ?? "",
+      now,
+      input.replyToTurnId ?? null,
+    );
     return this.getById(input.turnId)!;
   }
 
@@ -301,11 +277,4 @@ export class TurnRepository {
       .query(`DELETE FROM turns WHERE ${where.join(" AND ")}`)
       .run(...values).changes;
   }
-}
-
-function isMissingReplyToTurnColumnError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return error.message.includes("no column named reply_to_turn_id");
 }

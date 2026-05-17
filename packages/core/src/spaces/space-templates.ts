@@ -85,7 +85,7 @@ export interface SpaceFromTemplateOptions {
 }
 
 /**
- * Create a SpaceConfig-compatible object from a template.
+ * Create a SpaceConfig object from a template.
  */
 export function instantiateTemplate(options: SpaceFromTemplateOptions): Record<string, unknown> {
   const { template, spaceId, resourceId, goalOverride, agentOverrides } = options;

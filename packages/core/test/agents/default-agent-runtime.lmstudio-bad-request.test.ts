@@ -198,10 +198,10 @@ describe("DefaultAgentRuntime LM Studio bad request handling", () => {
     );
   });
 
-  test("skips gateway tool injection when native CLI tools are enabled", async () => {
+  test("skips gateway tool injection for full-access CLI turns", async () => {
     const provider = new StubModelProvider("claude", async (options) => {
       expect(options.tools).toBeUndefined();
-      expect(options.nativeCliToolsEnabled).toBe(true);
+      expect(options.accessMode).toBe("full_access");
       expect(options.workingDirectory).toBe("/tmp/native-cli-tools");
       return {
         message: { role: "assistant", content: "native cli response" },
@@ -218,7 +218,7 @@ describe("DefaultAgentRuntime LM Studio bad request handling", () => {
       modelId: "claude/sonnet",
       tools: ["files.read"],
       maxSteps: 3,
-      nativeCliToolsEnabled: true,
+      accessMode: "full_access",
       workingDirectory: "/tmp/native-cli-tools",
     };
 

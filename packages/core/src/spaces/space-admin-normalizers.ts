@@ -72,9 +72,7 @@ export function parseSpaceConfig(spaceConfigJson: string | null): Record<string,
 }
 
 export function resolveSpaceUid(parsedConfig: Record<string, unknown>): string | undefined {
-  const direct = normalizeUuidString(parsedConfig.spaceUid);
-  if (direct) return direct;
-  return normalizeUuidString(parsedConfig.space_uid);
+  return normalizeUuidString(parsedConfig.spaceUid);
 }
 
 export function parseStringArray(value: unknown): string[] {

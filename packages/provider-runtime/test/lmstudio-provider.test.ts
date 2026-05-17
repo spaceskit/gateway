@@ -250,8 +250,8 @@ describe("LmStudioModelProvider", () => {
 });
 
 describe("LM Studio helpers", () => {
-  test("normalizes legacy HTTP base URLs to SDK websocket URLs", () => {
-    expect(normalizeLmStudioBaseURL("http://127.0.0.1:1234/v1")).toBe("ws://127.0.0.1:1234");
+  test("leaves configured SDK base URLs unchanged", () => {
+    expect(normalizeLmStudioBaseURL("http://127.0.0.1:1234/v1")).toBe("http://127.0.0.1:1234/v1");
     expect(normalizeLmStudioBaseURL("ws://127.0.0.1:1234")).toBe("ws://127.0.0.1:1234");
   });
 

@@ -22,34 +22,18 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { EventBus } from "../events/event-bus.js";
 import type {
-  AgentRuntime,
   RuntimeApprovalSelection,
-  RuntimeFeedbackCheckpoint,
-  TurnContext,
-  TurnEvent,
-  CliLaunchSnapshot,
 } from "../agents/agent-runtime.js";
+import type { ModelMessage } from "../agents/model-provider.js";
 import type {
-  ModelMessage,
-  ProviderSessionHandle,
-} from "../agents/model-provider.js";
-import type {
-  ConversationTopology,
-  SpaceConfig,
-  SpaceState,
   SpaceAgentAssignment,
   TurnModelStrategy,
 } from "./types.js";
-import type { CheckpointManager } from "./checkpoint.js";
-import type { DeadLetterQueue } from "./dead-letter.js";
-import type { ReflectionService } from "../reflection/reflection-service.js";
 import type { OrchestratorSummaryTrace } from "./space-summary-trace.js";
 import {
   normalizeAgentIdentifier,
   normalizeExecutionIdentity,
-  normalizeOptionalString,
   type TurnExecutionIdentity,
 } from "./space-manager-normalizers.js";
 import {
@@ -64,163 +48,35 @@ import {
   selectAgents,
 } from "./space-manager-turn-routing.js";
 import {
-  appendRedactedOrchestrationJournalEntry,
-  type OrchestrationJournalEntry,
-} from "./space-manager-orchestration-journal.js";
-import { buildCompletedSaveTurnInput } from "./space-manager-turn-records.js";
-import {
-  createSpaceManagerSummaryTrace,
-  emitSpaceManagerSummaryEvent,
-  recordSpaceManagerSummaryEvent,
-} from "./space-manager-summary-events.js";
-import {
-  buildLaunchSnapshots as buildAgentLaunchSnapshots,
-  ensureActiveSpace,
-  getActiveSpaceState as getAgentSessionStateSnapshot,
-  getOrCreateAgentSession as getOrCreateAgentSessionState,
-  getRuntimeForAgent,
-  restoreActiveSpaceFromCheckpoint,
-  resolveCommittedSessionFields as resolveAgentCommittedSessionFields,
-  updateAgentSession as updateAgentSessionState,
   type ActiveSpace,
-  type AgentSessionRuntimeMetadata,
-  type AgentSessionState,
-  type RestoreAgentSessionCheckpointInput,
-  type SaveAgentSessionRuntimeMetadataInput,
 } from "./space-manager-agent-sessions.js";
 import {
   executeDebateSynthesisStrategy,
   executeParallelRaceStrategy,
   executeSequentialStrategy,
-  type TurnStrategyContext,
 } from "./space-manager-turn-strategies.js";
-import {
-  executeMasterModeFlow,
-  type MasterModeContext,
-} from "./space-manager-master-mode.js";
+import { executeMasterModeFlow } from "./space-manager-master-mode.js";
 import {
   cancelActiveOrPausedTurn,
   resumePausedTurnFeedback,
-  startPausedFeedbackTimeout,
 } from "./space-manager-feedback.js";
+import { SpaceManagerRuntimeBase } from "./space-manager-runtime-base.js";
 
 export type { TurnExecutionIdentity } from "./space-manager-normalizers.js";
 export type {
   AgentSessionRuntimeMetadata,
   SaveAgentSessionRuntimeMetadataInput,
 } from "./space-manager-agent-sessions.js";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface SpaceManagerOptions {
-  eventBus: EventBus;
-  /** Load a space config by ID. */
-  loadSpaceConfig: (spaceId: string) => Promise<SpaceConfig | null>;
-  /** Update space status in persistence. */
-  updateSpaceStatus: (spaceId: string, status: SpaceState) => Promise<void>;
-  /** Save a completed turn to persistence. */
-  saveTurn: (turn: SaveTurnInput) => Promise<void>;
-  /** Load conversation history for a space. */
-  loadHistory: (spaceId: string, limit?: number) => Promise<ModelMessage[]>;
-  /** Optional per-agent history loader for agent session continuity. */
-  loadAgentHistory?: (spaceId: string, agentId: string, limit?: number) => Promise<ModelMessage[]>;
-  /** Optional per-agent runtime metadata loader for provider-native session continuity. */
-  loadAgentSessionMetadata?: (
-    spaceId: string,
-    agentId: string,
-  ) => Promise<AgentSessionRuntimeMetadata | undefined> | AgentSessionRuntimeMetadata | undefined;
-  /** Optional per-agent runtime metadata persistence hook. */
-  saveAgentSessionMetadata?: (metadata: SaveAgentSessionRuntimeMetadataInput) => Promise<void> | void;
-  /** Resolve (or create) an AgentRuntime for an agent in a space. */
-  resolveRuntime: (spaceId: string, agentId: string) => Promise<AgentRuntime>;
-  /** Optional checkpoint manager for crash recovery. */
-  checkpointManager?: CheckpointManager;
-  /** Optional dead letter queue for failed turns. */
-  deadLetterQueue?: DeadLetterQueue;
-  /** Timeout in ms for human feedback before auto-rejecting. Default: 300000 (5 min). */
-  feedbackTimeoutMs?: number;
-  /** Global toggle for coordinator-led master orchestration mode. Default: true. */
-  masterModeEnabled?: boolean;
-  /** Prompt template for the master planner phase. */
-  masterPlannerPromptTemplate?: string;
-  /** Prompt template used for each guest agent turn. */
-  guestAgentPromptTemplate?: string;
-  /** Prompt template for peer-review turns in master mode. */
-  peerReviewPromptTemplate?: string;
-  /** Prompt template for the master synthesis phase. */
-  masterSynthesisPromptTemplate?: string;
-  /** Maximum number of agent-to-agent hops permitted in a single delegation chain. Default: 5. */
-  maxHops?: number;
-  /** Persist one redacted orchestration journal event (best-effort). */
-  appendOrchestrationJournalEntry?: (entry: {
-    spaceId: string;
-    turnId: string;
-    eventType: string;
-    actorId: string;
-    lineageId?: string;
-    hopCount?: number;
-    payload: Record<string, unknown>;
-  }) => Promise<void>;
-  /** Optional metric hook for orchestration counters. */
-  recordOrchestrationMetric?: (metric: {
-    name: string;
-    value: number;
-    tags?: Record<string, string>;
-  }) => void;
-  /** Optional hook to persist approval selections before a paused runtime resumes. */
-  handleFeedbackResolution?: (input: {
-    spaceId: string;
-    turnId: string;
-    request?: RuntimeFeedbackCheckpoint;
-    response: "approve" | "reject" | "revise" | "defer";
-    revision?: string;
-    approvalGrant?: RuntimeApprovalSelection;
-    principalId?: string;
-    deviceId?: string;
-  }) => Promise<void> | void;
-  /** Optional reflection service for summary generation. */
-  reflectionService?: Pick<ReflectionService, "runSummaryJob">;
-}
-
-export interface SaveTurnInput {
-  turnId: string;
-  userTurnId?: string;
-  replyToTurnId?: string;
-  conversationTopology?: ConversationTopology;
-  spaceId: string;
-  agentId: string;
-  input: string;
-  output: string;
-  status: "completed" | "failed";
-  promptTokens: number;
-  completionTokens: number;
-  /** Original totalTokens from the provider (may differ from promptTokens + completionTokens). */
-  totalTokens: number;
-}
+export type {
+  SaveTurnInput,
+  SpaceManagerOptions,
+} from "./space-manager-types.js";
 
 // ---------------------------------------------------------------------------
 // SpaceManager
 // ---------------------------------------------------------------------------
 
-export class SpaceManager {
-  private activeSpaces = new Map<string, ActiveSpace>();
-  private eventBus: EventBus;
-  private options: SpaceManagerOptions;
-
-  /**
-   * Per-space turn lock. Each space has a promise chain that ensures
-   * turns execute sequentially. A new turn chains onto the existing
-   * promise, guaranteeing mutual exclusion without blocking the event loop.
-   */
-  private turnLocks = new Map<string, Promise<void>>();
-
-  constructor(options: SpaceManagerOptions) {
-    this.eventBus = options.eventBus;
-    this.options = options;
-  }
-
+export class SpaceManager extends SpaceManagerRuntimeBase {
   /** Invalidate cached space config so next turn re-loads from persistence. */
   invalidateCache(spaceId: string): void {
     this.deactivate(spaceId);
@@ -416,7 +272,7 @@ export class SpaceManager {
    * 1. Enqueue to dead letter queue (if available) for later retry/inspection
    * 2. Emit error event
    */
-  private handleTurnError(
+  protected handleTurnError(
     spaceId: string,
     turnId: string,
     input: string,
@@ -537,44 +393,6 @@ export class SpaceManager {
     );
   }
 
-  private masterModeContext(): MasterModeContext {
-    return {
-      maxHops: this.options.maxHops ?? 5,
-      masterPlannerPromptTemplate: this.options.masterPlannerPromptTemplate,
-      guestAgentPromptTemplate: this.options.guestAgentPromptTemplate,
-      peerReviewPromptTemplate: this.options.peerReviewPromptTemplate,
-      masterSynthesisPromptTemplate: this.options.masterSynthesisPromptTemplate,
-      getRuntime: this.getRuntime.bind(this),
-      getOrCreateAgentSession: this.getOrCreateAgentSession.bind(this),
-      resolveCommittedSessionFields: this.resolveCommittedSessionFields.bind(this),
-      updateAgentSession: this.updateAgentSession.bind(this),
-      forwardEvent: this.forwardEvent.bind(this),
-      recordSummaryEvent: this.recordSummaryEvent.bind(this),
-      startFeedbackTimeout: this.startFeedbackTimeout.bind(this),
-      handleTurnError: this.handleTurnError.bind(this),
-      appendOrchestrationJournalEntry: this.appendOrchestrationJournalEntry.bind(this),
-      recordOrchestrationMetric: this.recordOrchestrationMetric.bind(this),
-      saveTurn: this.options.saveTurn,
-      updateSpaceStatus: this.options.updateSpaceStatus,
-    };
-  }
-
-  private async appendOrchestrationJournalEntry(entry: OrchestrationJournalEntry): Promise<void> {
-    await appendRedactedOrchestrationJournalEntry({
-      entry,
-      append: this.options.appendOrchestrationJournalEntry,
-      recordMetric: (name, value, tags) => this.recordOrchestrationMetric(name, value, tags),
-    });
-  }
-
-  private recordOrchestrationMetric(
-    name: string,
-    value: number,
-    tags?: Record<string, string>,
-  ): void {
-    this.options.recordOrchestrationMetric?.({ name, value, tags });
-  }
-
   /**
    * Parallel race: all agents execute concurrently, first to complete wins.
    * Stolen from: Microsoft AF's superstep model.
@@ -619,246 +437,6 @@ export class SpaceManager {
       executionIdentity,
       summaryTrace,
     );
-  }
-
-  /**
-   * Build a context object for delegated turn strategy helpers.
-   */
-  private turnStrategyContext(): TurnStrategyContext {
-    return {
-      maxHops: this.options.maxHops ?? 5,
-      getRuntime: this.getRuntime.bind(this),
-      getOrCreateAgentSession: this.getOrCreateAgentSession.bind(this),
-      resolveCommittedSessionFields: this.resolveCommittedSessionFields.bind(this),
-      updateAgentSession: this.updateAgentSession.bind(this),
-      forwardEvent: this.forwardEvent.bind(this),
-      recordSummaryEvent: this.recordSummaryEvent.bind(this),
-      startFeedbackTimeout: this.startFeedbackTimeout.bind(this),
-      handleTurnError: this.handleTurnError.bind(this),
-      saveTurn: this.options.saveTurn,
-      updateSpaceStatus: this.options.updateSpaceStatus,
-    };
-  }
-
-  private createSummaryTrace(
-    space: ActiveSpace,
-    turnId: string,
-    input: string,
-    strategy: TurnModelStrategy,
-    agents: SpaceAgentAssignment[],
-  ): OrchestratorSummaryTrace | null {
-    return createSpaceManagerSummaryTrace({
-      spaceId: space.config.id,
-      turnId,
-      userInput: input,
-      strategy,
-      agents,
-      peerReview: {
-        enabled: resolvePeerReviewEnabled(space),
-        topology: resolvePeerReviewTopology(space),
-      },
-    });
-  }
-
-  private recordSummaryEvent(
-    trace: OrchestratorSummaryTrace | null | undefined,
-    agentId: string,
-    event: TurnEvent,
-  ): void {
-    recordSpaceManagerSummaryEvent(trace, agentId, event);
-  }
-
-  private emitSummaryEvent(
-    spaceId: string,
-    turnId: string,
-    trace: OrchestratorSummaryTrace | null | undefined,
-    executionError?: unknown,
-  ): void {
-    emitSpaceManagerSummaryEvent({
-      eventBus: this.eventBus,
-      reflectionService: this.options.reflectionService,
-      spaceId,
-      turnId,
-      trace,
-      executionError,
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Session continuity helpers
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Get serializable state for all agent sessions in a space.
-   * Used by SessionContinuityManager to create checkpoints.
-   */
-  getActiveSpaceState(spaceId: string): {
-    agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
-    turnIds: string[];
-  } | null {
-    return getAgentSessionStateSnapshot(this.activeSpaces, spaceId);
-  }
-
-  /**
-   * Restore agent sessions from a checkpoint.
-   * Runtimes are NOT restored — they re-resolve lazily on next turn.
-   */
-  async restoreFromCheckpoint(
-    spaceId: string,
-    checkpoint: RestoreAgentSessionCheckpointInput,
-  ): Promise<boolean> {
-    return restoreActiveSpaceFromCheckpoint({
-      activeSpaces: this.activeSpaces,
-      spaceId,
-      checkpoint,
-      loadSpaceConfig: this.options.loadSpaceConfig,
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Internals
-  // ---------------------------------------------------------------------------
-
-  private async ensureActive(spaceId: string): Promise<ActiveSpace> {
-    return ensureActiveSpace({
-      activeSpaces: this.activeSpaces,
-      spaceId,
-      loadSpaceConfig: this.options.loadSpaceConfig,
-    });
-  }
-
-  private async getRuntime(space: ActiveSpace, agentId: string): Promise<AgentRuntime> {
-    return getRuntimeForAgent({
-      space,
-      agentId,
-      resolveRuntime: this.options.resolveRuntime,
-    });
-  }
-
-  private async getOrCreateAgentSession(
-    space: ActiveSpace,
-    agentId: string,
-  ): Promise<AgentSessionState> {
-    return getOrCreateAgentSessionState({
-      space,
-      agentId,
-      loadHistory: this.options.loadHistory,
-      ...(this.options.loadAgentHistory ? { loadAgentHistory: this.options.loadAgentHistory } : {}),
-      ...(this.options.loadAgentSessionMetadata
-        ? { loadAgentSessionMetadata: this.options.loadAgentSessionMetadata }
-        : {}),
-    });
-  }
-
-  private async resolveCommittedSessionFields(
-    space: ActiveSpace,
-    session: AgentSessionState,
-    userMessage: ModelMessage,
-  ): Promise<Pick<TurnContext, "providerSessionHandle" | "sessionTitle">> {
-    return resolveAgentCommittedSessionFields({
-      space,
-      session,
-      userMessage,
-      persistAgentSessionMetadata: this.persistAgentSessionMetadata.bind(this),
-    });
-  }
-
-  private async persistAgentSessionMetadata(
-    spaceId: string,
-    session: AgentSessionState,
-    metadata: Omit<SaveAgentSessionRuntimeMetadataInput, "spaceId" | "agentId">,
-  ): Promise<void> {
-    if (!this.options.saveAgentSessionMetadata) {
-      return;
-    }
-    await this.options.saveAgentSessionMetadata({
-      spaceId,
-      agentId: session.agentId,
-      ...metadata,
-    });
-  }
-
-  private async buildLaunchSnapshots(
-    space: ActiveSpace,
-    turnId: string,
-    agents: SpaceAgentAssignment[],
-    userMessage: ModelMessage,
-    executionIdentity?: TurnExecutionIdentity,
-  ): Promise<CliLaunchSnapshot[]> {
-    return buildAgentLaunchSnapshots({
-      space,
-      turnId,
-      agents,
-      userMessage,
-      maxHops: this.options.maxHops ?? 5,
-      getRuntime: this.getRuntime.bind(this),
-      getSession: this.getOrCreateAgentSession.bind(this),
-      ...(executionIdentity ? { executionIdentity } : {}),
-    });
-  }
-
-  private updateAgentSession(
-    session: AgentSessionState,
-    turnId: string,
-    userMessage: ModelMessage,
-    assistantMessage: ModelMessage,
-    options?: {
-      spaceId: string;
-      providerSessionHandle?: ProviderSessionHandle;
-    },
-  ): void {
-    updateAgentSessionState({
-      session,
-      turnId,
-      userMessage,
-      assistantMessage,
-      persistAgentSessionMetadata: this.persistAgentSessionMetadata.bind(this),
-      ...(options ? { options } : {}),
-    });
-  }
-
-  /**
-   * Start a feedback timeout for a paused turn. If no feedback is received
-   * within the timeout, auto-reject the turn and emit a warning.
-   */
-  private startFeedbackTimeout(spaceId: string, turnId: string): void {
-    startPausedFeedbackTimeout({
-      activeSpaces: this.activeSpaces,
-      eventBus: this.eventBus,
-      spaceId,
-      turnId,
-      timeoutMs: this.options.feedbackTimeoutMs ?? 300_000, // 5 minutes
-      onTimeout: (sId, tId) => {
-        this.resumeFeedback(sId, tId, "reject").catch((err) => {
-          console.error(`Failed to auto-reject timed-out feedback for turn ${tId}:`, err);
-        });
-      },
-    });
-  }
-
-  private forwardEvent(spaceId: string, turnId: string, event: TurnEvent, agentId?: string): void {
-    const resolvedAgentId = normalizeOptionalString(agentId) ?? this.resolveEventAgentId(event);
-    const eventWithAgent = resolvedAgentId
-      ? { ...event, agentId: resolvedAgentId } as TurnEvent & { agentId: string }
-      : event;
-    this.eventBus.emit({
-      type: "space.turn_event",
-      spaceId,
-      turnId,
-      agentId: resolvedAgentId,
-      event: eventWithAgent,
-      timestamp: new Date(),
-    });
-  }
-
-  private resolveEventAgentId(event: TurnEvent): string | undefined {
-    if (event.type === "turn_completed") {
-      return normalizeOptionalString(event.result.agentId);
-    }
-    if (event.type === "feedback_requested") {
-      return normalizeOptionalString(event.request.agentId);
-    }
-    return undefined;
   }
 
   /** Release an active space from memory. */

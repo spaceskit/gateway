@@ -23,7 +23,7 @@ export function deterministicUuid(seed: string, namespace = DEFAULT_NAMESPACE): 
     .digest();
   const bytes = Uint8Array.from(digest.subarray(0, 16));
 
-  // Produce an RFC 4122 compatible UUID with version=5 and variant=RFC4122.
+  // Produce an RFC 4122 UUID with version=5 and variant=RFC4122.
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
 

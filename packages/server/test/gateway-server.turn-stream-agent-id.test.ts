@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventBus } from "@spaceskit/core";
 import { GatewayServer } from "../src/gateway-server.js";
+import { resolveGatewayTurnAgentId } from "../src/gateway-event-broadcaster.js";
 import { MessageTypes } from "../src/protocol.js";
 
 describe("GatewayServer turn stream agent id propagation", () => {
@@ -74,16 +75,8 @@ describe("GatewayServer turn stream agent id propagation", () => {
     expect(published[0]?.msg.payload.streamKind).toBe("provider_client");
   });
 
-  test("falls back to nested turn_completed.result.agentId when top-level id is absent", () => {
-    const server = new GatewayServer({
-      port: 0,
-      host: "127.0.0.1",
-      skipAuth: true,
-      eventBus: new EventBus(),
-      onMessage: async () => null,
-    });
-
-    const resolvedAgentId = (server as any).resolveTurnAgentId(
+  test("does not recover agentId from nested turn_completed.result payloads", () => {
+    const resolvedAgentId = resolveGatewayTurnAgentId(
       {},
       {
         type: "turn_completed",
@@ -93,7 +86,7 @@ describe("GatewayServer turn stream agent id propagation", () => {
       },
     );
 
-    expect(resolvedAgentId).toBe("agent-from-result");
+    expect(resolvedAgentId).toBe("unknown-agent");
   });
 
   test("uses unknown-agent only when no agent id source exists", async () => {
@@ -105,7 +98,7 @@ describe("GatewayServer turn stream agent id propagation", () => {
       onMessage: async () => null,
     });
 
-    const resolvedAgentId = (server as any).resolveTurnAgentId(
+    const resolvedAgentId = resolveGatewayTurnAgentId(
       {},
       {
         type: "text_delta",
@@ -167,9 +160,10 @@ describe("GatewayServer turn stream agent id propagation", () => {
 
     expect(published).toHaveLength(1);
     expect(published[0]?.msg.type).toBe(MessageTypes.TURN_EVENT);
-    expect(published[0]?.msg.payload.eventType).toBe("rate_limited");
-    expect((published[0]?.msg.payload.data as any).type).toBe("rate_limited");
-    expect((published[0]?.msg.payload.data as any).retryAfterMs).toBe(1200);
+    expect(published[0]?.msg.payload.eventType).toBeUndefined();
+    expect(published[0]?.msg.payload.data).toBeUndefined();
+    expect(published[0]?.msg.payload.typedPayload.kind).toBe("rate_limited");
+    expect(published[0]?.msg.payload.typedPayload.retryAfterMs).toBe(1200);
   });
 
   test("maps runtime state_changed events to canonical lifecycle payload", async () => {
@@ -199,9 +193,10 @@ describe("GatewayServer turn stream agent id propagation", () => {
 
     expect(published).toHaveLength(1);
     expect(published[0]?.msg.type).toBe(MessageTypes.TURN_EVENT);
-    expect(published[0]?.msg.payload.eventType).toBe("state_changed");
-    expect((published[0]?.msg.payload.data as any).type).toBe("state_changed");
-    expect((published[0]?.msg.payload.data as any).state).toBe("needs_feedback");
+    expect(published[0]?.msg.payload.eventType).toBeUndefined();
+    expect(published[0]?.msg.payload.data).toBeUndefined();
+    expect(published[0]?.msg.payload.typedPayload.kind).toBe("state.changed");
+    expect(published[0]?.msg.payload.typedPayload.state).toBe("needs_feedback");
   });
 
   test("maps reasoning_delta lifecycle chunks to streaming turn_event category", async () => {
@@ -231,7 +226,9 @@ describe("GatewayServer turn stream agent id propagation", () => {
 
     expect(published).toHaveLength(1);
     expect(published[0]?.msg.type).toBe(MessageTypes.TURN_EVENT);
-    expect(published[0]?.msg.payload.eventType).toBe("streaming");
-    expect((published[0]?.msg.payload.data as any).type).toBe("reasoning_delta");
+    expect(published[0]?.msg.payload.eventType).toBeUndefined();
+    expect(published[0]?.msg.payload.data).toBeUndefined();
+    expect(published[0]?.msg.payload.typedPayload.kind).toBe("reasoning.delta");
+    expect(published[0]?.msg.payload.typedPayload.text).toBe("thinking");
   });
 });

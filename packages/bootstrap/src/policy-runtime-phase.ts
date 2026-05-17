@@ -5,7 +5,7 @@ import {
   grantCapability,
 } from "@spaceskit/gateway-core";
 import type { BootstrapState } from "./bootstrap-state.js";
-import { parseBooleanEnv, parseOptionalNumberEnv, parseVoiceSourceEnv } from "./config.js";
+import { parseBooleanEnv, parseOptionalNumberEnv } from "./config.js";
 import {
   ensureConciergeDefaults,
   ensureMainDefaults,
@@ -25,7 +25,6 @@ import { GatewayLibraryService } from "./services/gateway-library-service.js";
 import { GatewaySkillCatalogService } from "./services/gateway-skill-catalog-service.js";
 import { KnowledgeBaseService } from "./services/knowledge-base-service.js";
 import { LocalUsageTelemetryService } from "./services/local-usage-telemetry-service.js";
-import { createSandboxExecutionBackend } from "./services/sandbox-execution-backend.js";
 import { ToolAccessPolicyService } from "./services/tool-access-policy-service.js";
 import { UsageSnapshotService } from "./services/usage-snapshot-service.js";
 import {
@@ -33,10 +32,11 @@ import {
   VoiceUsageLockService,
 } from "./services/voice-usage-lock-service.js";
 import { VoiceRoutingService } from "./services/voice-routing-service.js";
+import { configurePolicySandboxRuntime } from "./policy-runtime-sandbox.js";
 import {
-  evaluateSandboxSlo,
-  resolveCapabilityExecutionRoute,
-} from "./turn-helpers.js";
+  buildDefaultVoiceRouteFromEnv,
+  seedDefaultVoiceProviderConfigs,
+} from "./policy-runtime-voice.js";
 
 export async function initializePolicyRuntimeServices(state: BootstrapState): Promise<void> {
   const { config, logger, db } = state;
@@ -184,9 +184,6 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
       accessGrants: state.accessGrantRepo,
       gatewayCapabilityAccessService: gatewayCapabilityAccessService ?? undefined,
       gatewayProfileId: config.gatewayProfile,
-      legacySpaceToolPolicies: state.spaceToolPolicyRepo ?? undefined,
-      legacyGatewayPolicyService: gatewayPolicyService ?? undefined,
-      legacyConnectorPolicies: state.connectorPolicyRepo ?? undefined,
       spaceSharingService: state.spaceSharingService ?? undefined,
       cliToolService: state.cliToolService ?? undefined,
       auditRepo: state.auditEventsRepo ?? undefined,
@@ -233,74 +230,7 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
     },
   });
 
-  const defaultVoiceRoute = {
-    preferredSource: parseVoiceSourceEnv(Bun.env.SPACESKIT_VOICE_DEFAULT_SOURCE) ?? "managed",
-    preferredProviderId: Bun.env.SPACESKIT_VOICE_MANAGED_PROVIDER_ID?.trim() || undefined,
-    byokProviderId: Bun.env.SPACESKIT_VOICE_BYOK_PROVIDER_ID?.trim() || undefined,
-    localModelProviderId: Bun.env.SPACESKIT_VOICE_LOCAL_PROVIDER_ID?.trim() || undefined,
-    appleSpeechProviderId: Bun.env.SPACESKIT_VOICE_APPLE_PROVIDER_ID?.trim() || undefined,
-    allowByokFallback: parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_BYOK_FALLBACK, false),
-    allowLocalFallback: parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_LOCAL_FALLBACK, true),
-    allowAppleSpeechFallback: parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_APPLE_FALLBACK, true),
-    stt: {
-      preferredSource: parseVoiceSourceEnv(Bun.env.SPACESKIT_VOICE_STT_DEFAULT_SOURCE)
-        ?? parseVoiceSourceEnv(Bun.env.SPACESKIT_VOICE_DEFAULT_SOURCE)
-        ?? "managed",
-      preferredProviderId: Bun.env.SPACESKIT_VOICE_STT_MANAGED_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_MANAGED_PROVIDER_ID?.trim()
-        || undefined,
-      byokProviderId: Bun.env.SPACESKIT_VOICE_STT_BYOK_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_BYOK_PROVIDER_ID?.trim()
-        || undefined,
-      localModelProviderId: Bun.env.SPACESKIT_VOICE_STT_LOCAL_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_LOCAL_PROVIDER_ID?.trim()
-        || undefined,
-      appleSpeechProviderId: Bun.env.SPACESKIT_VOICE_STT_APPLE_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_APPLE_PROVIDER_ID?.trim()
-        || undefined,
-      allowByokFallback: parseBooleanEnv(
-        Bun.env.SPACESKIT_VOICE_STT_ALLOW_BYOK_FALLBACK,
-        parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_BYOK_FALLBACK, false),
-      ),
-      allowLocalFallback: parseBooleanEnv(
-        Bun.env.SPACESKIT_VOICE_STT_ALLOW_LOCAL_FALLBACK,
-        parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_LOCAL_FALLBACK, true),
-      ),
-      allowAppleSpeechFallback: parseBooleanEnv(
-        Bun.env.SPACESKIT_VOICE_STT_ALLOW_APPLE_FALLBACK,
-        parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_APPLE_FALLBACK, true),
-      ),
-    },
-    tts: {
-      preferredSource: parseVoiceSourceEnv(Bun.env.SPACESKIT_VOICE_TTS_DEFAULT_SOURCE)
-        ?? parseVoiceSourceEnv(Bun.env.SPACESKIT_VOICE_DEFAULT_SOURCE)
-        ?? "managed",
-      preferredProviderId: Bun.env.SPACESKIT_VOICE_TTS_MANAGED_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_MANAGED_PROVIDER_ID?.trim()
-        || undefined,
-      byokProviderId: Bun.env.SPACESKIT_VOICE_TTS_BYOK_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_BYOK_PROVIDER_ID?.trim()
-        || undefined,
-      localModelProviderId: Bun.env.SPACESKIT_VOICE_TTS_LOCAL_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_LOCAL_PROVIDER_ID?.trim()
-        || undefined,
-      appleSpeechProviderId: Bun.env.SPACESKIT_VOICE_TTS_APPLE_PROVIDER_ID?.trim()
-        || Bun.env.SPACESKIT_VOICE_APPLE_PROVIDER_ID?.trim()
-        || undefined,
-      allowByokFallback: parseBooleanEnv(
-        Bun.env.SPACESKIT_VOICE_TTS_ALLOW_BYOK_FALLBACK,
-        parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_BYOK_FALLBACK, false),
-      ),
-      allowLocalFallback: parseBooleanEnv(
-        Bun.env.SPACESKIT_VOICE_TTS_ALLOW_LOCAL_FALLBACK,
-        parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_LOCAL_FALLBACK, true),
-      ),
-      allowAppleSpeechFallback: parseBooleanEnv(
-        Bun.env.SPACESKIT_VOICE_TTS_ALLOW_APPLE_FALLBACK,
-        parseBooleanEnv(Bun.env.SPACESKIT_VOICE_ALLOW_APPLE_FALLBACK, true),
-      ),
-    },
-  };
+  const defaultVoiceRoute = buildDefaultVoiceRouteFromEnv();
   seedDefaultVoiceProviderConfigs(state.voiceProviderConfigRepo, defaultVoiceRoute);
 
   const usageSnapshotService = db && state.usageRepo
@@ -380,33 +310,7 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
     return { allowed: true };
   });
 
-  const enforceSandboxRouting = config.archFreezeEnforced || config.sandboxRuntimeEnabled;
-  const sandboxBackend = enforceSandboxRouting
-    ? await createSandboxExecutionBackend({
-      logger: logger.child({ module: "sandbox-runtime" }),
-      runtimeModule: config.sandboxRuntimeModule,
-      allowHostPassthrough: config.sandboxAllowHostPassthrough,
-    })
-    : null;
-  const sandboxRuntimeState: {
-    enforceSandboxRouting: boolean;
-    backendMode: "disabled" | "module" | "passthrough" | "unavailable";
-    routed: number;
-    succeeded: number;
-    failed: number;
-    belowSloSince?: string;
-    lastFailureAt?: string;
-    lastFailureMessage?: string;
-  } = {
-    enforceSandboxRouting,
-    backendMode: sandboxBackend?.mode ?? "disabled",
-    routed: 0,
-    succeeded: 0,
-    failed: 0,
-    belowSloSince: undefined as string | undefined,
-    lastFailureAt: undefined as string | undefined,
-    lastFailureMessage: undefined as string | undefined,
-  };
+  const sandboxRuntimeState = await configurePolicySandboxRuntime(state);
   const gatewayObservabilityService = new GatewayObservabilityService({
     eventBus: state.eventBus,
     logger: logger.child({ module: "observability" }),
@@ -418,82 +322,6 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
     sandboxSloEnforce: config.sandboxSloEnforce,
     getSandboxState: () => ({ ...sandboxRuntimeState }),
   });
-
-  if (config.gatewayProfile === "external" && enforceSandboxRouting) {
-    if (config.sandboxAllowHostPassthrough) {
-      throw new Error(
-        "External profile requires strict sandbox isolation; SPACESKIT_SANDBOX_ALLOW_HOST_PASSTHROUGH=true is not permitted",
-      );
-    }
-    if (!sandboxBackend || sandboxBackend.mode !== "module") {
-      throw new Error(
-        "External profile requires a configured sandbox runtime module when sandbox routing is enforced",
-      );
-    }
-  }
-
-  const updateSandboxSloState = (): void => {
-    const evaluation = evaluateSandboxSlo({
-      succeeded: sandboxRuntimeState.succeeded,
-      failed: sandboxRuntimeState.failed,
-      minSuccessRate: config.sandboxSloMinSuccessRate,
-      minSamples: config.sandboxSloMinSamples,
-    });
-    if (!evaluation.evaluated || evaluation.meetsSlo) {
-      sandboxRuntimeState.belowSloSince = undefined;
-      return;
-    }
-    if (!sandboxRuntimeState.belowSloSince) {
-      sandboxRuntimeState.belowSloSince = new Date().toISOString();
-      logger.warn("Sandbox success-rate SLO breached", {
-        gatewayProfile: config.gatewayProfile,
-        sandboxMode: sandboxRuntimeState.backendMode,
-        successRate: evaluation.successRate,
-        minSuccessRate: config.sandboxSloMinSuccessRate,
-        samples: evaluation.samples,
-        minSamples: config.sandboxSloMinSamples,
-        sandboxSloEnforce: config.sandboxSloEnforce,
-      });
-    }
-  };
-
-  if (sandboxBackend) {
-    state.capabilities.setSandboxInvoker(async (input) => {
-      sandboxRuntimeState.routed += 1;
-      try {
-        const result = await sandboxBackend.invoke(input);
-        sandboxRuntimeState.succeeded += 1;
-        updateSandboxSloState();
-        return result;
-      } catch (error) {
-        sandboxRuntimeState.failed += 1;
-        sandboxRuntimeState.lastFailureAt = new Date().toISOString();
-        sandboxRuntimeState.lastFailureMessage = error instanceof Error ? error.message : String(error);
-        updateSandboxSloState();
-        throw error;
-      }
-    });
-    logger.info("Sandbox execution backend configured", {
-      mode: sandboxBackend.mode,
-      enforceSandboxRouting,
-      sandboxRuntimeEnabled: config.sandboxRuntimeEnabled,
-      archFreezeEnforced: config.archFreezeEnforced,
-      sloMinSuccessRate: config.sandboxSloMinSuccessRate,
-      sloMinSamples: config.sandboxSloMinSamples,
-      sloEnforce: config.sandboxSloEnforce,
-    });
-    if (sandboxBackend.mode === "unavailable") {
-      logger.warn("Sandbox backend unavailable — sandbox-routed operations will be denied", {
-        sandboxRuntimeModule: config.sandboxRuntimeModule ?? null,
-      });
-    }
-  } else {
-    state.capabilities.setSandboxInvoker(null);
-  }
-
-  state.capabilities.setExecutionRoutingResolver((routingInput) => (
-    resolveCapabilityExecutionRoute(routingInput, { enforceSandboxRouting })
-  ));
 
   let mainAgentHealthStatus: "healthy" | "repaired" | "fallback" | "degraded" = "healthy";
   try {
@@ -589,7 +417,7 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
           mainAgentId: config.mainAgentId,
           mainProfileId: config.mainProfileId,
           providerHint: mainAgentState.providerHint,
-          modelHint: mainAgentState.modelHint,
+          modelId: mainAgentState.modelConfig.preferredModels[0],
           fallbackReason: mainAgentState.fallbackReason,
         });
       }
@@ -612,7 +440,7 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
         conciergeAgentId: config.conciergeAgentId,
         conciergeProfileId: config.conciergeProfileId,
         providerHint: conciergeAgentState.providerHint,
-        modelHint: conciergeAgentState.modelHint,
+        modelId: conciergeAgentState.modelConfig.preferredModels[0],
         status: conciergeAgentState.status,
       });
     }
@@ -640,73 +468,4 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
     voiceRoutingService,
     voiceUsageLockService,
   });
-}
-
-function seedDefaultVoiceProviderConfigs(
-  repo: {
-    upsert: (input: {
-      providerId: string;
-      channel: "stt" | "tts";
-      source: "managed" | "byok" | "local_model" | "apple_speech";
-      priority?: number;
-      healthStatus?: string;
-      costProfileJson?: string;
-      secretRef?: string;
-      metadataJson?: string;
-    }) => unknown;
-  } | null | undefined,
-  defaults: {
-    stt?: {
-      preferredProviderId?: string;
-      byokProviderId?: string;
-      localModelProviderId?: string;
-      appleSpeechProviderId?: string;
-    };
-    tts?: {
-      preferredProviderId?: string;
-      byokProviderId?: string;
-      localModelProviderId?: string;
-      appleSpeechProviderId?: string;
-    };
-  },
-): void {
-  if (!repo) return;
-
-  const seedChannel = (
-    channel: "stt" | "tts",
-    channelDefaults: {
-      preferredProviderId?: string;
-      byokProviderId?: string;
-      localModelProviderId?: string;
-      appleSpeechProviderId?: string;
-    } | undefined,
-  ) => {
-    if (!channelDefaults) return;
-
-    const entries: Array<{
-      providerId?: string;
-      source: "managed" | "byok" | "local_model" | "apple_speech";
-      priority: number;
-    }> = [
-      { providerId: channelDefaults.preferredProviderId, source: "managed", priority: 10 },
-      { providerId: channelDefaults.byokProviderId, source: "byok", priority: 20 },
-      { providerId: channelDefaults.localModelProviderId, source: "local_model", priority: 30 },
-      { providerId: channelDefaults.appleSpeechProviderId, source: "apple_speech", priority: 40 },
-    ];
-
-    for (const entry of entries) {
-      const providerId = entry.providerId?.trim();
-      if (!providerId) continue;
-      repo.upsert({
-        providerId,
-        channel,
-        source: entry.source,
-        priority: entry.priority,
-        healthStatus: "unknown",
-      });
-    }
-  };
-
-  seedChannel("stt", defaults.stt);
-  seedChannel("tts", defaults.tts);
 }

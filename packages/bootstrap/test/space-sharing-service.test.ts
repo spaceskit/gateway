@@ -272,7 +272,7 @@ describe("SpaceSharingService", () => {
           principalId: "principal-reader",
           deviceId: "device-1",
           devicePublicKey: "device-public-key-1",
-          identityModeHint: "legacy_mode" as unknown as "device_key",
+          identityModeHint: "stale_mode" as unknown as "device_key",
         });
       }).toThrow("identityModeHint must be one of: device_key, strict_apple_id");
     } finally {

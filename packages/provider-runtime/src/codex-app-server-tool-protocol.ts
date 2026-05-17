@@ -16,7 +16,7 @@ export type CodexDynamicTool = {
 };
 
 export function resolveGatewayToolBridgeConfig(options: GenerateOptions): GatewayToolBridgeConfig | undefined {
-  return options.gatewayToolBridgeConfig ?? options.mcpBridgeConfig;
+  return options.gatewayToolBridgeConfig;
 }
 
 export function buildDynamicTools(config?: GatewayToolBridgeConfig): CodexDynamicTool[] {

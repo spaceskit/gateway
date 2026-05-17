@@ -71,7 +71,6 @@ export function toProfileSummaryPayload(
     personality_prompt?: string;
     default_skill_set_ids_json?: string;
     provider_hint?: string;
-    model_hint?: string;
     model_config_json?: string;
     source?: string;
   } | undefined,
@@ -82,7 +81,7 @@ export function toProfileSummaryPayload(
   personalityPrompt: string;
   defaultSkillIds: string[];
   providerHint?: string;
-  modelHint?: string;
+  modelId?: string;
   modelConfig: {
     preferredModels: string[];
     fallbackModels?: string[];
@@ -96,7 +95,7 @@ export function toProfileSummaryPayload(
   createdAt: string;
   updatedAt: string;
 } {
-  const modelConfig = parseProfileModelConfig(revision?.model_config_json, revision?.model_hint);
+  const modelConfig = parseProfileModelConfig(revision?.model_config_json);
   return {
     profileId: row.profile_id,
     name: row.name,
@@ -104,7 +103,7 @@ export function toProfileSummaryPayload(
     personalityPrompt: revision?.personality_prompt ?? "",
     defaultSkillIds: parseJsonStringArray(revision?.default_skill_set_ids_json),
     providerHint: revision?.provider_hint || undefined,
-    modelHint: modelConfig.preferredModels[0] ?? revision?.model_hint ?? undefined,
+    modelId: modelConfig.preferredModels[0],
     modelConfig,
     canModerate: row.can_moderate === 1,
     isDefault: row.is_default === 1,
@@ -132,7 +131,6 @@ export function parseJsonStringArray(raw: string | null | undefined): string[] {
 
 export function parseProfileModelConfig(
   raw: string | null | undefined,
-  modelHint: string | null | undefined,
 ): {
   preferredModels: string[];
   fallbackModels?: string[];
@@ -145,26 +143,23 @@ export function parseProfileModelConfig(
       const fallbackModels = normalizeStringArray(parsed.fallbackModels);
       const constraints = isRecord(parsed.constraints) ? parsed.constraints : undefined;
       return {
-        preferredModels: preferredModels.length > 0
-          ? preferredModels
-          : (modelHint?.trim() ? [modelHint.trim()] : []),
+        preferredModels,
         ...(fallbackModels.length > 0 ? { fallbackModels } : {}),
         ...(constraints ? { constraints } : {}),
       };
     } catch {
-      // Fallback below.
+      // Treat malformed model config as empty; model_config_json is canonical.
     }
   }
 
   return {
-    preferredModels: modelHint?.trim() ? [modelHint.trim()] : [],
+    preferredModels: [],
     fallbackModels: [],
   };
 }
 
 export function normalizeProfileModelConfig(
   value: { preferredModels: string[]; fallbackModels?: string[]; constraints?: Record<string, unknown> } | undefined,
-  modelHint?: string,
 ): {
   preferredModels: string[];
   fallbackModels?: string[];
@@ -172,9 +167,6 @@ export function normalizeProfileModelConfig(
 } {
   const preferredModels = normalizeStringArray(value?.preferredModels);
   const fallbackModels = normalizeStringArray(value?.fallbackModels);
-  if (preferredModels.length === 0 && modelHint?.trim()) {
-    preferredModels.push(modelHint.trim());
-  }
 
   return {
     preferredModels,

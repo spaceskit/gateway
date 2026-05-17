@@ -1,6 +1,6 @@
 // Server
 export { GatewayServer } from "./gateway-server.js";
-export { legacyEffectiveToolMatrixFromAccess } from "./effective-tool-matrix.js";
+export { effectiveToolMatrixFromAccess } from "./effective-tool-matrix.js";
 
 // Provider catalog helpers
 export { classifyTier } from "./admin/provider-catalog/tier-classification.js";

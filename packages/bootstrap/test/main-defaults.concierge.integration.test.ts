@@ -51,13 +51,18 @@ describe("bootstrap main defaults", () => {
       expect(conciergeProfile?.name).toBe("Embedded Concierge");
 
       const conciergeRevision = gateway.db?.db.query(
-        `SELECT model_hint
+        `SELECT model_config_json
          FROM agent_profile_revisions
          WHERE profile_id = ?
          ORDER BY revision DESC
          LIMIT 1`,
-      ).get("concierge-profile-test") as { model_hint?: string } | null;
-      expect(typeof conciergeRevision?.model_hint).toBe("string");
+      ).get("concierge-profile-test") as {
+        model_config_json?: string;
+      } | null;
+      const modelConfig = JSON.parse(conciergeRevision?.model_config_json ?? "{}") as {
+        preferredModels?: string[];
+      };
+      expect(typeof modelConfig.preferredModels?.[0]).toBe("string");
     } finally {
       try {
         await gateway?.shutdown();
@@ -71,7 +76,7 @@ describe("bootstrap main defaults", () => {
     }
   });
 
-  test("repairs legacy concierge backing-space metadata on startup without changing pinned runtime", { timeout: INTEGRATION_TIMEOUT }, async () => {
+  test("repairs stale concierge backing-space metadata on startup without changing pinned runtime", { timeout: INTEGRATION_TIMEOUT }, async () => {
     const dbPath = join(tmpdir(), `spaceskit-concierge-repair-${crypto.randomUUID()}.db`);
     const previousGatewayProfile = Bun.env.SPACESKIT_GATEWAY_PROFILE;
     const config = {
@@ -130,8 +135,8 @@ describe("bootstrap main defaults", () => {
           "Wrong goal",
           JSON.stringify({
             visibility: "shared",
-            orchestratorProfileId: "legacy-concierge-profile",
-            spaceUid: "legacy-concierge-space-uid",
+            orchestratorProfileId: "stale-concierge-profile",
+            spaceUid: "stale-concierge-space-uid",
           }),
           new Date().toISOString(),
           config.conciergeSpaceId,
@@ -146,7 +151,7 @@ describe("bootstrap main defaults", () => {
            WHERE space_id = ?
              AND agent_id = ?`,
         ).run(
-          "legacy-concierge-profile",
+          "stale-concierge-profile",
           "participant",
           9,
           0,
@@ -194,7 +199,7 @@ describe("bootstrap main defaults", () => {
         repairIfMissing: true,
       });
       expect(state.providerHint).toBe("openai");
-      expect(state.modelHint).toBe("openai/gpt-4.1");
+      expect(state.modelConfig.preferredModels[0]).toBe("openai/gpt-4.1");
       expect(state.fallbackApplied).toBe(false);
     } finally {
       try {
@@ -280,13 +285,18 @@ describe("bootstrap main defaults", () => {
       expect(gatewayErrorMessage(caught)).toContain("not loaded in LM Studio runtime");
 
       const revision = instance.db?.db.query(
-        `SELECT model_hint
+        `SELECT model_config_json
          FROM agent_profile_revisions
          WHERE profile_id = ?
          ORDER BY revision DESC
          LIMIT 1`,
-      ).get(config.conciergeProfileId) as { model_hint?: string } | null;
-      expect(revision?.model_hint).toBe("lmstudio/qwen2.5-coder");
+      ).get(config.conciergeProfileId) as {
+        model_config_json?: string;
+      } | null;
+      const modelConfig = JSON.parse(revision?.model_config_json ?? "{}") as {
+        preferredModels?: string[];
+      };
+      expect(modelConfig.preferredModels?.[0]).toBe("lmstudio/qwen2.5-coder");
     } finally {
       globalThis.fetch = originalFetch;
       try {

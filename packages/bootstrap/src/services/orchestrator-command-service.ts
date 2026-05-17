@@ -1,25 +1,35 @@
 import { randomUUID } from "node:crypto";
-import type { ReflectionService, SpaceAdminService, SpaceManager } from "@spaceskit/core";
-import {
-  OrchestratorCommandRepository,
-  type OrchestratorCommandStatus,
-  type TurnRepository,
-} from "@spaceskit/persistence";
 import {
   SpaceContextError,
-  SpaceContextService,
 } from "./space-context-service.js";
-
-export type OrchestratorCommandType =
-  | "list_spaces"
-  | "get_space_digest"
-  | "create_space"
-  | "list_skills"
-  | "create_skill"
-  | "handoff_space"
-  | "add_agent"
-  | "share_context"
-  | "run_space_prompt";
+import {
+  asBoolean,
+  asNumber,
+  asRecord,
+  asRole,
+  asString,
+  asStringArray,
+  buildSpaceDigestFallback,
+  extractTextPreview,
+  normalizeDigestWindow,
+  normalizeSkillListStatus,
+  normalizeSkillWriteStatus,
+  normalizeSpaceStatusList,
+  parseObject,
+} from "./orchestrator-command-service-helpers.js";
+import type {
+  OrchestratorCommandInput,
+  OrchestratorCommandResult,
+  OrchestratorCommandServiceOptions,
+  OrchestratorCommandType,
+} from "./orchestrator-command-service-types.js";
+export type {
+  OrchestratorCommandEvent,
+  OrchestratorCommandInput,
+  OrchestratorCommandResult,
+  OrchestratorCommandServiceOptions,
+  OrchestratorCommandType,
+} from "./orchestrator-command-service-types.js";
 
 const CONTROL_ONLY_COMMANDS = new Set<OrchestratorCommandType>([
   "list_spaces",
@@ -30,53 +40,6 @@ const CONTROL_ONLY_COMMANDS = new Set<OrchestratorCommandType>([
   "handoff_space",
 ]);
 
-export interface OrchestratorCommandInput {
-  apiVersion?: string;
-  correlationId?: string;
-  idempotencyKey?: string;
-  commandType: OrchestratorCommandType;
-  targetSpaceId?: string;
-  targetAgentId?: string;
-  payload?: Record<string, unknown>;
-  /**
-   * Authenticated caller principal identity for external command paths.
-   */
-  principalId?: string;
-  /**
-   * Optional caller device identity for audit/policy hooks.
-   */
-  deviceId?: string;
-  /**
-   * Reserved for trusted internal/system callers.
-   * External caller paths must provide an explicit targetSpaceId.
-   */
-  trustedInternal?: boolean;
-}
-
-export interface OrchestratorCommandEvent {
-  status: OrchestratorCommandStatus;
-  event: Record<string, unknown>;
-  createdAt: string;
-}
-
-export interface OrchestratorCommandResult {
-  commandId: string;
-  correlationId: string;
-  apiVersion: string;
-  commandType: string;
-  targetSpaceId: string;
-  targetAgentId?: string;
-  status: OrchestratorCommandStatus;
-  result?: Record<string, unknown>;
-  error?: {
-    code: string;
-    message: string;
-  };
-  createdAt: string;
-  updatedAt: string;
-  events: OrchestratorCommandEvent[];
-}
-
 export class OrchestratorCommandError extends Error {
   readonly code: string;
 
@@ -84,52 +47,6 @@ export class OrchestratorCommandError extends Error {
     super(message);
     this.code = code;
   }
-}
-
-export interface OrchestratorCommandServiceOptions {
-  repository: OrchestratorCommandRepository;
-  spaceAdminService: SpaceAdminService;
-  spaceManager: Pick<SpaceManager, "executeTurn">;
-  spaceContextService: SpaceContextService;
-  defaultTargetSpaceId: string;
-  turnRepo?: Pick<TurnRepository, "listBySpace">;
-  reflectionService?: Pick<ReflectionService, "runSummaryJob">;
-  /**
-   * If true, non-trusted callers must provide a caller principal.
-   */
-  requireCallerPrincipal?: boolean;
-  /**
-   * Optional authorization hook for orchestrator commands.
-   * Used to enforce space-sharing policy on direct service entry paths.
-   */
-  authorizeCommand?: (input: {
-    commandType: OrchestratorCommandType;
-    targetSpaceId: string;
-    principalId: string;
-    deviceId?: string;
-  }) => { allowed: boolean; reason?: string } | Promise<{ allowed: boolean; reason?: string }>;
-  /** Restrict externally-submitted commands to the control-plane command set. */
-  controlOnlyMode?: boolean;
-  gatewaySkillCatalogService?: {
-    listSkills: (input?: {
-      query?: string;
-      tags?: string[];
-      status?: "active" | "archived" | "all";
-      limit?: number;
-    }) => unknown[];
-    upsertSkill: (input: {
-      skillId?: string;
-      name: string;
-      description?: string;
-      contentMarkdown: string;
-      sourceRef?: string;
-      tags?: string[];
-      status?: "active" | "archived";
-    }) => {
-      skill: unknown;
-      created: boolean;
-    };
-  };
 }
 
 export class OrchestratorCommandService {
@@ -489,132 +406,6 @@ export class OrchestratorCommandService {
         );
     }
   }
-}
-
-function parseObject(raw: string | null): Record<string, unknown> | undefined {
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Ignore parse errors.
-  }
-  return undefined;
-}
-
-function extractTextPreview(raw: string | null): string {
-  if (!raw) return "";
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed === "string") return parsed;
-    if (parsed && typeof parsed === "object" && "text" in parsed && typeof (parsed as Record<string, unknown>).text === "string") {
-      return (parsed as Record<string, unknown>).text as string;
-    }
-  } catch {
-    return raw;
-  }
-  return "";
-}
-
-function buildSpaceDigestFallback(
-  spaceName: string,
-  turns: Array<{ agentId: string; output: string }>,
-): string {
-  if (turns.length === 0) {
-    return `${spaceName} has no recent activity.`;
-  }
-
-  const highlights = turns
-    .slice(0, 3)
-    .map((turn) => {
-      const normalizedOutput = turn.output.trim();
-      const preview = normalizedOutput.length > 140
-        ? `${normalizedOutput.slice(0, 137)}...`
-        : normalizedOutput;
-      return `${turn.agentId}: ${preview}`;
-    });
-
-  return `${spaceName} has recent activity. ${highlights.join(" ")}`;
-}
-
-function asString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function asBoolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
-  return undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  return undefined;
-}
-
-function asRole(value: unknown): "participant" | "global_coordinator" | "space_moderator" | undefined {
-  if (
-    value === "participant"
-    || value === "global_coordinator"
-    || value === "space_moderator"
-  ) {
-    return value;
-  }
-  return undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
-}
-
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized = value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeSpaceStatusList(value: unknown): Array<"created" | "active" | "paused" | "completed" | "failed"> {
-  if (!Array.isArray(value)) return [];
-  const normalized = new Set<"created" | "active" | "paused" | "completed" | "failed">();
-  for (const entry of value) {
-    if (
-      entry === "created"
-      || entry === "active"
-      || entry === "paused"
-      || entry === "completed"
-      || entry === "failed"
-    ) {
-      normalized.add(entry);
-    }
-  }
-  return [...normalized];
-}
-
-function normalizeSkillListStatus(value: unknown): "active" | "archived" | "all" | undefined {
-  if (value === "active" || value === "archived" || value === "all") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeSkillWriteStatus(value: unknown): "active" | "archived" | undefined {
-  if (value === "active" || value === "archived") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeDigestWindow(value: unknown): "latest" | "recent" {
-  return asString(value)?.toLowerCase() === "recent" ? "recent" : "latest";
 }
 
 function normalizeError(error: unknown): { code: string; message: string } {

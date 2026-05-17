@@ -1,7 +1,4 @@
 import {
-  buildToolUsageGuidance,
-  buildMediatedToolPrompt,
-  hasInjectedToolGuidance,
   parseFencedToolCalls,
   stripFencedToolCallBlocks,
 } from "@spaceskit/core";
@@ -14,11 +11,11 @@ import type {
   ModelProvider,
   StreamChunk,
   ToolCall,
-  ToolDefinition,
   TokenUsage,
 } from "@spaceskit/core";
 import { ToolsUnsupportedError, UnsupportedProviderError } from "./provider-errors.js";
 import { randomUUID } from "node:crypto";
+import { injectHelperToolGuidance, injectTextToolGuidance } from "./apple-foundation-tool-guidance.js";
 
 interface AppleFoundationRuntimeModule {
   appleAISDK: {
@@ -444,7 +441,7 @@ function normalizeUsage(value: unknown): TokenUsage | undefined {
     tokenAccuracy: record.tokenAccuracy === "reported" || record.tokenAccuracy === "mixed"
       ? record.tokenAccuracy
       : "estimated",
-    usageSource: record.usageSource === "local_scanner" || record.usageSource === "legacy_turns"
+    usageSource: record.usageSource === "local_scanner"
       ? record.usageSource
       : "ledger",
   };
@@ -458,50 +455,4 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/**
- * Inject tool descriptions and fenced-JSON calling instructions into the
- * message list. The on-device model sees tools as text and responds with
- * fenced JSON blocks that the gateway parses.
- */
-function injectTextToolGuidance(messages: ModelMessage[], tools: ToolDefinition[]): ModelMessage[] {
-  const guidance: ModelMessage = {
-    role: "system",
-    content: buildMediatedToolPrompt(tools),
-  };
-
-  return [messages[0], guidance, ...messages.slice(1)];
-}
-
-function injectHelperToolGuidance(messages: ModelMessage[], tools: ToolDefinition[]): ModelMessage[] {
-  const guidance: ModelMessage = {
-    role: "system",
-    content: hasInjectedToolGuidance(messages)
-      ? buildHelperResponseFormatGuidance()
-      : buildHelperToolPrompt(tools),
-  };
-
-  return [messages[0], guidance, ...messages.slice(1)];
-}
-
-function buildHelperToolPrompt(tools: ToolDefinition[]): string {
-  return [
-    buildToolUsageGuidance(tools),
-    buildHelperResponseFormatGuidance(),
-  ].join("\n");
-}
-
-function buildHelperResponseFormatGuidance(): string {
-  return [
-    "When using the structured Apple helper response format:",
-    "- Choose type = \"tool_call\" whenever the user explicitly instructs you to use a tool or when live gateway data/action is required.",
-    "- When the user names an exact tool, call that exact tool and do not substitute a different tool.",
-    "- After a successful tool result satisfies the request, return type = \"final\" instead of calling more tools.",
-    "- Never call shell.* tools unless the user explicitly asks for shell or CLI work.",
-    "- Set name to the exact tool name.",
-    "- Set argumentsJSON to a valid JSON object string for that tool. Do not leave required arguments empty.",
-    "- Choose type = \"final\" only when no tool execution is needed.",
-    "- If the user asks which tools are available, answer only from the provided tool list and do not invent capabilities.",
-  ].join("\n");
 }

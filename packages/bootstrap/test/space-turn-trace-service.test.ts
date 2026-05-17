@@ -583,14 +583,14 @@ describe("SpaceTurnTraceService", () => {
       });
 
       eventLog.create({
-        eventId: "legacy-text-delta",
+        eventId: "existing-text-delta",
         spaceId: "space-main",
         turnId: "turn-1",
         agentId: "agent-1",
         eventType: "text_delta",
         payloadJson: JSON.stringify({
           type: "text_delta",
-          text: "legacy partial output",
+          text: "existing partial output",
         }),
         createdAt: "2026-03-17T10:00:01.000Z",
       });

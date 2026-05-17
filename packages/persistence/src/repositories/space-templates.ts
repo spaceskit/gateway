@@ -202,16 +202,6 @@ export class SpaceTemplateRepository {
     return { template, revision, created };
   }
 
-  claimOwnerIfUnowned(templateId: string, ownerPrincipalId: string): boolean {
-    return this.db.query(`
-      UPDATE space_templates
-      SET owner_principal_id = ?,
-          updated_at = ?
-      WHERE template_id = ?
-        AND owner_principal_id = ''
-    `).run(ownerPrincipalId, new Date().toISOString(), templateId).changes > 0;
-  }
-
   archive(templateId: string): boolean {
     return this.db.query(`
       UPDATE space_templates

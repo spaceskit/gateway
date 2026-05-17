@@ -28,7 +28,6 @@ import {
 import type { BootstrapState } from "./bootstrap-state.js";
 import { ConciergeEscalationService } from "./services/concierge-escalation-service.js";
 import {
-  extractFilesystemScopes,
   fileUriToFilesystemPath,
   firstPreferredModelFromConfig,
   uniqueStrings,
@@ -242,11 +241,9 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
     },
     resolveSecurityScope: async (spaceId: string, agentId: string): Promise<AgentSecurityScope> => {
       const space = await state.spaceAdminService.getSpace(spaceId);
-      const assignment = space?.agents.find((entry: any) => entry.agentId === agentId);
-      const assignmentScope = assignment?.securityScope;
       const allowedCapabilities = mergeAllowedCapabilities(
         space?.capabilities ?? [],
-        assignmentScope?.allowedCapabilities ?? [],
+        [],
       );
       const workspace = state.spaceWorkspaceService
         ? await state.spaceWorkspaceService.ensureWorkspace(spaceId).catch(() => null)
@@ -257,19 +254,16 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
         .map((resource: any) => fileUriToFilesystemPath(resource.uri))
         .filter((value: any): value is string => Boolean(value));
       const mergedFilesystemScopes = uniqueStrings([
-        ...extractFilesystemScopes(assignmentScope),
         ...resourceFolderScopes,
         ...(workspace ? [workspace.effectiveWorkspaceRoot] : []),
       ]);
 
       return {
         ...DEFAULT_AGENT_SCOPE,
-        ...assignmentScope,
         agentId,
         allowedCapabilities,
-        commandAllowlist: uniqueStrings(assignmentScope?.commandAllowlist ?? []),
+        commandAllowlist: [],
         filesystemScope: mergedFilesystemScopes[0]
-          ?? assignmentScope?.filesystemScope
           ?? DEFAULT_AGENT_SCOPE.filesystemScope,
         ...(mergedFilesystemScopes.length > 0 ? { filesystemScopes: mergedFilesystemScopes } : {}),
       };
@@ -283,7 +277,6 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
         providerId: config.modelProvider,
         model: config.defaultModelId,
         apiKey: config.apiKey,
-        allowUnsafeHostBypass: config.sandboxAllowHostPassthrough,
       });
       modelRouter = new ModelRouter(modelProvider, config.defaultModelId);
       logger.info("Model router initialized", {
@@ -317,7 +310,6 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
         personality_prompt?: string;
         default_skill_set_ids_json?: string;
         provider_hint?: string;
-        model_hint?: string;
         model_config_json?: string;
         source?: string;
       } | null;
@@ -340,7 +332,7 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
           ? state.gatewayPolicyService.filterSkillIds(loadSkillIds())
           : loadSkillIds(),
         providerHint: row.provider_hint ?? "",
-        modelHint: firstPreferredModelFromConfig(row.model_config_json) ?? row.model_hint ?? "",
+        modelId: firstPreferredModelFromConfig(row.model_config_json) ?? "",
         source: row.source ?? "manual",
         resolvedAt: new Date(),
       };
@@ -367,7 +359,7 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
           ? state.gatewayPolicyService.filterSkillIds(loadSkillIds())
           : loadSkillIds(),
         providerHint: revision.provider_hint ?? "",
-        modelHint: firstPreferredModelFromConfig(revision.model_config_json) ?? revision.model_hint ?? "",
+        modelId: firstPreferredModelFromConfig(revision.model_config_json) ?? "",
         source: revision.source ?? "manual",
         resolvedAt: new Date(),
       };

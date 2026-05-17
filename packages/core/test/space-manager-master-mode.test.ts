@@ -449,8 +449,8 @@ describe("SpaceManager master-mode orchestration", () => {
       ],
     });
 
-    runtimeByAgent.set("master-1", new ScriptRuntime("master-1", [{ output: "legacy master response" }]));
-    runtimeByAgent.set("guest-1", new ScriptRuntime("guest-1", [{ output: "legacy guest response" }]));
+    runtimeByAgent.set("master-1", new ScriptRuntime("master-1", [{ output: "stale master response" }]));
+    runtimeByAgent.set("guest-1", new ScriptRuntime("guest-1", [{ output: "stale guest response" }]));
 
     const manager = new SpaceManager({
       eventBus,
@@ -462,16 +462,16 @@ describe("SpaceManager master-mode orchestration", () => {
       resolveRuntime: async (_spaceId, agentId) => runtimeByAgent.get(agentId)!,
     });
 
-    await manager.executeTurn("space-1", "Legacy behavior check");
+    await manager.executeTurn("space-1", "Stale behavior check");
     await waitForSummaryEvent(eventBus);
 
     const masterContext = runtimeByAgent.get("master-1")!.contexts[0]!;
     expect(runtimeByAgent.get("master-1")?.contexts).toHaveLength(1);
     expect(masterContext.messages).toHaveLength(1);
-    expect(masterContext.messages[0]?.content).toBe("Legacy behavior check");
+    expect(masterContext.messages[0]?.content).toBe("Stale behavior check");
   });
 
-  test("keeps legacy primary_only behavior when activation gate is not met", async () => {
+  test("keeps stale primary_only behavior when activation gate is not met", async () => {
     const eventBus = new EventBus();
     const saves: SaveTurnInput[] = [];
     const runtimeByAgent = new Map<string, ScriptRuntime>();

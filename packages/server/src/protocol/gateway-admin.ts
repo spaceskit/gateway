@@ -1,5 +1,9 @@
 import type { GatewayToolHealthStatusPayload } from "./tooling.js";
+import type { ProfileModelConfigPayload } from "./templates.js";
 import type { ProviderUsageSnapshotPayload } from "./usage-policy.js";
+
+export type * from "./gateway-admin-local-usage.js";
+export type * from "./gateway-admin-secret-refs.js";
 
 export interface GatewayDiscoverLocalAgentsPayload {
   apiVersion?: string;
@@ -56,7 +60,7 @@ export interface GatewayMainAgentStatePayload {
   mainProfileId: string;
   assignedProfileId?: string;
   providerHint?: string;
-  modelHint?: string;
+  modelConfig: ProfileModelConfigPayload;
   status: "healthy" | "repaired" | "fallback";
   repaired: boolean;
   fallbackApplied: boolean;
@@ -87,7 +91,7 @@ export interface GatewayConciergeAgentStatePayload {
   conciergeProfileId: string;
   assignedProfileId?: string;
   providerHint?: string;
-  modelHint?: string;
+  modelConfig: ProfileModelConfigPayload;
   status: "healthy" | "repaired" | "fallback";
   repaired: boolean;
   fallbackApplied: boolean;
@@ -415,73 +419,6 @@ export interface GatewayGetProviderTelemetryResponsePayload {
   generatedAt: string;
 }
 
-export interface LocalUsageInstallHintPayload {
-  command: string;
-  docsUrl: string;
-}
-
-export interface LocalUsageWindowPayload {
-  window: "primary" | "secondary" | "tertiary";
-  label: "session" | "weekly" | "tertiary";
-  usedPercent?: number;
-  remainingPercent?: number;
-  windowMinutes?: number;
-  resetsAt?: string;
-  resetDescription?: string;
-}
-
-export interface CodexBarQuotaPayload {
-  available: boolean;
-  sourceLabel?: string;
-  windows: LocalUsageWindowPayload[];
-  creditsRemaining?: number;
-  accountLabel?: string;
-  updatedAt?: string;
-  message?: string;
-  installHint?: LocalUsageInstallHintPayload;
-}
-
-export interface LocalUsageSessionPayload {
-  sessionId: string;
-  model?: string;
-  startedAt?: string;
-  lastActivityAt: string;
-  inputTokens: number;
-  cachedInputTokens?: number;
-  outputTokens: number;
-  totalTokens: number;
-  estimatedCostUsd?: number;
-  tokenAccuracy: "reported" | "estimated" | "mixed";
-  usageSource: "ledger" | "local_scanner" | "legacy_turns";
-}
-
-export interface LocalUsageSummaryPayload {
-  windowDays: number;
-  sessionCount: number;
-  inputTokens: number;
-  cachedInputTokens?: number;
-  outputTokens: number;
-  totalTokens: number;
-  estimatedCostUsd?: number;
-  tokenAccuracy: "reported" | "estimated" | "mixed";
-  usageSource: "ledger" | "local_scanner" | "legacy_turns";
-}
-
-export interface LocalProviderUsageTelemetryPayload {
-  providerId: string;
-  status: ProviderUsageSnapshotPayload["status"];
-  fetchedAt: string;
-  message?: string;
-  quota: CodexBarQuotaPayload;
-  summary: LocalUsageSummaryPayload;
-  sessions: LocalUsageSessionPayload[];
-}
-
-export interface GatewayGetLocalUsageTelemetryResponsePayload {
-  telemetry: LocalProviderUsageTelemetryPayload[];
-  generatedAt: string;
-}
-
 export interface GatewayGetProviderSettingsResponsePayload {
   settings: ProviderRuntimeConfigPayload;
 }
@@ -521,47 +458,4 @@ export interface GatewayProvisionLocalProfileResponsePayload {
   model: string;
   agentId?: string;
   assignmentCreated?: boolean;
-}
-
-export interface GatewaySecretRefPayload {
-  secretRef: string;
-  providerId: string;
-  label: string;
-  backend: string;
-  createdAt: string;
-  updatedAt: string;
-  lastUsedAt?: string;
-}
-
-export interface GatewayPutSecretRefPayload {
-  apiVersion?: string;
-  secretRef?: string;
-  providerId: string;
-  label?: string;
-  secret: string;
-  backend?: string;
-}
-
-export interface GatewayPutSecretRefResponsePayload {
-  secretRef: GatewaySecretRefPayload;
-  created: boolean;
-}
-
-export interface GatewayListSecretRefsPayload {
-  apiVersion?: string;
-  providerId?: string;
-}
-
-export interface GatewayListSecretRefsResponsePayload {
-  secretRefs: GatewaySecretRefPayload[];
-}
-
-export interface GatewayDeleteSecretRefPayload {
-  apiVersion?: string;
-  secretRef: string;
-}
-
-export interface GatewayDeleteSecretRefResponsePayload {
-  secretRef: string;
-  deleted: boolean;
 }

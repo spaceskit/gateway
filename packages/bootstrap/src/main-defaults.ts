@@ -20,7 +20,7 @@ export interface EnsureMainDefaultsResult {
 }
 
 export interface EnsureConciergeDefaultsResult {
-  profile: "created" | "restored" | "reused" | "migrated";
+  profile: "created" | "restored" | "reused";
   space: "created" | "reused";
   assignment: "created" | "updated" | "reused";
   orchestrator: "updated" | "reused" | "skipped";
@@ -33,7 +33,7 @@ export interface EnsureMainSpaceSystemSkillsResult {
 
 export interface MainProfileRuntimeSelection {
   providerHint: string;
-  modelHint: string;
+  modelId: string;
 }
 
 export function resolveMainProfileRuntimeSelection(
@@ -55,13 +55,13 @@ export function resolveMainProfileRuntimeSelection(
     "apple",
   ];
   const configuredProviderHint = config.modelProvider?.trim() ?? "";
-  const configuredModelHint = config.defaultModelId?.trim() ?? "";
-  if (configuredProviderHint && configuredModelHint) {
+  const configuredModelId = config.defaultModelId?.trim() ?? "";
+  if (configuredProviderHint && configuredModelId) {
     const configuredProviderAvailable = providerConfigs.some((entry) =>
       entry.providerId.trim().toLowerCase() === configuredProviderHint.toLowerCase(),
     );
     if (configuredProviderAvailable) {
-      return { providerHint: configuredProviderHint, modelHint: configuredModelHint };
+      return { providerHint: configuredProviderHint, modelId: configuredModelId };
     }
   }
 
@@ -70,7 +70,7 @@ export function resolveMainProfileRuntimeSelection(
       entry.providerId?.trim().toLowerCase() === providerId && Boolean(entry.model?.trim())
     );
     if (preferred) {
-      return { providerHint: preferred.providerId.trim(), modelHint: preferred.model.trim() };
+      return { providerHint: preferred.providerId.trim(), modelId: preferred.model.trim() };
     }
   }
 
@@ -78,10 +78,10 @@ export function resolveMainProfileRuntimeSelection(
     Boolean(entry.providerId?.trim()) && Boolean(entry.model?.trim())
   );
   if (firstAvailable) {
-    return { providerHint: firstAvailable.providerId.trim(), modelHint: firstAvailable.model.trim() };
+    return { providerHint: firstAvailable.providerId.trim(), modelId: firstAvailable.model.trim() };
   }
 
-  return { providerHint: "", modelHint: "" };
+  return { providerHint: "", modelId: "" };
 }
 
 export async function ensureMainDefaults(
@@ -114,7 +114,10 @@ export async function ensureMainDefaults(
       personalityPrompt: `You are the default ${config.gatewayProfile} main gateway agent. Coordinate spaces clearly and safely.`,
       defaultSkillIds: [...TRUSTED_AGENT_SYSTEM_SKILL_IDS],
       providerHint: runtimeSelection.providerHint,
-      modelHint: runtimeSelection.modelHint,
+      modelConfig: {
+        preferredModels: runtimeSelection.modelId ? [runtimeSelection.modelId] : [],
+        fallbackModels: [],
+      },
     });
     profileStatus = "created";
   } else if (existingProfile.archived === 1) {
@@ -233,35 +236,24 @@ export async function ensureConciergeDefaults(
   let orchestratorStatus: EnsureConciergeDefaultsResult["orchestrator"] = "reused";
   const profileLabel = config.gatewayProfile === "external" ? "External" : "Embedded";
 
-  const legacyProfile = findLegacyConciergeProfile(profileRepo);
   const existingProfile = profileRepo.getById(config.conciergeProfileId);
   if (!existingProfile) {
-    const legacyRevision = legacyProfile
-      ? profileRepo.getActiveRevision(legacyProfile.profile_id)
-      : undefined;
     profileRepo.create({
       profileId: config.conciergeProfileId,
-      personaId: legacyProfile?.persona_id || defaultPersonaId,
+      personaId: defaultPersonaId,
       name: `${profileLabel} Concierge`,
       description: "General-purpose system concierge for workspace status, routing, and setup.",
       canModerate: true,
-      personalityPrompt: legacyRevision?.personality_prompt
-        || "You are the Spaces concierge. Be concise, route users to the right workspace or settings surface, and escalate runtime issues clearly.",
-      defaultSkillIds: mergeSkillIds(
-        legacyRevision ? parseStringArray(legacyRevision.default_skill_set_ids_json) : [],
-        TRUSTED_AGENT_SYSTEM_SKILL_IDS,
-      ),
-      providerHint: legacyRevision?.provider_hint?.trim() || runtimeSelection.providerHint,
-      modelHint: legacyRevision?.model_hint?.trim() || runtimeSelection.modelHint,
-      modelConfig: legacyRevision
-        ? parseModelConfig(legacyRevision.model_config_json, legacyRevision.model_hint)
-        : {
-          preferredModels: runtimeSelection.modelHint ? [runtimeSelection.modelHint] : [],
-          fallbackModels: [],
-        },
-      source: legacyProfile ? "gateway_concierge_profile_migration" : "gateway_concierge_defaults",
+      personalityPrompt: "You are the Spaces concierge. Be concise, route users to the right workspace or settings surface, and escalate runtime issues clearly.",
+      defaultSkillIds: [...TRUSTED_AGENT_SYSTEM_SKILL_IDS],
+      providerHint: runtimeSelection.providerHint,
+      modelConfig: {
+        preferredModels: runtimeSelection.modelId ? [runtimeSelection.modelId] : [],
+        fallbackModels: [],
+      },
+      source: "gateway_concierge_defaults",
     });
-    profileStatus = legacyProfile ? "migrated" : "created";
+    profileStatus = "created";
   } else if (existingProfile.archived === 1) {
     profileRepo.restore(config.conciergeProfileId);
     profileStatus = "restored";
@@ -398,16 +390,6 @@ export async function ensureMainSpaceSystemSkills(
   return { seeded, attached };
 }
 
-function findLegacyConciergeProfile(profileRepo: ProfileRepository): ReturnType<ProfileRepository["getById"]> {
-  const candidates = profileRepo
-    .list({ includeArchived: true })
-    .filter((entry) => entry.profile_id.startsWith("system.concierge.profile."));
-  if (candidates.length === 0) {
-    return undefined;
-  }
-  return candidates.sort((lhs, rhs) => rhs.updated_at.localeCompare(lhs.updated_at))[0];
-}
-
 function parseStringArray(value: string | null | undefined): string[] {
   if (!value?.trim()) return [];
   try {
@@ -415,31 +397,6 @@ function parseStringArray(value: string | null | undefined): string[] {
     return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
   } catch {
     return [];
-  }
-}
-
-function parseModelConfig(
-  value: string | null | undefined,
-  fallbackModelHint: string | null | undefined,
-): { preferredModels: string[]; fallbackModels: string[] } {
-  const fallback = fallbackModelHint?.trim() ? [fallbackModelHint.trim()] : [];
-  if (!value?.trim()) {
-    return { preferredModels: fallback, fallbackModels: [] };
-  }
-  try {
-    const parsed = JSON.parse(value) as {
-      preferredModels?: unknown;
-      fallbackModels?: unknown;
-    };
-    const preferredModels = Array.isArray(parsed.preferredModels)
-      ? parsed.preferredModels.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : fallback;
-    const fallbackModels = Array.isArray(parsed.fallbackModels)
-      ? parsed.fallbackModels.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : [];
-    return { preferredModels, fallbackModels };
-  } catch {
-    return { preferredModels: fallback, fallbackModels: [] };
   }
 }
 

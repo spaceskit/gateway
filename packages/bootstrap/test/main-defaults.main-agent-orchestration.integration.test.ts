@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { initDatabase, ProfileRepository } from "@spaceskit/persistence";
 import { startGateway } from "../src/index.js";
 import {
+  gatewayErrorCode,
   INTEGRATION_TIMEOUT,
   randomPort,
   removeDbArtifacts,
@@ -66,7 +67,7 @@ describe("bootstrap main defaults", () => {
     }
   });
 
-  test("recreates missing canonical main assignment on restart", { timeout: INTEGRATION_TIMEOUT }, async () => {
+  test("does not recreate missing canonical main assignment when auto-repair is disabled", { timeout: INTEGRATION_TIMEOUT }, async () => {
     const dbPath = join(tmpdir(), `spaceskit-main-assignment-repair-${crypto.randomUUID()}.db`);
     const previousGatewayProfile = Bun.env.SPACESKIT_GATEWAY_PROFILE;
     const config = {
@@ -116,13 +117,20 @@ describe("bootstrap main defaults", () => {
         role: string;
         turn_order: number;
         is_primary: number;
-      } | undefined;
+      } | null;
 
-      expect(row).toBeDefined();
-      expect(row?.profile_id).toBe(config.mainProfileId);
-      expect(row?.role).toBe("global_coordinator");
-      expect(row?.turn_order).toBe(0);
-      expect(row?.is_primary).toBe(1);
+      expect(row).toBeNull();
+
+      let caught: unknown;
+      try {
+        await second.gatewayAdminService.getMainAgent({
+          spaceId: config.mainSpaceId,
+          repairIfMissing: false,
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(gatewayErrorCode(caught)).toBe("FAILED_PRECONDITION");
     } finally {
       try {
         await first?.shutdown();

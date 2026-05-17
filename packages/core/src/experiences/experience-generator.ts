@@ -79,7 +79,6 @@ export interface InsightRecord {
 
 export class ExperienceGenerator {
   private options: ExperienceGeneratorOptions;
-  private unsubscribe: (() => void) | null = null;
   private selfCheckUnsubscribe: (() => void) | null = null;
   private turnStartedUnsubscribe: (() => void) | null = null;
   private readonly principalScopeBySpace = new Map<string, string>();
@@ -107,22 +106,10 @@ export class ExperienceGenerator {
         });
       }
     });
-
-    // Backward-compatible trigger for older emitters.
-    this.unsubscribe = this.options.eventBus.on("space.completed", (event) => {
-      const spaceId = (event as any).spaceId as string;
-      if (spaceId) {
-        this.generate(spaceId).catch((err) => {
-          console.error(`Experience generation failed for space ${spaceId}:`, err);
-        });
-      }
-    });
   }
 
   /** Clean up event listener. */
   destroy(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
     this.selfCheckUnsubscribe?.();
     this.selfCheckUnsubscribe = null;
     this.turnStartedUnsubscribe?.();

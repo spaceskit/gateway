@@ -33,7 +33,7 @@ import type {
   SpaceToolPolicyService,
   ToolAccessPolicyService,
 } from "../message-router.js";
-import { legacyEffectiveToolMatrixFromAccess } from "../effective-tool-matrix.js";
+import { effectiveToolMatrixFromAccess } from "../effective-tool-matrix.js";
 import { normalizeString } from "../message-router-utils.js";
 
 export interface PolicyHandlerContext {
@@ -137,7 +137,7 @@ export async function handleSpaceGetEffectiveTools(
   });
 
   return context.response(msg.id, MessageTypes.SPACE_GET_EFFECTIVE_TOOLS, {
-    matrix: legacyEffectiveToolMatrixFromAccess(access),
+    matrix: effectiveToolMatrixFromAccess(access),
   } satisfies SpaceGetEffectiveToolsResponsePayload);
 }
 

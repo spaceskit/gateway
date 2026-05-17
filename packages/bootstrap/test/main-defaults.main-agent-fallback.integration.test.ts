@@ -67,7 +67,7 @@ describe("bootstrap main defaults", () => {
       });
       expect(state.status).toBe("fallback");
       expect(state.fallbackApplied).toBe(true);
-      expect(state.modelHint).toBe("lmstudio/google/gemma-3-4b");
+      expect(state.modelConfig.preferredModels[0]).toBe("lmstudio/google/gemma-3-4b");
       expect(state.fallbackReason).toContain("not loaded in LM Studio runtime");
     } finally {
       globalThis.fetch = originalFetch;
@@ -137,7 +137,6 @@ describe("bootstrap main defaults", () => {
         profiles.update({
           profileId: config.mainProfileId,
           providerHint: missingProviderId,
-          modelHint: `${missingProviderId}/missing-model`,
           modelConfig: {
             preferredModels: [`${missingProviderId}/missing-model`],
             fallbackModels: [],
@@ -279,7 +278,10 @@ describe("bootstrap main defaults", () => {
         profileId: "source-template-without-provider",
         name: "Source Template",
         personalityPrompt: "Template personality",
-        modelHint: "openai/gpt-4.1",
+        modelConfig: {
+          preferredModels: ["openai/gpt-4.1"],
+          fallbackModels: [],
+        },
         source: "test-profile-template",
       });
 
@@ -290,7 +292,7 @@ describe("bootstrap main defaults", () => {
       });
 
       expect(state.providerHint).toBe("openai");
-      expect(state.modelHint).toBe("openai/gpt-4.1");
+      expect(state.modelConfig.preferredModels[0]).toBe("openai/gpt-4.1");
       expect(state.status === "healthy" || state.status === "repaired").toBe(true);
       expect(state.fallbackApplied).toBe(false);
     } finally {

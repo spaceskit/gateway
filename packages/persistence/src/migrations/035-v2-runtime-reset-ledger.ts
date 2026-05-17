@@ -1,8 +1,7 @@
 /**
  * Migration v2_runtime_reset_ledger
  *
- * Auto-extracted from the original monolithic schema.ts. Do not edit
- * historical migrations — add new ones to the end of the chain instead.
+ * Runtime ledger tables.
  */
 export const M035_V2_RUNTIME_RESET_LEDGER_VERSION = "v2_runtime_reset_ledger";
 
@@ -10,7 +9,7 @@ export const M035_V2_RUNTIME_RESET_LEDGER: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
         space_id TEXT NOT NULL REFERENCES spaces(space_id) ON DELETE CASCADE,
-        compatibility_turn_id TEXT NOT NULL DEFAULT '',
+        turn_id TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL,
         trigger_source TEXT NOT NULL DEFAULT 'space_input',
         requested_by_principal_id TEXT NOT NULL DEFAULT '',
@@ -26,7 +25,7 @@ export const M035_V2_RUNTIME_RESET_LEDGER: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_runs_space_status
         ON runs(space_id, status, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_runs_turn
-        ON runs(compatibility_turn_id)`,
+        ON runs(turn_id)`,
   `CREATE TABLE IF NOT EXISTS run_steps (
         step_id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
@@ -78,7 +77,7 @@ export const M035_V2_RUNTIME_RESET_LEDGER: readonly string[] = [
         run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
         step_id TEXT NOT NULL REFERENCES run_steps(step_id) ON DELETE CASCADE,
         space_id TEXT NOT NULL REFERENCES spaces(space_id) ON DELETE CASCADE,
-        compatibility_turn_id TEXT NOT NULL DEFAULT '',
+        turn_id TEXT NOT NULL DEFAULT '',
         agent_id TEXT NOT NULL DEFAULT '',
         category TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL,

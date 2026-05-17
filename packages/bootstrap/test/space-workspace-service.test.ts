@@ -142,24 +142,23 @@ describe("SpaceWorkspaceService", () => {
     }
   });
 
-  test("resets existing UUID-named managed roots onto friendly folder names", async () => {
+  test("rejects incomplete managed workspace metadata", async () => {
     const context = createContext();
     const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-reset-"));
-    const legacyRoot = join(tempRoot, TEST_SPACE_UID);
-    const expectedRoot = join(tempRoot, "main-space--11111111");
+    const staleRoot = join(tempRoot, TEST_SPACE_UID);
 
     try {
-      await mkdir(join(legacyRoot, ".space"), { recursive: true });
-      await writeFile(join(legacyRoot, ".space", "space.json"), JSON.stringify({
+      await mkdir(join(staleRoot, ".space"), { recursive: true });
+      await writeFile(join(staleRoot, ".space", "space.json"), JSON.stringify({
         spaceId: "space-main",
         spaceUid: TEST_SPACE_UID,
         mode: "managed",
-        effectiveWorkspaceRoot: legacyRoot,
+        effectiveWorkspaceRoot: staleRoot,
       }), "utf8");
       context.workspaces.upsert({
         spaceId: "space-main",
         explicitRoot: "",
-        effectiveRoot: legacyRoot,
+        effectiveRoot: staleRoot,
         managedFolderName: "",
         managedResourceId: "space-workspace-root-space-main",
         layoutVersion: 2,
@@ -172,14 +171,10 @@ describe("SpaceWorkspaceService", () => {
         spacesRoot: tempRoot,
       });
 
-      const workspace = await service.ensureWorkspace("space-main");
-      expect(workspace.effectiveWorkspaceRoot).toBe(expectedRoot);
-      expect(workspace.effectiveWorkspaceRoot).not.toBe(legacyRoot);
-      expect(context.workspaces.getBySpace("space-main")?.managed_folder_name).toBe("main-space--11111111");
-      expect(context.workspaces.getBySpace("space-main")?.effective_root).toBe(expectedRoot);
-      expect(context.resources.get("space-main", "space-workspace-root-space-main")?.uri).toContain(expectedRoot);
-      await expect(stat(legacyRoot)).resolves.toBeDefined();
-      await expect(stat(expectedRoot)).resolves.toBeDefined();
+      await expect(service.ensureWorkspace("space-main")).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+      });
+      await expect(stat(staleRoot)).resolves.toBeDefined();
     } finally {
       context.db.close();
       await rm(tempRoot, { recursive: true, force: true });

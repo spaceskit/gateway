@@ -33,7 +33,7 @@ export interface AgentProfile {
 
   /** Provider and model preferences (hints, not hard locks). */
   providerHint: string;
-  modelHint: string;
+  modelId: string;
 
   /** Whether this profile can act as a space moderator. */
   canModerate: boolean;
@@ -67,7 +67,7 @@ export interface AgentProfileRevision {
   defaultSkillIds: string[];
   defaultActionIds: string[];
   providerHint: string;
-  modelHint: string;
+  modelId: string;
   canModerate: boolean;
   isDefault: boolean;
   defaultSecurityScope?: AgentSecurityScope;

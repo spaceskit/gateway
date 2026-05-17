@@ -44,7 +44,7 @@ describe("resolveMainProfileRuntimeSelection", () => {
 
       expect(selection).toEqual({
         providerHint: "codex-app-server",
-        modelHint: "codex-app-server/gpt-5.4",
+        modelId: "codex-app-server/gpt-5.4",
       });
     });
   });

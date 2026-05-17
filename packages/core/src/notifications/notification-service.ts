@@ -64,12 +64,6 @@ const EVENT_MAPPINGS: Record<string, EventMapping> = {
     title: () => "Space started",
     message: (e) => `Turn started in space ${readString(e.spaceId)}`,
   },
-  "space.completed": {
-    category: "space.completed",
-    severity: "info",
-    title: () => "Space completed",
-    message: (e) => `Space ${readString(e.spaceId)} completed successfully`,
-  },
   "task.progress": {
     category: "task.progress",
     severity: "info",

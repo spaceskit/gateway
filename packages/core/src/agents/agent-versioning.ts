@@ -9,7 +9,7 @@ export interface AgentProfileSnapshot {
   personalityPrompt: string;
   defaultSkillIds: string[];
   providerHint: string;
-  modelHint: string;
+  modelId: string;
   source: string;
   resolvedAt: Date;
 }

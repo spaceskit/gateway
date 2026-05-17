@@ -202,7 +202,7 @@ describe("ClaudeAgentSdkModelProvider", () => {
       workingDirectory: "/tmp/spaces-workspace",
       accessMode: "default",
       effort: "medium",
-      mcpBridgeConfig: {
+      gatewayToolBridgeConfig: {
         bridgeScriptPath: "/tmp/gateway-mcp-bridge.ts",
         toolDefsJson: "[{\"name\":\"workspace_search\"}]",
         socketPath: "/tmp/spaceskit.sock",

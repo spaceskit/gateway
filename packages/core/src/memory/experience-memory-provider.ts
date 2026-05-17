@@ -24,19 +24,18 @@ import type {
   ScoredMemory,
   TurnMemoryInput,
 } from "./types.js";
-import type { Database } from "bun:sqlite";
-import type { ExperienceStatus } from "../experiences/types.js";
 import { randomUUID } from "node:crypto";
+import {
+  getDocumentSourceStatus,
+  getSourceStatusWeight,
+  resolveSourceLinkage,
+  rowToMemoryDocument,
+} from "./experience-memory-provider-helpers.js";
+import { initExperienceMemorySchema } from "./experience-memory-schema.js";
 
 export interface ExperienceMemoryProviderOptions {
   /** Raw Bun SQLite database handle. */
   db: any; // bun:sqlite Database
-}
-
-export interface LegacyExperienceKnowledgeBackfillResult {
-  experiencesAccepted: number;
-  memoryStatusesUpdated: number;
-  memoryUsersUpdated: number;
 }
 
 export class ExperienceMemoryProvider implements MemoryProvider {
@@ -56,69 +55,7 @@ export class ExperienceMemoryProvider implements MemoryProvider {
   // -----------------------------------------------------------------------
 
   private initSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS memory_documents (
-        id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        type TEXT NOT NULL DEFAULT 'semantic',
-        space_id TEXT,
-        agent_id TEXT,
-        user_id TEXT,
-        principal_id TEXT NOT NULL DEFAULT '',
-        session_id TEXT,
-        source_type TEXT NOT NULL DEFAULT '',
-        source_id TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT '',
-        metadata_json TEXT DEFAULT '{}',
-        tags_json TEXT DEFAULT '[]',
-        importance REAL DEFAULT 0.5,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_memdoc_space ON memory_documents(space_id);
-      CREATE INDEX IF NOT EXISTS idx_memdoc_agent ON memory_documents(agent_id);
-      CREATE INDEX IF NOT EXISTS idx_memdoc_type ON memory_documents(type);
-      CREATE INDEX IF NOT EXISTS idx_memdoc_source
-        ON memory_documents(source_type, source_id, principal_id);
-    `);
-    this.ensureCanonicalColumns();
-
-    // FTS5 for full-text search
-    try {
-      this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-          id,
-          content,
-          tags,
-          tokenize='porter unicode61'
-        );
-      `);
-    } catch {
-      // FTS5 might already exist or not be available
-    }
-  }
-
-  private ensureCanonicalColumns(): void {
-    const columns = this.db.query("PRAGMA table_info(memory_documents)").all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map((column) => column.name));
-
-    if (!columnNames.has("source_type")) {
-      this.db.exec("ALTER TABLE memory_documents ADD COLUMN source_type TEXT NOT NULL DEFAULT ''");
-    }
-    if (!columnNames.has("source_id")) {
-      this.db.exec("ALTER TABLE memory_documents ADD COLUMN source_id TEXT NOT NULL DEFAULT ''");
-    }
-    if (!columnNames.has("status")) {
-      this.db.exec("ALTER TABLE memory_documents ADD COLUMN status TEXT NOT NULL DEFAULT ''");
-    }
-    if (!columnNames.has("principal_id")) {
-      this.db.exec("ALTER TABLE memory_documents ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''");
-    }
-
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_memdoc_source
-        ON memory_documents(source_type, source_id, principal_id)
-    `);
+    initExperienceMemorySchema(this.db);
   }
 
   // -----------------------------------------------------------------------
@@ -303,7 +240,7 @@ export class ExperienceMemoryProvider implements MemoryProvider {
     const now = Date.now();
 
     const results: ScoredMemory[] = rows
-      .map((row) => this.rowToDocument(row))
+      .map((row) => rowToMemoryDocument(row))
       .filter((doc) => !query.status || getDocumentSourceStatus(doc) === query.status)
       .map((doc) => {
         // Composite score: importance × recency × source-status confidence.
@@ -335,7 +272,7 @@ export class ExperienceMemoryProvider implements MemoryProvider {
 
   async get(id: string): Promise<MemoryDocument | null> {
     const row = this.db.prepare("SELECT * FROM memory_documents WHERE id = ?").get(id) as any;
-    return row ? this.rowToDocument(row) : null;
+    return row ? rowToMemoryDocument(row) : null;
   }
 
   async update(id: string, patch: Partial<MemorySaveInput>): Promise<MemoryDocument> {
@@ -418,7 +355,7 @@ export class ExperienceMemoryProvider implements MemoryProvider {
       LIMIT ? OFFSET ?
     `).all(...params) as any[];
 
-    return rows.map((r) => this.rowToDocument(r));
+    return rows.map((r) => rowToMemoryDocument(r));
   }
 
   // -----------------------------------------------------------------------
@@ -516,219 +453,4 @@ export class ExperienceMemoryProvider implements MemoryProvider {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
-
-  private rowToDocument(row: any): MemoryDocument {
-    const metadata = JSON.parse(row.metadata_json ?? "{}") as Record<string, unknown>;
-    if (typeof row.source_type === "string" && row.source_type.trim().length > 0) {
-      metadata.sourceType = row.source_type;
-    }
-    if (typeof row.source_id === "string" && row.source_id.trim().length > 0) {
-      metadata.sourceId = row.source_id;
-    }
-    if (typeof row.status === "string" && row.status.trim().length > 0) {
-      metadata.sourceStatus = row.status;
-    }
-    if (typeof row.principal_id === "string" && row.principal_id.trim().length > 0) {
-      metadata.principalId = row.principal_id;
-    }
-
-    return {
-      id: row.id,
-      content: row.content,
-      type: row.type,
-      scope: {
-        spaceId: row.space_id ?? undefined,
-        agentId: row.agent_id ?? undefined,
-        userId: row.user_id ?? undefined,
-        sessionId: row.session_id ?? undefined,
-      },
-      metadata,
-      tags: JSON.parse(row.tags_json ?? "[]"),
-      importance: row.importance ?? 0.5,
-      createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at),
-    };
-  }
-}
-
-export function backfillLegacyExperienceKnowledge(
-  db: Database,
-): LegacyExperienceKnowledgeBackfillResult {
-  const acceptedExperienceIds = db.prepare(`
-    SELECT DISTINCT e.experience_id AS experienceId
-    FROM experiences e
-    INNER JOIN runs r
-      ON r.run_id = (
-        SELECT candidate.run_id
-        FROM runs candidate
-        WHERE candidate.space_id = e.space_id
-          AND candidate.status = 'completed'
-          AND candidate.requested_by_principal_id != ''
-        ORDER BY candidate.completed_at DESC, candidate.created_at DESC
-        LIMIT 1
-      )
-    WHERE e.status = 'draft'
-      AND e.summary != ''
-  `).all() as Array<{ experienceId: string }>;
-
-  for (const row of acceptedExperienceIds) {
-    db.prepare(`
-      UPDATE experiences
-      SET status = 'accepted',
-          updated_at = ?
-      WHERE experience_id = ?
-    `).run(new Date().toISOString(), row.experienceId);
-  }
-
-  const memoryRows = db.prepare(`
-    SELECT
-      m.id,
-      m.user_id AS userId,
-      m.metadata_json,
-      r.requested_by_principal_id AS principalId
-    FROM memory_documents m
-    INNER JOIN experiences e
-      ON e.experience_id = json_extract(m.metadata_json, '$.experienceId')
-    INNER JOIN runs r
-      ON r.run_id = (
-        SELECT candidate.run_id
-        FROM runs candidate
-        WHERE candidate.space_id = e.space_id
-          AND candidate.status = 'completed'
-          AND candidate.requested_by_principal_id != ''
-        ORDER BY candidate.completed_at DESC, candidate.created_at DESC
-        LIMIT 1
-      )
-    WHERE e.status = 'accepted'
-      AND m.type = 'semantic'
-  `).all() as Array<{
-    id: string;
-    userId: string | null;
-    metadata_json: string | null;
-    principalId: string;
-  }>;
-
-  let memoryStatusesUpdated = 0;
-  let memoryUsersUpdated = 0;
-  const backfilledAt = new Date().toISOString();
-
-  for (const row of memoryRows) {
-    const metadata = parseMetadata(row.metadata_json);
-    let metadataChanged = false;
-    let userChanged = false;
-
-    if (metadata.sourceStatus !== "accepted") {
-      metadata.sourceStatus = "accepted";
-      metadataChanged = true;
-    }
-
-    if (row.userId !== row.principalId) {
-      userChanged = true;
-    }
-
-    if (metadataChanged || userChanged) {
-      db.prepare(`
-        UPDATE memory_documents
-        SET metadata_json = ?,
-            user_id = ?,
-            updated_at = ?
-        WHERE id = ?
-      `).run(
-        JSON.stringify(metadata),
-        row.principalId,
-        backfilledAt,
-        row.id,
-      );
-    }
-
-    if (metadataChanged) {
-      memoryStatusesUpdated += 1;
-    }
-    if (userChanged) {
-      memoryUsersUpdated += 1;
-    }
-  }
-
-  return {
-    experiencesAccepted: acceptedExperienceIds.length,
-    memoryStatusesUpdated,
-    memoryUsersUpdated,
-  };
-}
-
-function getDocumentSourceStatus(doc: MemoryDocument): ExperienceStatus | undefined {
-  const sourceStatus = doc.metadata.sourceStatus;
-  if (
-    sourceStatus === "draft" ||
-    sourceStatus === "accepted" ||
-    sourceStatus === "rejected" ||
-    sourceStatus === "archived"
-  ) {
-    return sourceStatus;
-  }
-  return undefined;
-}
-
-function getSourceStatusWeight(status: ExperienceStatus | undefined): number {
-  switch (status) {
-    case "accepted":
-      return 1.2;
-    case "draft":
-      return 0.8;
-    case "rejected":
-      return 0.3;
-    case "archived":
-      return 0.5;
-    default:
-      return 1;
-  }
-}
-
-function parseMetadata(raw: string | null): Record<string, unknown> {
-  if (!raw) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
-function normalizeSourceField(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function resolveSourceLinkage(
-  metadata: Record<string, unknown>,
-  scopedPrincipalId?: string,
-): {
-  sourceType: string;
-  sourceId: string;
-  status: string;
-  principalId: string;
-} | undefined {
-  const sourceType = normalizeSourceField(metadata.sourceType ?? metadata.source_type);
-  const sourceId = normalizeSourceField(metadata.sourceId ?? metadata.source_id);
-  if (!sourceType || !sourceId) {
-    return undefined;
-  }
-  const status = normalizeSourceField(
-    metadata.sourceStatus ?? metadata.source_status ?? metadata.status,
-  ) ?? "";
-  const principalId = normalizeSourceField(
-    metadata.principalId ?? metadata.principal_id,
-  ) ?? normalizeSourceField(scopedPrincipalId) ?? "";
-  return {
-    sourceType,
-    sourceId,
-    status,
-    principalId,
-  };
 }

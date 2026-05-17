@@ -45,7 +45,8 @@ describe("Typed event payloads", () => {
 
     expect(published).toHaveLength(1);
     const payload = published[0]?.msg.payload;
-    expect(payload.eventType).toBe("started");
+    expect(payload.eventType).toBeUndefined();
+    expect(payload.data).toBeUndefined();
     expect(payload.typedPayload).toBeDefined();
     expect(payload.typedPayload.kind).toBe("turn.started");
     expect(payload.typedPayload.agentId).toBe("agent-1");
@@ -103,12 +104,11 @@ describe("Typed event payloads", () => {
 
     expect(published).toHaveLength(1);
     const payload = published[0]?.msg.payload;
-    expect(payload.eventType).toBe("streaming");
+    expect(payload.eventType).toBeUndefined();
+    expect(payload.data).toBeUndefined();
     expect(payload.typedPayload).toBeDefined();
     expect(payload.typedPayload.kind).toBe("reasoning.delta");
     expect(payload.typedPayload.text).toBe("Let me think...");
-    // data field still populated (backward compat)
-    expect(payload.data).toBeDefined();
   });
 
   test("tool.started payload is emitted for tool_call_start events", async () => {
@@ -131,7 +131,8 @@ describe("Typed event payloads", () => {
 
     expect(published).toHaveLength(1);
     const payload = published[0]?.msg.payload;
-    expect(payload.eventType).toBe("tool_call");
+    expect(payload.eventType).toBeUndefined();
+    expect(payload.data).toBeUndefined();
     expect(payload.typedPayload.kind).toBe("tool.started");
     expect(payload.typedPayload.toolCallId).toBe("tc-1");
     expect(payload.typedPayload.toolName).toBe("read_file");
@@ -224,7 +225,8 @@ describe("Typed event payloads", () => {
 
     expect(published).toHaveLength(1);
     const payload = published[0]?.msg.payload;
-    expect(payload.eventType).toBe("state_changed");
+    expect(payload.eventType).toBeUndefined();
+    expect(payload.data).toBeUndefined();
     expect(payload.typedPayload.kind).toBe("approval.resolved");
     expect(payload.typedPayload.requestId).toBe("req-1");
     expect(payload.typedPayload.response).toBe("approved");
@@ -331,11 +333,12 @@ describe("Typed event payloads", () => {
 
     expect(published).toHaveLength(1);
     const payload = published[0]?.msg.payload;
-    expect(payload.eventType).toBe("cancelled");
+    expect(payload.eventType).toBeUndefined();
+    expect(payload.data).toBeUndefined();
     expect(payload.typedPayload.kind).toBe("turn.cancelled");
   });
 
-  test("data field is always populated alongside typedPayload (backward compat)", async () => {
+  test("typedPayload.kind is the only turn-event discriminator", async () => {
     const { server, published } = createServer();
 
     await (server as any).broadcastEvent({
@@ -347,12 +350,14 @@ describe("Typed event payloads", () => {
     });
 
     const payload = published[0]?.msg.payload;
-    expect(payload.data).toBeDefined();
+    expect(payload.eventType).toBeUndefined();
+    expect(payload.data).toBeUndefined();
     expect(payload.typedPayload).toBeDefined();
+    expect(payload.typedPayload.kind).toBe("state.changed");
     expect(typeof payload.ts).toBe("string");
   });
 
-  test("unknown event subtypes produce undefined typedPayload", async () => {
+  test("unknown event subtypes are not projected as turn events", async () => {
     const { server, published } = createServer();
 
     await (server as any).broadcastEvent({
@@ -363,9 +368,6 @@ describe("Typed event payloads", () => {
       timestamp: new Date(),
     });
 
-    expect(published).toHaveLength(1);
-    const payload = published[0]?.msg.payload;
-    expect(payload.eventType).toBe("streaming");
-    expect(payload.typedPayload).toBeUndefined();
+    expect(published).toHaveLength(0);
   });
 });

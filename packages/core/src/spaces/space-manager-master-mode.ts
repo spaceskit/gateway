@@ -12,117 +12,44 @@
 
 import { randomUUID } from "node:crypto";
 import type {
-  AgentRuntime,
   TurnContext,
   TurnEvent,
   TurnResult,
 } from "../agents/agent-runtime.js";
-import type {
-  ModelMessage,
-  ProviderSessionHandle,
-} from "../agents/model-provider.js";
-import type {
-  SaveTurnInput,
-} from "./space-manager.js";
-import type {
-  SpaceState,
-} from "./types.js";
+import type { ModelMessage } from "../agents/model-provider.js";
 import type { OrchestratorSummaryTrace } from "./space-summary-trace.js";
 import { buildCompletedSaveTurnInput } from "./space-manager-turn-records.js";
 import type {
   ActiveSpace,
-  AgentSessionState,
 } from "./space-manager-agent-sessions.js";
 import type { TurnExecutionIdentity } from "./space-manager-normalizers.js";
 import {
   renderTemplate,
-  type MasterModePromptTemplates,
 } from "./master-mode-prompts.js";
 import {
   buildFallbackGuestInstruction,
-  buildFallbackPlannerInstructions,
   buildRevisionFeedback,
-  buildRingPeerReviewAssignments,
   checkMasterModeConvergence,
   formatGuestList,
   formatGuestReports,
   formatPeerReviewResults,
-  parsePeerReviewResult,
-  parsePlannerInstructions,
-  parseSlashPlannerDirectives,
   resolveMasterModePromptTemplates,
   resolvePeerReviewEnabled,
   resolvePeerReviewTopology,
   type GuestReport,
   type MasterFlowAssignments,
-  type PeerReviewResult,
-  type PlannerInstructions,
-  type PlannerPhaseResult,
 } from "./space-manager-master-mode-helpers.js";
-import type { OrchestrationJournalEntry } from "./space-manager-orchestration-journal.js";
+import { runMasterPlannerPhase } from "./space-manager-master-mode-planner.js";
+import { runPeerReviewRing } from "./space-manager-master-mode-peer-review.js";
+import type {
+  MasterModeContext,
+  PeerReviewRingResult,
+} from "./space-manager-master-mode-types.js";
 
-export interface MasterModeContext {
-  maxHops: number;
-  masterPlannerPromptTemplate?: string;
-  guestAgentPromptTemplate?: string;
-  peerReviewPromptTemplate?: string;
-  masterSynthesisPromptTemplate?: string;
-  getRuntime: (space: ActiveSpace, agentId: string) => Promise<AgentRuntime>;
-  getOrCreateAgentSession: (
-    space: ActiveSpace,
-    agentId: string,
-  ) => Promise<AgentSessionState>;
-  resolveCommittedSessionFields: (
-    space: ActiveSpace,
-    session: AgentSessionState,
-    userMessage: ModelMessage,
-  ) => Promise<Pick<TurnContext, "providerSessionHandle" | "sessionTitle">>;
-  updateAgentSession: (
-    session: AgentSessionState,
-    turnId: string,
-    userMessage: ModelMessage,
-    assistantMessage: ModelMessage,
-    options?: {
-      spaceId: string;
-      providerSessionHandle?: ProviderSessionHandle;
-    },
-  ) => void;
-  forwardEvent: (
-    spaceId: string,
-    turnId: string,
-    event: TurnEvent,
-    agentId?: string,
-  ) => void;
-  recordSummaryEvent: (
-    trace: OrchestratorSummaryTrace | null | undefined,
-    agentId: string,
-    event: TurnEvent,
-  ) => void;
-  startFeedbackTimeout: (spaceId: string, turnId: string) => void;
-  handleTurnError: (
-    spaceId: string,
-    turnId: string,
-    input: string,
-    err: unknown,
-  ) => void;
-  appendOrchestrationJournalEntry: (entry: OrchestrationJournalEntry) => Promise<void>;
-  recordOrchestrationMetric: (
-    name: string,
-    value: number,
-    tags?: Record<string, string>,
-  ) => void;
-  saveTurn: (input: SaveTurnInput) => Promise<void>;
-  updateSpaceStatus: (spaceId: string, status: SpaceState) => Promise<void>;
-}
-
-export interface PeerReviewRingResult {
-  results: PeerReviewResult[];
-  assignments: number;
-  completed: number;
-  failed: number;
-  status: "not_run" | "skipped" | "completed" | "degraded";
-  failureReason?: string;
-}
+export type {
+  MasterModeContext,
+  PeerReviewRingResult,
+} from "./space-manager-master-mode-types.js";
 
 export async function executeMasterModeFlow(
   ctx: MasterModeContext,
@@ -518,254 +445,4 @@ export async function executeMasterModeFlow(
       output: synthesisResult.finalMessage.content,
     },
   });
-}
-
-async function runMasterPlannerPhase(
-  ctx: MasterModeContext,
-  space: ActiveSpace,
-  turnId: string,
-  userMessage: ModelMessage,
-  assignments: MasterFlowAssignments,
-  promptTemplates: MasterModePromptTemplates,
-  executionIdentity?: TurnExecutionIdentity,
-): Promise<PlannerPhaseResult> {
-  const fallback = buildFallbackPlannerInstructions(assignments.guests, userMessage.content);
-  const slashInstructions = parseSlashPlannerDirectives(userMessage.content, assignments.guests);
-  if (slashInstructions) {
-    return {
-      instructions: slashInstructions,
-      source: "slash",
-    };
-  }
-
-  const runtime = await ctx.getRuntime(space, assignments.master.agentId);
-  const session = await ctx.getOrCreateAgentSession(space, assignments.master.agentId);
-  const plannerPrompt = renderTemplate(
-    promptTemplates.planner,
-    {
-      user_input: userMessage.content,
-      guest_agent_id: assignments.master.agentId,
-      guest_list: formatGuestList(assignments.guests),
-      guest_reports: "",
-      global_instruction: "",
-      guest_instruction: "",
-    },
-  );
-  const plannerContext: TurnContext = {
-    spaceId: space.config.id,
-    turnId,
-    messages: [
-      ...session.messages,
-      userMessage,
-      { role: "user", content: plannerPrompt },
-    ],
-    lineageId: randomUUID(),
-    hopCount: 0,
-    maxHops: ctx.maxHops,
-    principalId: executionIdentity?.principalId,
-    deviceId: executionIdentity?.deviceId,
-    executionOrigin: executionIdentity?.executionOrigin,
-    accessMode: executionIdentity?.accessMode,
-    mode: executionIdentity?.mode,
-    effort: executionIdentity?.effort,
-  };
-
-  let plannerResult: TurnResult | null = null;
-  try {
-    for await (const event of runtime.executeTurn(plannerContext)) {
-      if (event.type === "turn_completed") {
-        plannerResult = event.result;
-      }
-    }
-  } catch {
-    return {
-      instructions: fallback,
-      source: "fallback",
-      fallbackReason: "planner_execution_error",
-    };
-  }
-
-  if (!plannerResult) {
-    return {
-      instructions: fallback,
-      source: "fallback",
-      fallbackReason: "planner_missing_completion",
-    };
-  }
-  const parsed = parsePlannerInstructions(plannerResult.finalMessage.content, assignments.guests);
-  if (parsed) {
-    return {
-      instructions: parsed,
-      source: "planner",
-      rawOutput: plannerResult.finalMessage.content,
-    };
-  }
-  return {
-    instructions: fallback,
-    source: "fallback",
-    rawOutput: plannerResult.finalMessage.content,
-    fallbackReason: "planner_invalid_json",
-  };
-}
-
-async function runPeerReviewRing(
-  ctx: MasterModeContext,
-  space: ActiveSpace,
-  turnId: string,
-  userMessage: ModelMessage,
-  assignments: MasterFlowAssignments,
-  guestReports: GuestReport[],
-  plannerInstructions: PlannerInstructions,
-  promptTemplates: MasterModePromptTemplates,
-  executionIdentity?: TurnExecutionIdentity,
-): Promise<PeerReviewRingResult> {
-  const peerReviewEnabled = resolvePeerReviewEnabled(space);
-  if (!peerReviewEnabled) {
-    return { results: [], assignments: 0, completed: 0, failed: 0, status: "skipped" };
-  }
-
-  const peerReviewAssignments = buildRingPeerReviewAssignments(assignments.guests, guestReports);
-  if (peerReviewAssignments.length === 0) {
-    return { results: [], assignments: 0, completed: 0, failed: 0, status: "skipped" };
-  }
-
-  const results: PeerReviewResult[] = [];
-  let completed = 0;
-  let failed = 0;
-  for (const assignment of peerReviewAssignments) {
-    await ctx.appendOrchestrationJournalEntry({
-      spaceId: space.config.id,
-      turnId,
-      eventType: "peer_review.assignment",
-      actorId: assignment.reviewerAgentId,
-      payload: {
-        reviewerAgentId: assignment.reviewerAgentId,
-        targetAgentId: assignment.targetAgentId,
-      },
-    });
-
-    const runtime = await ctx.getRuntime(space, assignment.reviewerAgentId);
-    const session = await ctx.getOrCreateAgentSession(space, assignment.reviewerAgentId);
-    const reviewPrompt = renderTemplate(
-      promptTemplates.peerReview,
-      {
-        user_input: userMessage.content,
-        global_instruction: plannerInstructions.globalInstruction,
-        reviewer_agent_id: assignment.reviewerAgentId,
-        target_agent_id: assignment.targetAgentId,
-        target_report: assignment.targetReport,
-        guest_list: formatGuestList(assignments.guests),
-        guest_reports: formatGuestReports(guestReports),
-        guest_agent_id: assignment.reviewerAgentId,
-        guest_instruction: "",
-        peer_review_results: "",
-      },
-    );
-    const context: TurnContext = {
-      spaceId: space.config.id,
-      turnId,
-      messages: [
-        ...session.messages,
-        userMessage,
-        { role: "user", content: reviewPrompt },
-      ],
-      lineageId: randomUUID(),
-      hopCount: 0,
-      maxHops: ctx.maxHops,
-      principalId: executionIdentity?.principalId,
-      deviceId: executionIdentity?.deviceId,
-      executionOrigin: executionIdentity?.executionOrigin,
-      accessMode: executionIdentity?.accessMode,
-      mode: executionIdentity?.mode,
-      effort: executionIdentity?.effort,
-      ...(await ctx.resolveCommittedSessionFields(space, session, userMessage)),
-    };
-
-    let reviewResult: TurnResult | null = null;
-    try {
-      for await (const event of runtime.executeTurn(context)) {
-        if (event.type === "turn_completed") {
-          reviewResult = event.result;
-        }
-      }
-    } catch (error) {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      failed += 1;
-      const failedResult: PeerReviewResult = {
-        reviewerAgentId: assignment.reviewerAgentId,
-        targetAgentId: assignment.targetAgentId,
-        status: "failed",
-        verdict: "error",
-        issues: [normalized.message],
-        raw: normalized.message,
-      };
-      results.push(failedResult);
-      await ctx.appendOrchestrationJournalEntry({
-        spaceId: space.config.id,
-        turnId,
-        eventType: "peer_review.result",
-        actorId: assignment.reviewerAgentId,
-        payload: failedResult as unknown as Record<string, unknown>,
-      });
-      continue;
-    }
-
-    if (!reviewResult) {
-      failed += 1;
-      const failedResult: PeerReviewResult = {
-        reviewerAgentId: assignment.reviewerAgentId,
-        targetAgentId: assignment.targetAgentId,
-        status: "failed",
-        verdict: "error",
-        issues: ["Reviewer did not return a completion result."],
-        raw: "",
-      };
-      results.push(failedResult);
-      await ctx.appendOrchestrationJournalEntry({
-        spaceId: space.config.id,
-        turnId,
-        eventType: "peer_review.result",
-        actorId: assignment.reviewerAgentId,
-        payload: failedResult as unknown as Record<string, unknown>,
-      });
-      continue;
-    }
-
-    ctx.updateAgentSession(session, turnId, userMessage, reviewResult.finalMessage);
-    const parsed = parsePeerReviewResult(
-      assignment.reviewerAgentId,
-      assignment.targetAgentId,
-      reviewResult.finalMessage.content,
-    );
-    const normalizedResult = parsed ?? {
-      reviewerAgentId: assignment.reviewerAgentId,
-      targetAgentId: assignment.targetAgentId,
-      status: "failed" as const,
-      verdict: "error" as const,
-      issues: ["Peer-review output invalid; expected strict JSON."],
-      raw: reviewResult.finalMessage.content,
-    };
-    if (normalizedResult.status === "completed") {
-      completed += 1;
-    } else {
-      failed += 1;
-    }
-    results.push(normalizedResult);
-    await ctx.appendOrchestrationJournalEntry({
-      spaceId: space.config.id,
-      turnId,
-      eventType: "peer_review.result",
-      actorId: assignment.reviewerAgentId,
-      payload: normalizedResult as unknown as Record<string, unknown>,
-    });
-  }
-
-  return {
-    results,
-    assignments: peerReviewAssignments.length,
-    completed,
-    failed,
-    status: failed > 0 ? "degraded" : "completed",
-    failureReason: failed > 0 ? "One or more peer reviews failed." : undefined,
-  };
 }

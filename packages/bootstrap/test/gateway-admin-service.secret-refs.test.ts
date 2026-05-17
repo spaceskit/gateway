@@ -70,9 +70,11 @@ describe("DefaultGatewayAdminService secret-ref integration", () => {
       expect(mainProfile?.is_default).toBe(1);
       expect(conciergeProfile?.is_default).toBe(0);
       expect(mainRevision?.provider_hint).toBe("codex-app-server");
-      expect(mainRevision?.model_hint).toBe("codex-app-server/gpt-5.4");
+      expect(JSON.parse(mainRevision?.model_config_json ?? "{}").preferredModels?.[0])
+        .toBe("codex-app-server/gpt-5.4");
       expect(conciergeRevision?.provider_hint).toBe("openai");
-      expect(conciergeRevision?.model_hint).toBe("openai/gpt-4.1");
+      expect(JSON.parse(conciergeRevision?.model_config_json ?? "{}").preferredModels?.[0])
+        .toBe("openai/gpt-4.1");
 
       const defaults = await ctx.admin.getRuntimeDefaults();
       expect(defaults.main.providerId).toBe("codex-app-server");

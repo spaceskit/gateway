@@ -1,7 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ProviderTelemetryWindowPayload } from "@spaceskit/server";
 import {
   extractClaudeOAuthAccessToken,
@@ -15,7 +12,7 @@ const CLAUDE_OAUTH_TIMEOUT_MS = 10_000;
 
 export interface ClaudeOAuthAccessTokenResult {
   accessToken?: string;
-  source?: "keychain" | "credentials_file";
+  source?: "keychain";
   message?: string;
 }
 
@@ -51,18 +48,6 @@ export function readClaudeOAuthAccessTokenFromKeychain(): ClaudeOAuthAccessToken
   return accessToken
     ? { accessToken, source: "keychain" }
     : {};
-}
-
-export function readClaudeOAuthAccessTokenFromCredentialsFile(): ClaudeOAuthAccessTokenResult {
-  const credentialsPath = join(homedir(), ".claude", ".credentials.json");
-  try {
-    const accessToken = extractClaudeOAuthAccessToken(readFileSync(credentialsPath, "utf8"));
-    return accessToken
-      ? { accessToken, source: "credentials_file" }
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 export async function fetchClaudeOAuthUsage(accessToken: string): Promise<ClaudeOAuthUsageResult> {

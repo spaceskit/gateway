@@ -63,7 +63,7 @@ export interface ProfileRuntimeContext {
   systemPrompt: string;
   defaultSkillIds: string[];
   providerHint?: string;
-  modelHint?: string;
+  modelId?: string;
   modelConfig?: ProfileModelConfig;
 }
 
@@ -76,10 +76,10 @@ export interface GatewayAdminLocalClientTemplate {
   defaultPersonalityPrompt: string;
 }
 
-export interface GatewayAdminResolvedProviderModelHint {
+export interface GatewayAdminResolvedProviderModelId {
   valid: boolean;
   providerHint?: string;
-  modelHint?: string;
+  modelId?: string;
   fallbackApplied: boolean;
   fallbackReason?: string;
   reason?: string;
@@ -98,13 +98,13 @@ export interface GatewayAdminProfileRuntimeContext {
   ensureAgentAssignment(spaceId: string, agentId: string, profileId: string): Promise<boolean>;
   resolveEmbeddedMacDefaultProvider(): string | undefined;
   providerPolicyRestrictionReason(providerId: string): string | undefined;
-  resolveFallbackProviderModel(): { providerHint: string; modelHint: string } | null;
+  resolveFallbackProviderModel(): { providerHint: string; modelId: string } | null;
   resolveValidatedProviderModel(input: {
     providerHintRaw?: string;
-    modelHintRaw?: string;
+    modelIdRaw?: string;
     repairIfInvalid: boolean;
     allowFallbackRepair?: boolean;
-  }): Promise<GatewayAdminResolvedProviderModelHint>;
+  }): Promise<GatewayAdminResolvedProviderModelId>;
   ensureAppleProviderRuntimeEligibleSync(operation: string): void;
   ensureAppleProviderEnabledSync(operation: string): void;
   resolveProviderBaseURL(providerId: string, configuredBaseURL?: string): string | undefined;
@@ -152,7 +152,10 @@ export async function provisionGatewayAdminLocalProfile(
       canModerate: false,
       personalityPrompt: template.defaultPersonalityPrompt,
       providerHint: providerId,
-      modelHint: model,
+      modelConfig: {
+        preferredModels: model ? [model] : [],
+        fallbackModels: [],
+      },
     });
     created = true;
   }
@@ -201,14 +204,14 @@ export function loadGatewayAdminProfileRuntime(
   }
 
   const revision = context.profileRepo.getActiveRevision(profileId);
-  const modelConfig = parseModelConfig(revision?.model_config_json, revision?.model_hint);
-  const preferredModelHint = modelConfig.preferredModels[0] || revision?.model_hint?.trim() || undefined;
+  const modelConfig = parseModelConfig(revision?.model_config_json);
+  const preferredModelId = modelConfig.preferredModels[0];
   return {
     profileId,
     systemPrompt: revision?.personality_prompt?.trim() || "",
     defaultSkillIds: parseStringArray(revision?.default_skill_set_ids_json),
     providerHint: revision?.provider_hint?.trim() || undefined,
-    modelHint: preferredModelHint,
+    modelId: preferredModelId,
     modelConfig,
   };
 }
@@ -216,14 +219,14 @@ export function loadGatewayAdminProfileRuntime(
 export async function resolveGatewayAdminProviderForProfile(
   context: GatewayAdminProfileRuntimeContext,
   providerHintRaw?: string,
-  modelHint?: string,
+  modelId?: string,
 ): Promise<ExactProviderRuntimeSelection> {
   const providerHint = normalizeProviderId(providerHintRaw);
-  const providerFromModel = deriveProviderFromModel(modelHint);
+  const providerFromModel = deriveProviderFromModel(modelId);
   if (providerHint && providerFromModel && providerHint !== providerFromModel) {
     context.logger.warn("Profile provider hint mismatches model hint prefix; preferring model hint provider", {
       providerHint,
-      modelHint,
+      modelId,
       selectedProvider: providerFromModel,
     });
   }
@@ -233,7 +236,7 @@ export async function resolveGatewayAdminProviderForProfile(
     || deriveProviderFromModel(context.defaultModelId)
     || context.resolveEmbeddedMacDefaultProvider()
     || "openrouter";
-  let enforcedModelHint = modelHint?.trim() || undefined;
+  let enforcedModelId = modelId?.trim() || undefined;
   const explicitSelection = Boolean(providerFromModel || providerHint);
   const policyRestrictionReason = context.providerPolicyRestrictionReason(selectedProvider);
   if (policyRestrictionReason) {
@@ -244,21 +247,21 @@ export async function resolveGatewayAdminProviderForProfile(
     context.logger.warn("Profile runtime blocked by embedded policy; using fallback runtime/model", {
       requestedProvider: selectedProvider,
       fallbackProvider: fallback.providerHint,
-      fallbackModel: fallback.modelHint,
+      fallbackModel: fallback.modelId,
     });
     selectedProvider = fallback.providerHint;
-    enforcedModelHint = fallback.modelHint;
+    enforcedModelId = fallback.modelId;
   }
 
   const configuredSelection = context.providerConfigs.get(selectedProvider);
   if (explicitSelection || configuredSelection) {
     const resolvedModel = await context.resolveValidatedProviderModel({
       providerHintRaw: selectedProvider,
-      modelHintRaw: enforcedModelHint || configuredSelection?.model,
+      modelIdRaw: enforcedModelId || configuredSelection?.model,
       repairIfInvalid: true,
       allowFallbackRepair: selectedProvider !== "apple",
     });
-    if (!resolvedModel.valid || !resolvedModel.providerHint || !resolvedModel.modelHint) {
+    if (!resolvedModel.valid || !resolvedModel.providerHint || !resolvedModel.modelId) {
       throwGatewayError(
         "FAILED_PRECONDITION",
         resolvedModel.reason || "Runtime/model selection is invalid",
@@ -267,14 +270,14 @@ export async function resolveGatewayAdminProviderForProfile(
     if (resolvedModel.fallbackApplied) {
       context.logger.warn("Profile runtime unavailable; using fallback runtime/model", {
         requestedProvider: selectedProvider,
-        requestedModel: enforcedModelHint || configuredSelection?.model || "",
+        requestedModel: enforcedModelId || configuredSelection?.model || "",
         fallbackProvider: resolvedModel.providerHint,
-        fallbackModel: resolvedModel.modelHint,
+        fallbackModel: resolvedModel.modelId,
         reason: resolvedModel.fallbackReason,
       });
     }
     selectedProvider = resolvedModel.providerHint;
-    enforcedModelHint = resolvedModel.modelHint;
+    enforcedModelId = resolvedModel.modelId;
   }
 
   if (selectedProvider === "apple") {
@@ -282,7 +285,7 @@ export async function resolveGatewayAdminProviderForProfile(
   }
 
   const config = context.providerConfigs.get(selectedProvider);
-  const modelRaw = enforcedModelHint
+  const modelRaw = enforcedModelId
     || config?.model
     || DEFAULT_MODEL_BY_PROVIDER[selectedProvider]
     || context.defaultModelId
@@ -376,12 +379,12 @@ export function validateGatewayAdminProfileModelSelection(
   context: GatewayAdminProfileRuntimeContext,
   input: {
     providerHint?: string;
-    modelHint?: string;
+    modelId?: string;
     modelConfig?: ProfileModelConfig;
   },
 ): void {
   const providerHint = normalizeProviderId(input.providerHint);
-  const candidateModels = collectProfileModelCandidates(input.modelHint, input.modelConfig);
+  const candidateModels = collectProfileModelCandidates(input.modelId, input.modelConfig);
   if (candidateModels.length === 0) {
     return;
   }
@@ -391,7 +394,7 @@ export function validateGatewayAdminProfileModelSelection(
     if (providerHint && candidateProviderFromModel && providerHint !== candidateProviderFromModel) {
       throwGatewayError(
         "INVALID_ARGUMENT",
-        `Model ${candidateModel} belongs to provider ${candidateProviderFromModel} but providerHint is ${providerHint}. Update providerHint/modelHint together.`,
+        `Model ${candidateModel} belongs to provider ${candidateProviderFromModel} but providerHint is ${providerHint}. Update providerHint/modelId together.`,
       );
     }
     const candidateProvider = candidateProviderFromModel

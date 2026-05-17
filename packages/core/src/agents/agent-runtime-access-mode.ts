@@ -8,8 +8,7 @@ function isCliExecutorProvider(providerId: string): boolean {
 export function resolveTurnAccessMode(
   requested: GenerateOptions["accessMode"] | TurnContext["accessMode"] | AgentConfig["accessMode"],
   configured: AgentConfig["accessMode"],
-  providerId: string,
-  legacyNativeCliToolsEnabled?: boolean,
+  _providerId: string,
 ): GenerateOptions["accessMode"] {
   if (requested === "default" || requested === "full_access") {
     return requested;
@@ -17,23 +16,19 @@ export function resolveTurnAccessMode(
   if (configured === "default" || configured === "full_access") {
     return configured;
   }
-  if (legacyNativeCliToolsEnabled && isCliExecutorProvider(providerId)) {
-    return "full_access";
-  }
   return "default";
 }
 
 export function isNativeCliToolsMode(
   providerId: string,
   accessMode?: GenerateOptions["accessMode"],
-  legacyNativeCliToolsEnabled?: boolean,
 ): boolean {
   if (!isCliExecutorProvider(providerId)) return false;
   // full_access CLI turns use the native tool path (executor manages its own tools)
   if (accessMode === "full_access") return true;
   // default-mode CLI turns use the mediated path — gateway tools injected as text
   if (accessMode === "default") return false;
-  return legacyNativeCliToolsEnabled === true;
+  return false;
 }
 
 export function decorateNativeCliToolsResult(

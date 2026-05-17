@@ -47,9 +47,9 @@ describe("bootstrap main defaults", () => {
       const nowIso = new Date().toISOString();
       const firstProfileRepo = new ProfileRepository(first.db!.db);
       firstProfileRepo.create({
-        profileId: "legacy-main-conflict-profile",
-        name: "Legacy Main Conflict Profile",
-        personalityPrompt: "Legacy conflicting profile.",
+        profileId: "stale-main-conflict-profile",
+        name: "Stale Main Conflict Profile",
+        personalityPrompt: "Stale conflicting profile.",
       });
       // Simulate stale existing-space data via direct DB mutation: add a second
       // primary/coordinator assignment while keeping canonical assignment intact.
@@ -69,8 +69,8 @@ describe("bootstrap main defaults", () => {
         ) VALUES (?, ?, ?, NULL, NULL, NULL, 'global_coordinator', 1, 1, ?, ?)`,
       ).run(
         config.mainSpaceId,
-        "legacy-main-conflict-agent",
-        "legacy-main-conflict-profile",
+        "stale-main-conflict-agent",
+        "stale-main-conflict-profile",
         nowIso,
         nowIso,
       );
@@ -116,7 +116,7 @@ describe("bootstrap main defaults", () => {
         modelId: "gpt-4.1-mini",
       });
       expect(swapped.providerHint).toBe("openai");
-      expect(swapped.modelHint).toBe("openai/gpt-4.1-mini");
+      expect(swapped.modelConfig.preferredModels[0]).toBe("openai/gpt-4.1-mini");
 
       const assignmentRows = second.db?.db.query(
         `SELECT agent_id, role, is_primary
@@ -194,7 +194,7 @@ describe("bootstrap main defaults", () => {
         repairIfMissing: true,
       });
       expect(state.providerHint).toBe("openai");
-      expect(state.modelHint).toBe("openai/gpt-4.1");
+      expect(state.modelConfig.preferredModels[0]).toBe("openai/gpt-4.1");
       expect(state.status === "healthy" || state.status === "repaired").toBe(true);
     } finally {
       try {

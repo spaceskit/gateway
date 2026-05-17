@@ -60,22 +60,17 @@ export function loadReadableTemplateAccessOrThrow(
 
   const config = parseTemplateConfig(revision.space_config_json);
   const ownedByPrincipal = template.owner_principal_id === normalizedPrincipalId;
-  const ownerMissing = template.owner_principal_id.trim().length === 0;
-  const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
   const isSystemTemplate = template.owner_principal_id.trim() === "system";
 
-  if (!ownedByPrincipal && !legacyOwnerMatch && !isSystemTemplate) {
+  if (!ownedByPrincipal && !isSystemTemplate) {
     throw new SpaceConfiguratorError(
       "PERMISSION_DENIED",
       `Template is not accessible for principal: ${normalizedTemplateId}`,
     );
   }
-  if (legacyOwnerMatch) {
-    templates.claimOwnerIfUnowned(normalizedTemplateId, normalizedPrincipalId);
-  }
 
   return {
-    template: templates.getById(normalizedTemplateId) ?? template,
+    template,
     revision,
     config,
   };
@@ -90,10 +85,8 @@ export function loadOwnedTemplateAccessOrThrow(
   const loaded = loadReadableTemplateAccessOrThrow(templates, templateId, principalId, options);
   const normalizedPrincipalId = principalId.trim();
   const ownedByPrincipal = loaded.template.owner_principal_id === normalizedPrincipalId;
-  const ownerMissing = loaded.template.owner_principal_id.trim().length === 0;
-  const legacyOwnerMatch = ownerMissing && loaded.config.metadata.createdBy === normalizedPrincipalId;
 
-  if (!ownedByPrincipal && !legacyOwnerMatch) {
+  if (!ownedByPrincipal) {
     throw new SpaceConfiguratorError(
       "PERMISSION_DENIED",
       `Template is not accessible for principal: ${loaded.template.template_id}`,
@@ -128,12 +121,7 @@ export function loadTemplateDetailRecord(
 
   const config = parseTemplateConfig(revision.space_config_json);
   if (template.owner_principal_id !== normalizedPrincipalId) {
-    const ownerMissing = template.owner_principal_id.trim().length === 0;
-    const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
-    if (!legacyOwnerMatch) {
-      return null;
-    }
-    templates.claimOwnerIfUnowned(templateId, normalizedPrincipalId);
+    return null;
   }
 
   return { template, revision, config };
@@ -173,21 +161,16 @@ export function loadAgentPresetAccessOrThrow(
 
   const config = parseAgentPresetConfig(revision.preset_config_json);
   const ownedByPrincipal = preset.owner_principal_id === normalizedPrincipalId;
-  const ownerMissing = preset.owner_principal_id.trim().length === 0;
-  const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
 
-  if (!ownedByPrincipal && !legacyOwnerMatch) {
+  if (!ownedByPrincipal) {
     throw new SpaceConfiguratorError(
       "PERMISSION_DENIED",
       `Agent preset is not accessible for principal: ${normalizedPresetId}`,
     );
   }
-  if (legacyOwnerMatch) {
-    agentPresets.claimOwnerIfUnowned(normalizedPresetId, normalizedPrincipalId);
-  }
 
   return {
-    preset: agentPresets.getById(normalizedPresetId) ?? preset,
+    preset,
     revision,
     config,
   };
@@ -225,12 +208,7 @@ export function loadAgentPresetDetailRecord(
 
   const config = parseAgentPresetConfig(revision.preset_config_json);
   if (preset.owner_principal_id !== normalizedPrincipalId) {
-    const ownerMissing = preset.owner_principal_id.trim().length === 0;
-    const legacyOwnerMatch = ownerMissing && config.metadata.createdBy === normalizedPrincipalId;
-    if (!legacyOwnerMatch) {
-      return null;
-    }
-    agentPresets.claimOwnerIfUnowned(presetId, normalizedPrincipalId);
+    return null;
   }
 
   return { preset, revision, config };

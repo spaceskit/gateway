@@ -97,7 +97,7 @@ describe("DefaultGatewayAdminService Apple Foundation provider", () => {
       try {
         ctx.admin.validateProfileModelSelection({
           providerHint: "apple",
-          modelHint: "apple/apple-on-device",
+          modelId: "apple/apple-on-device",
         });
       } catch (err) {
         validationErr = err;

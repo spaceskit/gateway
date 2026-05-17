@@ -9,10 +9,8 @@ import {
 import {
   buildTurnStreamPayload,
   buildTypedTurnPayload,
-  mapTurnLifecycleEventType,
   normalizeGatewayEventPayload,
   resolveTurnAgentId as resolveTurnAgentIdFromEvent,
-  sanitizeTurnLifecycleValue,
 } from "./gateway-turn-event-projection.js";
 import { deterministicUuid, normalizeUuid } from "./uuid.js";
 
@@ -25,8 +23,6 @@ export interface GatewayEventBroadcasterOptions {
 export class GatewayEventBroadcaster {
   private readonly log: Logger | null;
   private readonly spaceUidBySpaceId = new Map<string, string>();
-  private sanitizationPassCount = 0;
-  private sanitizationFailCount = 0;
   private streamSeqCounter = 0;
   private streamTsCache = "";
   private streamTsCacheMs = 0;
@@ -182,8 +178,6 @@ export class GatewayEventBroadcaster {
       return;
     }
 
-    const mappedEventType = mapTurnLifecycleEventType(eventSubtype, normalizedType);
-    const sanitizedData = this.sanitizeTurnLifecycleData(turnEvent ?? eventRecord.data ?? null);
     const agentId = resolveGatewayTurnAgentId(eventRecord, turnEvent);
     const rootTurnId = typeof eventRecord.rootTurnId === "string" ? eventRecord.rootTurnId : undefined;
     const conversationTopology = typeof eventRecord.conversationTopology === "string"
@@ -203,6 +197,15 @@ export class GatewayEventBroadcaster {
       conversationTopology,
       transcriptVisibility,
     });
+    if (!typedPayload) {
+      this.log?.warn("Dropping turn event without typed payload", {
+        eventSubtype,
+        normalizedType,
+        spaceId,
+        turnId,
+      });
+      return;
+    }
     const payload: TurnEventPayload = {
       spaceId,
       spaceUid,
@@ -211,8 +214,6 @@ export class GatewayEventBroadcaster {
       agentId,
       conversationTopology,
       transcriptVisibility,
-      eventType: mappedEventType,
-      data: sanitizedData,
       typedPayload,
       ts: nowIso,
     };
@@ -225,26 +226,6 @@ export class GatewayEventBroadcaster {
     });
   }
 
-  private sanitizeTurnLifecycleData(value: unknown): unknown {
-    try {
-      const sanitized = sanitizeTurnLifecycleValue(value);
-      this.sanitizationPassCount += 1;
-      if (this.sanitizationPassCount % 100 === 0) {
-        this.log?.debug("Turn payload sanitization counters", {
-          pass: this.sanitizationPassCount,
-          fail: this.sanitizationFailCount,
-        });
-      }
-      return sanitized;
-    } catch {
-      this.sanitizationFailCount += 1;
-      this.log?.warn("Turn payload sanitization failed", {
-        pass: this.sanitizationPassCount,
-        fail: this.sanitizationFailCount,
-      });
-      return { redactionError: "Unable to sanitize turn payload." };
-    }
-  }
 }
 
 export function resolveGatewayTurnAgentId(

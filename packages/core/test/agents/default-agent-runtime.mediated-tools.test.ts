@@ -238,10 +238,10 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
 
     expect(provider.generateCalls).toHaveLength(1);
     expect(provider.generateCalls[0]?.tools).toBeUndefined();
-    expect(provider.generateCalls[0]?.mcpBridgeConfig).toBeDefined();
-    expect(provider.generateCalls[0]?.mcpBridgeConfig?.bridgeScriptPath).toContain("gateway-mcp-bridge-stdio.ts");
-    expect(provider.generateCalls[0]?.mcpBridgeConfig?.toolDefsJson).toContain("\"lists.echo\"");
-    expect(provider.generateCalls[0]?.mcpBridgeConfig?.socketPath).toEqual(expect.any(String));
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig).toBeDefined();
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig?.bridgeScriptPath).toContain("gateway-mcp-bridge-stdio.ts");
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig?.toolDefsJson).toContain("\"lists.echo\"");
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig?.socketPath).toEqual(expect.any(String));
     expect(completed?.result.finalMessage.content).toBe("Bridge connected.");
   });
 
@@ -291,9 +291,7 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
     expect(provider.generateCalls).toHaveLength(1);
     expect(provider.generateCalls[0]?.gatewayToolBridgeConfig).toBeDefined();
     expect(provider.generateCalls[0]?.gatewayToolBridgeConfig?.toolDefsJson).toContain("\"lists.echo\"");
-    expect(provider.generateCalls[0]?.mcpBridgeConfig?.socketPath).toEqual(
-      provider.generateCalls[0]?.gatewayToolBridgeConfig?.socketPath,
-    );
+    expect(provider.generateCalls[0]?.gatewayToolBridgeConfig?.socketPath).toEqual(expect.any(String));
     expect(completed?.result.finalMessage.content).toBe("App server connected.");
   });
 

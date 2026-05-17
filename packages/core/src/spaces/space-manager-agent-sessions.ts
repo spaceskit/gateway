@@ -72,7 +72,7 @@ export interface ActiveSpaceStateSnapshot {
 }
 
 export interface RestoreAgentSessionCheckpointInput {
-  agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
+  agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
   configLoader?: () => Promise<SpaceConfig | null>;
 }
 
@@ -138,7 +138,7 @@ export async function restoreActiveSpaceFromCheckpoint(input: {
 
   const active = createActiveSpace(input.spaceId, config);
   for (const [agentId, state] of Object.entries(input.checkpoint.agentStates)) {
-    const messages = state.messages ?? [];
+    const messages = state.messages;
     const capped = messages.length > MAX_AGENT_SESSION_MESSAGES
       ? messages.slice(messages.length - MAX_AGENT_SESSION_MESSAGES)
       : [...messages];

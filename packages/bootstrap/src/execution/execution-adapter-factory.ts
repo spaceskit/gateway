@@ -25,8 +25,6 @@ export interface ExecutionAdapterFactoryInput {
   authMode?: "api_key" | "host_login";
   baseURL?: string;
   isLocal?: boolean;
-  /** @deprecated Approval bypass is now per-turn via GenerateOptions.approvalBypassEnabled. */
-  allowUnsafeHostBypass?: boolean;
 }
 
 interface ExecutionAdapterFactoryOptions {

@@ -158,7 +158,7 @@ describe("ShareRelayApiService", () => {
       },
       body: JSON.stringify({
         relaySessionToken: "relay-session-1",
-        identityModeHint: "legacy_mode",
+        identityModeHint: "stale_mode",
       }),
     });
 

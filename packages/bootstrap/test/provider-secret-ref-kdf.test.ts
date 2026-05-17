@@ -41,17 +41,16 @@ describe("KDF versioning", () => {
     }
   });
 
-  test("v0 encrypted data can be decrypted by v1-aware service (backward compat)", () => {
-    // First, encrypt with a service that has no master key (v0 path)
+  test("v0 encrypted data is rejected", () => {
     const db = initDatabase({
       path: ":memory:",
-      runtimeGeneration: `test-kdf-compat-${crypto.randomUUID()}`,
+      runtimeGeneration: `test-kdf-v0-${crypto.randomUUID()}`,
     });
     const repository = new ProviderSecretRefRepository(db.db);
 
     try {
       // Create v0 data manually: encrypt with SHA-256 derived key, raw 12-byte IV
-      const masterKey = "compat-test-key";
+      const masterKey = "v0-test-key";
       const key = createHash("sha256").update(masterKey).digest();
 
       // Use node:crypto to create v0-format encrypted data
@@ -59,16 +58,16 @@ describe("KDF versioning", () => {
       const iv = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", key, iv);
       const ciphertext = Buffer.concat([
-        cipher.update("legacy-secret-value", "utf8"),
+        cipher.update("v0-secret-value", "utf8"),
         cipher.final(),
       ]);
       const authTag = cipher.getAuthTag();
 
       // Insert v0 row directly
       repository.upsert({
-        secretRef: "secretref-legacy",
+        secretRef: "secretref-v0",
         providerId: "anthropic",
-        label: "Legacy Secret",
+        label: "V0 Secret",
         backend: "gateway_encrypted",
         encryptedSecret: ciphertext.toString("base64"),
         iv: iv.toString("base64"), // raw 12-byte IV (v0 format)
@@ -78,14 +77,11 @@ describe("KDF versioning", () => {
       // Now create a v1-aware service with the same master key
       const service = new ProviderSecretRefService({
         repository,
-        logger: new Logger({ minLevel: "error", module: "kdf-compat-test" }),
+        logger: new Logger({ minLevel: "error", module: "kdf-v0-test" }),
         masterKey,
       });
 
-      // Should be able to decrypt v0 data
-      const resolved = service.resolveSecret("secretref-legacy");
-      expect(resolved).not.toBeNull();
-      expect(resolved!.secret).toBe("legacy-secret-value");
+      expect(() => service.resolveSecret("secretref-v0")).toThrow("Unable to decrypt provider secret ref");
     } finally {
       db.close();
     }
@@ -150,8 +146,7 @@ describe("KDF versioning", () => {
     }
   });
 
-  test("service without master key uses v0 format (12-byte IV)", () => {
-    // No master key => random key, v0 format
+  test("service without master key still writes v1 format", () => {
     const ctx = createContext(undefined);
     try {
       const put = ctx.service.putSecretRef({
@@ -161,8 +156,8 @@ describe("KDF versioning", () => {
 
       const row = ctx.repository.get(put.secretRef.secretRef);
       const ivBuf = Buffer.from(row!.iv, "base64");
-      // v0: raw 12-byte IV (no version byte, no salt)
-      expect(ivBuf.length).toBe(12);
+      expect(ivBuf.length).toBe(29);
+      expect(ivBuf[0]).toBe(0x01);
 
       // Should still round-trip
       const resolved = ctx.service.resolveSecret(put.secretRef.secretRef);

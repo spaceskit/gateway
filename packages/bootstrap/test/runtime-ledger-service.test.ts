@@ -42,6 +42,7 @@ function createContext() {
   });
 
   return {
+    db: db.db,
     spaces,
     runs,
     runSteps,
@@ -62,7 +63,7 @@ describe("RuntimeLedgerService", () => {
       },
     })).not.toThrow();
 
-    expect(context.runs.getByCompatibilityTurnId("turn-missing")).toBeUndefined();
+    expect(context.runs.getByTurnId("turn-missing")).toBeUndefined();
   });
 
   test("does not persist text deltas as run steps for existing spaces", () => {
@@ -93,7 +94,10 @@ describe("RuntimeLedgerService", () => {
       },
     });
 
-    const run = context.runs.getByCompatibilityTurnId("turn-1");
+    const columns = context.db.query("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "turn_id")).toBe(true);
+
+    const run = context.runs.getByTurnId("turn-1");
     expect(run).toBeDefined();
     expect(run?.space_id).toBe("space-1");
 

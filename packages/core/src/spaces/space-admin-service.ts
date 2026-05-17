@@ -6,11 +6,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { AgentSecurityScope } from "../security/types.js";
 import type { ThinkingCapturePolicy } from "./memory-policy.js";
+import { SpaceAdminAssignments } from "./space-admin-assignments.js";
+import type { AddAgentInput, SetSpaceOrchestratorInput, UpdateAgentAssignmentInput } from "./space-admin-assignments.js";
+import { SpaceAdminBindings } from "./space-admin-bindings.js";
+import { SpaceAdminError } from "./space-admin-errors.js";
+import { SpaceAdminIdempotency } from "./space-admin-idempotency.js";
 import type {
   ConversationTopology,
-  CoordinatorRole,
   SpaceAgentAssignment,
   SpaceConfig,
   SpaceResource,
@@ -19,35 +22,13 @@ import type {
   TurnModelConfig,
   TurnModelStrategy,
 } from "./types.js";
-import {
-  inferResponseType,
-  normalizeOptionalString,
-  normalizeRole,
-  normalizeSpaceState,
-  normalizeUuidString,
-  parseSpaceConfig,
-  parseSpaceResourceType,
-  stableJsonHash,
-  uniqueStrings,
-} from "./space-admin-normalizers.js";
-import { SpaceAdminLegacySupport } from "./space-admin-legacy-support.js";
+import { normalizeSpaceState, normalizeUuidString } from "./space-admin-normalizers.js";
+import { SpaceAdminSupport } from "./space-admin-support.js";
 
 export { normalizeSpaceState } from "./space-admin-normalizers.js";
-
-export type SpaceAdminErrorCode =
-  | "INVALID_ARGUMENT"
-  | "NOT_FOUND"
-  | "ALREADY_EXISTS"
-  | "FAILED_PRECONDITION";
-
-export class SpaceAdminError extends Error {
-  readonly code: SpaceAdminErrorCode;
-
-  constructor(code: SpaceAdminErrorCode, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
+export { SpaceAdminError } from "./space-admin-errors.js";
+export type { SpaceAdminErrorCode } from "./space-admin-errors.js";
+export type { AddAgentInput, SetSpaceOrchestratorInput, UpdateAgentAssignmentInput } from "./space-admin-assignments.js";
 
 export interface SpaceStoreRecord {
   spaceId: string;
@@ -213,38 +194,6 @@ export interface SpaceAdminServiceOptions {
   now?: () => Date;
 }
 
-export interface AddAgentInput {
-  idempotencyKey?: string;
-  spaceId: string;
-  agentId: string;
-  profileId: string;
-  securityScope?: AgentSecurityScope;
-  spawnContext?: string;
-  contextOverrides?: Record<string, unknown>;
-  role?: CoordinatorRole | "participant";
-  turnOrder?: number;
-  isPrimary?: boolean;
-}
-
-export interface UpdateAgentAssignmentInput {
-  idempotencyKey?: string;
-  spaceId: string;
-  agentId: string;
-  profileId?: string;
-  securityScope?: AgentSecurityScope | null;
-  spawnContext?: string | null;
-  contextOverrides?: Record<string, unknown> | null;
-  role?: CoordinatorRole | "participant";
-  turnOrder?: number;
-  isPrimary?: boolean;
-}
-
-export interface SetSpaceOrchestratorInput {
-  idempotencyKey?: string;
-  spaceId: string;
-  profileId: string;
-}
-
 export interface AddSpaceSkillInput {
   idempotencyKey?: string;
   spaceId: string;
@@ -306,24 +255,28 @@ export interface ListSpacesOptions {
 export class SpaceAdminService {
   private readonly options: SpaceAdminServiceOptions;
   private readonly now: () => Date;
-  private readonly idempotencyPrincipalId: string;
-  private readonly reservedSpaceResourceIdPrefixes: string[];
-  private readonly isProtectedSpaceSkill?: SpaceAdminServiceOptions["isProtectedSpaceSkill"];
-  private readonly isProtectedSpaceResource?: SpaceAdminServiceOptions["isProtectedSpaceResource"];
-  private readonly legacySupport: SpaceAdminLegacySupport;
+  private readonly spaceAdminSupport: SpaceAdminSupport;
+  private readonly idempotency: SpaceAdminIdempotency;
+  private readonly assignments: SpaceAdminAssignments;
+  private readonly bindings: SpaceAdminBindings;
 
   constructor(options: SpaceAdminServiceOptions) {
     this.options = options;
     this.now = options.now ?? (() => new Date());
-    this.idempotencyPrincipalId = options.idempotencyPrincipalId ?? "space-admin";
-    this.reservedSpaceResourceIdPrefixes = uniqueStrings(
-      (options.reservedSpaceResourceIdPrefixes ?? [])
-        .map((prefix) => prefix.trim())
-        .filter((prefix) => prefix.length > 0),
+    this.spaceAdminSupport = new SpaceAdminSupport(options, this.now);
+    this.idempotency = new SpaceAdminIdempotency(
+      options,
+      options.idempotencyPrincipalId ?? "space-admin",
+      (message) => new SpaceAdminError("FAILED_PRECONDITION", message),
     );
-    this.isProtectedSpaceSkill = options.isProtectedSpaceSkill;
-    this.isProtectedSpaceResource = options.isProtectedSpaceResource;
-    this.legacySupport = new SpaceAdminLegacySupport(options, this.now);
+    this.assignments = new SpaceAdminAssignments(
+      options,
+      this.now,
+      this.idempotency,
+      this.spaceAdminSupport,
+      (spaceId) => this.getSpace(spaceId),
+    );
+    this.bindings = new SpaceAdminBindings(options, this.now, this.idempotency, this.spaceAdminSupport);
   }
 
   async createSpace(input: CreateSpaceInput): Promise<SpaceConfig> {
@@ -339,7 +292,7 @@ export class SpaceAdminService {
       throw new SpaceAdminError("INVALID_ARGUMENT", "resourceId is required");
     }
 
-    return this.withIdempotency(
+    return this.idempotency.run(
       "space.create",
       input.idempotencyKey,
       {
@@ -369,7 +322,7 @@ export class SpaceAdminService {
           name,
           goal: input.goal ?? "",
           turnModel: input.turnModel ?? "sequential_all",
-          configJson: JSON.stringify(this.legacySupport.buildSpaceConfigSeed(input, spaceUid)),
+          configJson: JSON.stringify(this.spaceAdminSupport.buildSpaceConfigSeed(input, spaceUid)),
           templateId: input.templateId ?? "",
           templateRevision: input.templateRevision ?? 0,
         });
@@ -406,8 +359,7 @@ export class SpaceAdminService {
   async getSpace(spaceId: string): Promise<SpaceConfig | null> {
     const row = await this.options.getSpaceRow(spaceId);
     if (!row) return null;
-    await this.legacySupport.initializeAssignmentsFromLegacy(row);
-    return this.legacySupport.hydrateSpace(row);
+    return this.spaceAdminSupport.hydrateSpace(row);
   }
 
   async listSpaces(options: ListSpacesOptions = {}): Promise<SpaceConfig[]> {
@@ -418,8 +370,7 @@ export class SpaceAdminService {
     });
 
     return Promise.all(rows.map(async (row) => {
-      await this.legacySupport.initializeAssignmentsFromLegacy(row);
-      return this.legacySupport.hydrateSpace(row);
+      return this.spaceAdminSupport.hydrateSpace(row);
     }));
   }
 
@@ -432,7 +383,7 @@ export class SpaceAdminService {
       throw new SpaceAdminError("FAILED_PRECONDITION", "Space archive persistence unavailable");
     }
 
-    return this.withIdempotency(
+    return this.idempotency.run(
       "space.archive",
       input.idempotencyKey,
       { spaceId },
@@ -468,7 +419,7 @@ export class SpaceAdminService {
       throw new SpaceAdminError("FAILED_PRECONDITION", "Space delete persistence unavailable");
     }
 
-    return this.withIdempotency(
+    return this.idempotency.run(
       "space.delete",
       input.idempotencyKey,
       { spaceId },
@@ -493,544 +444,47 @@ export class SpaceAdminService {
   }
 
   async listAgentAssignments(spaceId: string): Promise<SpaceAgentAssignment[]> {
-    const row = await this.options.getSpaceRow(spaceId);
-    if (!row) {
-      throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-    }
-    await this.legacySupport.initializeAssignmentsFromLegacy(row);
-
-    const assignments = await this.options.listAssignmentRows(spaceId);
-    if (assignments.length > 0) {
-      return assignments.map((assignment) => this.legacySupport.rowToAssignment(assignment));
-    }
-
-    const legacy = this.legacySupport.parseLegacyAssignments(spaceId, row.spaceConfigJson, row.createdAt);
-    return legacy;
+    return this.assignments.listAgentAssignments(spaceId);
   }
 
   async addSkillToSpace(input: AddSpaceSkillInput): Promise<string[]> {
-    const spaceId = input.spaceId.trim();
-    const skillId = input.skillId.trim();
-    this.validateSpaceSkillInput(spaceId, skillId);
-
-    return this.withIdempotency(
-      "space.add_skill",
-      input.idempotencyKey,
-      {
-        spaceId,
-        skillId,
-      },
-      async () => {
-        const space = await this.options.getSpaceRow(spaceId);
-        if (!space) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-        }
-
-        await this.legacySupport.initializeSpaceSkillsFromLegacy(space);
-        await this.options.upsertSpaceSkillRow({
-          spaceId,
-          skillId,
-          addedAt: this.now().toISOString(),
-        });
-        await this.legacySupport.syncLegacySkillIds(spaceId);
-        return this.listSpaceSkills(spaceId);
-      },
-    );
+    return this.bindings.addSkillToSpace(input);
   }
 
   async removeSkillFromSpace(input: RemoveSpaceSkillInput): Promise<{ removed: boolean; skills: string[] }> {
-    const spaceId = input.spaceId.trim();
-    const skillId = input.skillId.trim();
-    this.validateSpaceSkillInput(spaceId, skillId);
-
-    return this.withIdempotency(
-      "space.remove_skill",
-      input.idempotencyKey,
-      {
-        spaceId,
-        skillId,
-      },
-      async () => {
-        const space = await this.options.getSpaceRow(spaceId);
-        if (!space) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-        }
-
-        await this.legacySupport.initializeSpaceSkillsFromLegacy(space);
-        if (this.isProtectedSpaceSkill) {
-          const protectedSkill = await this.isProtectedSpaceSkill(spaceId, skillId);
-          if (protectedSkill) {
-            throw new SpaceAdminError(
-              "FAILED_PRECONDITION",
-              `Skill cannot be removed from protected space binding: ${skillId}`,
-            );
-          }
-        }
-        const removed = await this.options.deleteSpaceSkillRow(spaceId, skillId);
-        if (removed) {
-          await this.legacySupport.syncLegacySkillIds(spaceId);
-        }
-
-        const skills = await this.listSpaceSkills(spaceId);
-        return { removed, skills };
-      },
-    );
+    return this.bindings.removeSkillFromSpace(input);
   }
 
   async listSpaceSkills(spaceIdRaw: string): Promise<string[]> {
-    const spaceId = spaceIdRaw.trim();
-    if (!spaceId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
-    }
-
-    const row = await this.options.getSpaceRow(spaceId);
-    if (!row) {
-      throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-    }
-
-    await this.legacySupport.initializeSpaceSkillsFromLegacy(row);
-    const stored = await this.options.listSpaceSkillRows(spaceId);
-    if (stored.length > 0) {
-      return uniqueStrings(stored.map((entry) => entry.skillId));
-    }
-
-    return this.legacySupport.parseLegacySkillIds(row.spaceConfigJson);
+    return this.bindings.listSpaceSkills(spaceIdRaw);
   }
 
   async addResource(input: AddSpaceResourceInput): Promise<SpaceResource> {
-    const spaceId = input.spaceId.trim();
-    const requestedResourceId = input.resourceId?.trim();
-    const uri = input.uri.trim();
-    const type = parseSpaceResourceType(input.type);
-    const label = input.label?.trim();
-    if (!type) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", `Invalid resource type: ${String(input.type)}`);
-    }
-    if (requestedResourceId && this.isReservedSpaceResourceId(requestedResourceId)) {
-      throw new SpaceAdminError(
-        "INVALID_ARGUMENT",
-        `resourceId uses a reserved prefix and cannot be assigned directly: ${requestedResourceId}`,
-      );
-    }
-    this.validateSpaceResourceInput(spaceId, uri, type);
-
-    return this.withIdempotency(
-      "space.add_resource",
-      input.idempotencyKey,
-      {
-        spaceId,
-        resourceId: requestedResourceId ?? null,
-        uri,
-        type,
-        label: label ?? null,
-      },
-      async () => {
-        const space = await this.options.getSpaceRow(spaceId);
-        if (!space) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-        }
-
-        const row = await this.options.upsertSpaceResourceRow({
-          resourceId: requestedResourceId || `space-resource-${randomUUID()}`,
-          spaceId,
-          uri,
-          type,
-          label,
-          addedAt: this.now().toISOString(),
-        });
-        return this.legacySupport.rowToSpaceResource(row);
-      },
-    );
+    return this.bindings.addResource(input);
   }
 
   async removeResource(input: RemoveSpaceResourceInput): Promise<boolean> {
-    const spaceId = input.spaceId.trim();
-    const resourceId = input.resourceId.trim();
-    if (!spaceId || !resourceId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId and resourceId are required");
-    }
-
-    return this.withIdempotency(
-      "space.remove_resource",
-      input.idempotencyKey,
-      {
-        spaceId,
-        resourceId,
-      },
-      async () => {
-        const space = await this.options.getSpaceRow(spaceId);
-        if (!space) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-        }
-        if (this.isProtectedSpaceResource) {
-          const protectedResource = await this.isProtectedSpaceResource(spaceId, resourceId);
-          if (protectedResource) {
-            throw new SpaceAdminError(
-              "FAILED_PRECONDITION",
-              `Resource cannot be removed directly while managed: ${resourceId}`,
-            );
-          }
-        }
-        return this.options.deleteSpaceResourceRow(spaceId, resourceId);
-      },
-    );
+    return this.bindings.removeResource(input);
   }
 
   async listResources(spaceIdRaw: string): Promise<SpaceResource[]> {
-    const spaceId = spaceIdRaw.trim();
-    if (!spaceId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
-    }
-
-    const row = await this.options.getSpaceRow(spaceId);
-    if (!row) {
-      throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-    }
-
-    const resources = await this.options.listSpaceResourceRows(spaceId);
-    return resources.map((entry) => this.legacySupport.rowToSpaceResource(entry));
+    return this.bindings.listResources(spaceIdRaw);
   }
 
   async setSpaceOrchestrator(input: SetSpaceOrchestratorInput): Promise<SpaceConfig> {
-    const spaceId = input.spaceId.trim();
-    const profileId = input.profileId.trim();
-    if (!spaceId || !profileId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId and profileId are required");
-    }
-
-    return this.withIdempotency(
-      "space.set_orchestrator",
-      input.idempotencyKey,
-      {
-        spaceId,
-        profileId,
-      },
-      async () => {
-        const space = await this.options.getSpaceRow(spaceId);
-        if (!space) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-        }
-        await this.assertAssignableProfile(profileId, { forOrchestrator: true });
-
-        const parsedConfig = parseSpaceConfig(space.spaceConfigJson);
-        parsedConfig.orchestratorProfileId = profileId;
-        await this.options.updateSpaceConfigJson(spaceId, JSON.stringify(parsedConfig));
-        await this.legacySupport.alignOrchestratorAssignment(spaceId, profileId);
-
-        const updated = await this.getSpace(spaceId);
-        if (!updated) {
-          throw new SpaceAdminError("FAILED_PRECONDITION", `Failed to load updated space: ${spaceId}`);
-        }
-        return updated;
-      },
-    );
+    return this.assignments.setSpaceOrchestrator(input);
   }
 
   async addAgent(input: AddAgentInput): Promise<SpaceAgentAssignment> {
-    this.validateAssignmentInput(input.spaceId, input.agentId, input.profileId);
-
-    return this.withIdempotency(
-      "space.add_agent",
-      input.idempotencyKey,
-      {
-        spaceId: input.spaceId,
-        agentId: input.agentId,
-        profileId: input.profileId,
-        securityScope: input.securityScope ?? null,
-        spawnContext: input.spawnContext ?? null,
-        contextOverrides: input.contextOverrides ?? null,
-        role: input.role ?? "participant",
-        turnOrder: input.turnOrder ?? null,
-        isPrimary: input.isPrimary ?? false,
-      },
-      async () => {
-        const row = await this.options.getSpaceRow(input.spaceId);
-        if (!row) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${input.spaceId}`);
-        }
-        await this.legacySupport.initializeAssignmentsFromLegacy(row);
-        await this.assertAssignableProfile(input.profileId);
-
-        const existing = await this.options.getAssignmentRow(input.spaceId, input.agentId);
-        if (existing) {
-          throw new SpaceAdminError(
-            "ALREADY_EXISTS",
-            `Agent ${input.agentId} is already assigned to space ${input.spaceId}`,
-          );
-        }
-
-        const currentAssignments = await this.listAgentAssignments(input.spaceId);
-        const turnOrder = input.turnOrder ?? this.nextTurnOrder(currentAssignments);
-        const requestedRole = normalizeRole(input.role);
-        const requestedIsPrimary = input.isPrimary ?? requestedRole === "global_coordinator";
-
-        const assignmentRow = await this.options.upsertAssignmentRow({
-          spaceId: input.spaceId,
-          agentId: input.agentId,
-          profileId: input.profileId,
-          securityScopeJson: input.securityScope ? JSON.stringify(input.securityScope) : null,
-          spawnContext: normalizeOptionalString(input.spawnContext) ?? null,
-          contextOverridesJson: input.contextOverrides ? JSON.stringify(input.contextOverrides) : null,
-          role: requestedRole,
-          turnOrder,
-          isPrimary: requestedIsPrimary,
-          assignedAt: this.now().toISOString(),
-        });
-        await this.legacySupport.enforceSingleCoordinatorAndPrimary(input.spaceId, input.agentId, {
-          enforceCoordinator: requestedRole === "global_coordinator",
-          enforcePrimary: requestedIsPrimary,
-        });
-
-        await this.legacySupport.syncLegacyAssignments(input.spaceId);
-        const normalized = await this.options.getAssignmentRow(input.spaceId, input.agentId);
-        return this.legacySupport.rowToAssignment(normalized ?? assignmentRow);
-      },
-    );
+    return this.assignments.addAgent(input);
   }
 
   async updateAgentAssignment(input: UpdateAgentAssignmentInput): Promise<SpaceAgentAssignment> {
-    const spaceId = input.spaceId.trim();
-    const agentId = input.agentId.trim();
-    if (!spaceId || !agentId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId and agentId are required");
-    }
-
-    return this.withIdempotency(
-      "space.update_agent_assignment",
-      input.idempotencyKey,
-      {
-        spaceId,
-        agentId,
-        profileId: input.profileId ?? null,
-        securityScope: input.securityScope ?? null,
-        spawnContext: input.spawnContext ?? null,
-        contextOverrides: input.contextOverrides ?? null,
-        role: input.role ?? null,
-        turnOrder: input.turnOrder ?? null,
-        isPrimary: input.isPrimary ?? null,
-      },
-      async () => {
-        const space = await this.options.getSpaceRow(spaceId);
-        if (!space) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${spaceId}`);
-        }
-        await this.legacySupport.initializeAssignmentsFromLegacy(space);
-
-        let existing = await this.options.getAssignmentRow(spaceId, agentId);
-        if (!existing) {
-          existing = await this.legacySupport.recoverMissingAssignmentFromLegacy(space, agentId);
-        }
-        if (!existing) {
-          throw new SpaceAdminError("NOT_FOUND", `Assignment not found: ${spaceId}/${agentId}`);
-        }
-
-        const existingAssignment = this.legacySupport.rowToAssignment(existing);
-        const requestedProfileId = input.profileId?.trim();
-        if (requestedProfileId && requestedProfileId !== existingAssignment.profileId) {
-          await this.assertAssignableProfile(requestedProfileId);
-        }
-        const nextSecurityScope = input.securityScope === undefined
-          ? existingAssignment.securityScope
-          : input.securityScope ?? undefined;
-        const nextSpawnContext = input.spawnContext === undefined
-          ? existingAssignment.spawnContext
-          : normalizeOptionalString(input.spawnContext) ?? undefined;
-        const nextContextOverrides = input.contextOverrides === undefined
-          ? existingAssignment.contextOverrides
-          : input.contextOverrides ?? undefined;
-        const requestedRole = normalizeRole(input.role ?? existingAssignment.role);
-        const requestedIsPrimary = requestedRole === "global_coordinator"
-          ? (input.isPrimary ?? true)
-          : (input.isPrimary ?? existingAssignment.isPrimary);
-
-        const assignmentRow = await this.options.upsertAssignmentRow({
-          spaceId,
-          agentId,
-          profileId: requestedProfileId || existingAssignment.profileId,
-          securityScopeJson: nextSecurityScope ? JSON.stringify(nextSecurityScope) : null,
-          spawnContext: nextSpawnContext ?? null,
-          contextOverridesJson: nextContextOverrides ? JSON.stringify(nextContextOverrides) : null,
-          role: requestedRole,
-          turnOrder: input.turnOrder ?? existingAssignment.turnOrder,
-          isPrimary: requestedIsPrimary,
-          assignedAt: existingAssignment.assignedAt.toISOString(),
-        });
-        await this.legacySupport.enforceSingleCoordinatorAndPrimary(spaceId, agentId, {
-          enforceCoordinator: requestedRole === "global_coordinator",
-          enforcePrimary: requestedIsPrimary,
-        });
-
-        await this.legacySupport.syncLegacyAssignments(spaceId);
-        const normalized = await this.options.getAssignmentRow(spaceId, agentId);
-        return this.legacySupport.rowToAssignment(normalized ?? assignmentRow);
-      },
-    );
+    return this.assignments.updateAgentAssignment(input);
   }
 
   async removeAgent(spaceId: string, agentId: string, idempotencyKey?: string): Promise<boolean> {
-    const trimmedSpaceId = spaceId.trim();
-    const trimmedAgentId = agentId.trim();
-    if (!trimmedSpaceId || !trimmedAgentId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId and agentId are required");
-    }
-
-    return this.withIdempotency(
-      "space.remove_agent",
-      idempotencyKey,
-      {
-        spaceId: trimmedSpaceId,
-        agentId: trimmedAgentId,
-      },
-      async () => {
-        const row = await this.options.getSpaceRow(trimmedSpaceId);
-        if (!row) {
-          throw new SpaceAdminError("NOT_FOUND", `Space not found: ${trimmedSpaceId}`);
-        }
-        await this.legacySupport.initializeAssignmentsFromLegacy(row);
-
-        let deleted = await this.options.deleteAssignmentRow(trimmedSpaceId, trimmedAgentId);
-        if (!deleted) {
-          await this.legacySupport.recoverMissingAssignmentFromLegacy(row, trimmedAgentId);
-          deleted = await this.options.deleteAssignmentRow(trimmedSpaceId, trimmedAgentId);
-        }
-        if (deleted) {
-          await this.legacySupport.syncLegacyAssignments(trimmedSpaceId);
-        }
-        return deleted;
-      },
-    );
+    return this.assignments.removeAgent(spaceId, agentId, idempotencyKey);
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
-  private isReservedSpaceResourceId(resourceId: string): boolean {
-    if (this.reservedSpaceResourceIdPrefixes.length === 0) return false;
-    return this.reservedSpaceResourceIdPrefixes.some((prefix) => resourceId.startsWith(prefix));
-  }
-
-  private nextTurnOrder(assignments: SpaceAgentAssignment[]): number {
-    if (assignments.length === 0) return 0;
-    return Math.max(...assignments.map((assignment) => assignment.turnOrder)) + 1;
-  }
-
-  private validateAssignmentInput(spaceId: string, agentId: string, profileId: string): void {
-    if (!spaceId.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
-    }
-    if (!agentId.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "agentId is required");
-    }
-    if (!profileId.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "profileId is required");
-    }
-  }
-
-  private validateSpaceSkillInput(spaceId: string, skillId: string): void {
-    if (!spaceId.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
-    }
-    if (!skillId.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "skillId is required");
-    }
-  }
-
-  private validateSpaceResourceInput(
-    spaceId: string,
-    uri: string,
-    type: SpaceResourceType,
-  ): void {
-    if (!spaceId.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "spaceId is required");
-    }
-    if (!uri.trim()) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "uri is required");
-    }
-    if (type !== "folder" && type !== "url") {
-      throw new SpaceAdminError("INVALID_ARGUMENT", `Invalid resource type: ${type}`);
-    }
-  }
-
-  private async assertAssignableProfile(
-    profileIdRaw: string,
-    options: { forOrchestrator?: boolean } = {},
-  ): Promise<void> {
-    const profileId = profileIdRaw.trim();
-    if (!profileId) {
-      throw new SpaceAdminError("INVALID_ARGUMENT", "profileId is required");
-    }
-
-    if (this.options.profileExists) {
-      const profileExists = await this.options.profileExists(profileId);
-      if (!profileExists) {
-        throw new SpaceAdminError("INVALID_ARGUMENT", `Profile not found: ${profileId}`);
-      }
-    }
-
-    if (this.options.profileArchived) {
-      const archived = await this.options.profileArchived(profileId);
-      if (archived) {
-        throw new SpaceAdminError("INVALID_ARGUMENT", `Profile is archived: ${profileId}`);
-      }
-    }
-
-    if (options.forOrchestrator && this.options.profileCanModerate) {
-      const canModerate = await this.options.profileCanModerate(profileId);
-      if (!canModerate) {
-        throw new SpaceAdminError(
-          "INVALID_ARGUMENT",
-          `Profile cannot be assigned as orchestrator (canModerate=false): ${profileId}`,
-        );
-      }
-    }
-  }
-
-  private async withIdempotency<T>(
-    endpoint: string,
-    idempotencyKey: string | undefined,
-    requestPayload: Record<string, unknown>,
-    execute: () => Promise<T>,
-  ): Promise<T> {
-    const normalizedKey = idempotencyKey?.trim();
-    const loadRecord = this.options.loadIdempotencyRecord;
-    const saveRecord = this.options.saveIdempotencyRecord;
-
-    if (!normalizedKey || !loadRecord || !saveRecord) {
-      if (!normalizedKey && loadRecord && saveRecord) {
-        this.options.onMissingIdempotencyKey?.(endpoint);
-      }
-      return execute();
-    }
-
-    const requestHash = stableJsonHash(requestPayload);
-    const existing = await loadRecord(this.idempotencyPrincipalId, endpoint, normalizedKey);
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw new SpaceAdminError(
-          "FAILED_PRECONDITION",
-          `Idempotency key replay with different request payload: ${normalizedKey}`,
-        );
-      }
-
-      try {
-        return JSON.parse(existing.responsePayload) as T;
-      } catch {
-        throw new SpaceAdminError("FAILED_PRECONDITION", "Stored idempotency response is invalid");
-      }
-    }
-
-    const result = await execute();
-
-    await saveRecord({
-      principalId: this.idempotencyPrincipalId,
-      endpoint,
-      idempotencyKey: normalizedKey,
-      requestHash,
-      responseType: inferResponseType(result),
-      responsePayload: JSON.stringify(result),
-    });
-
-    return result;
-  }
 }

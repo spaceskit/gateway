@@ -1,9 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import {
-  ExperienceMemoryProvider,
-  backfillLegacyExperienceKnowledge,
-} from "../../src/memory/experience-memory-provider.js";
+import { ExperienceMemoryProvider } from "../../src/memory/experience-memory-provider.js";
 
 const databases: Database[] = [];
 
@@ -180,83 +177,4 @@ describe("ExperienceMemoryProvider search filters", () => {
     expect(rejected.score).toBeLessThan(draft.score);
   });
 
-  test("backfills legacy experience status and user scope for existing generated memories", async () => {
-    const db = new Database(":memory:");
-    databases.push(db);
-    const provider = new ExperienceMemoryProvider({ db });
-
-    db.exec(`
-      CREATE TABLE experiences (
-        experience_id TEXT PRIMARY KEY,
-        space_id TEXT NOT NULL,
-        summary TEXT NOT NULL DEFAULT '',
-        tags_json TEXT DEFAULT '[]',
-        lessons_json TEXT DEFAULT '[]',
-        status TEXT NOT NULL DEFAULT 'draft',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE runs (
-        run_id TEXT PRIMARY KEY,
-        space_id TEXT NOT NULL,
-        compatibility_turn_id TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'completed',
-        trigger_source TEXT NOT NULL DEFAULT 'space_input',
-        requested_by_principal_id TEXT NOT NULL DEFAULT '',
-        requested_by_device_id TEXT NOT NULL DEFAULT '',
-        target_agent_id TEXT NOT NULL DEFAULT '',
-        requested_mode TEXT NOT NULL DEFAULT 'ask',
-        requested_effort TEXT NOT NULL DEFAULT 'medium',
-        input_text TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        completed_at TEXT,
-        error_code TEXT NOT NULL DEFAULT '',
-        error_message TEXT NOT NULL DEFAULT ''
-      );
-    `);
-
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO experiences (experience_id, space_id, summary, tags_json, lessons_json, status, created_at, updated_at)
-      VALUES (?, ?, ?, '[]', '[]', 'draft', ?, ?)
-    `).run("exp-1", "space-legacy", "Legacy generated summary", now, now);
-    db.prepare(`
-      INSERT INTO runs (
-        run_id, space_id, compatibility_turn_id, status, trigger_source,
-        requested_by_principal_id, requested_by_device_id, target_agent_id,
-        requested_mode, requested_effort, input_text, created_at, started_at,
-        completed_at, error_code, error_message
-      ) VALUES (?, ?, '', 'completed', 'space_input', ?, '', '', 'ask', 'medium', '', ?, ?, ?, '', '')
-    `).run("run-1", "space-legacy", "user-legacy", now, now, now);
-
-    await provider.save({
-      content: "Legacy generated summary",
-      type: "semantic",
-      scope: { spaceId: "space-legacy" },
-      metadata: { experienceId: "exp-1" },
-      importance: 0.7,
-    });
-
-    const result = backfillLegacyExperienceKnowledge(db);
-    expect(result).toEqual({
-      experiencesAccepted: 1,
-      memoryStatusesUpdated: 1,
-      memoryUsersUpdated: 1,
-    });
-
-    const acceptedResults = await provider.search({
-      text: "Legacy generated summary",
-      scope: { userId: "user-legacy" },
-      status: "accepted",
-    });
-    expect(acceptedResults.results).toHaveLength(1);
-    expect(acceptedResults.results[0]!.document.metadata.sourceStatus).toBe("accepted");
-    expect(acceptedResults.results[0]!.document.scope.userId).toBe("user-legacy");
-
-    const experienceRow = db.prepare(
-      "SELECT status FROM experiences WHERE experience_id = ?",
-    ).get("exp-1") as { status: string } | null;
-    expect(experienceRow?.status).toBe("accepted");
-  });
 });

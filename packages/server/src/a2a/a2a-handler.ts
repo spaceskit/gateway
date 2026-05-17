@@ -19,96 +19,37 @@ import type { Logger } from "@spaceskit/observability";
 import type {
   A2AAgentCard,
   A2AMessage,
-  A2AStreamEvent,
   A2ATask,
   A2ATaskRequest,
   A2ATaskResponse,
-  A2ATaskState,
 } from "./types.js";
+import {
+  applyOrchestratorEvent,
+  applyTaskCompletedEvent,
+  applyTaskFailedEvent,
+  applyTaskInputRequiredEvent,
+  applyTaskProgressEvent,
+  applyTurnEvent,
+  streamA2ATaskEvents,
+} from "./a2a-task-events.js";
+import {
+  buildTaskMetadata,
+  hydrateTaskFromProgress,
+  normalizeOptional,
+  normalizeRequired,
+  normalizeTaskState,
+  parseTaskMetadata,
+  summarizeTaskName,
+  type A2ASpaceAdminService,
+  type A2ATaskOrchestrationService,
+  type A2ATopology,
+  type PrincipalContext,
+  type TrackedTask,
+} from "./a2a-task-state.js";
 
 const AGENT_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const MAX_TEXT_BYTES = 100 * 1024;
 const DEFAULT_REQUESTED_BY = "a2a";
-
-type A2ATopology = "direct" | "shared_team_chat" | "broadcast_team";
-
-interface PrincipalContext {
-  principalId?: string;
-  deviceId?: string;
-}
-
-interface TrackedTask {
-  taskId: string;
-  spaceId: string;
-  turnId?: string;
-  state: A2ATaskState;
-  messages: A2AMessage[];
-  createdAt: Date;
-  topology?: A2ATopology;
-  requestedBy?: string;
-  deviceId?: string;
-}
-
-interface DurableTaskProgress {
-  taskId: string;
-  state: string;
-  spaceId: string;
-  progress?: {
-    rootTurnId?: string;
-    latestMessage?: string;
-    finalSummaryText?: string;
-  };
-  taskDescription: string;
-  topology?: string;
-  createdAt: string;
-  completedAt: string | null;
-  errorMessage?: string;
-}
-
-interface OrchestrationTaskResult {
-  taskId: string;
-  spaceId: string;
-  state: string;
-  rootTurnId?: string;
-}
-
-interface A2ATaskOrchestrationService {
-  orchestrate: (input: {
-    taskDescription: string;
-    requestedBy: string;
-    deviceId?: string;
-    templateId?: string;
-    templateHint?: string;
-    agentCount?: number;
-    agentTier?: string;
-    topology?: A2ATopology;
-    spaceId?: string;
-    maxTurns?: number;
-  }) => Promise<OrchestrationTaskResult>;
-  getTaskProgress?: (taskId: string, requestedBy?: string) => DurableTaskProgress | undefined;
-}
-
-interface A2ASpaceAdminService {
-  createSpace: (input: Record<string, unknown>) => Promise<{ id: string }>;
-  addAgent: (input: {
-    spaceId: string;
-    agentId: string;
-    profileId: string;
-    role: string;
-    isPrimary: boolean;
-    spawnContext?: string;
-  }) => Promise<unknown>;
-}
-
-interface ParsedTaskMetadata {
-  templateId?: string;
-  templateHint?: string;
-  agentCount?: number;
-  agentTier?: string;
-  topology?: A2ATopology;
-  maxTurns?: number;
-  spaceId?: string;
-}
 
 export interface A2AHandlerOptions {
   spaceManager: SpaceManager;
@@ -451,261 +392,36 @@ export class A2AHandler {
   }
 
   private streamTaskEvents(taskId: string): Response {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      return Response.json({ error: `Task ${taskId} not found` }, { status: 404 });
-    }
-
-    const encoder = new TextEncoder();
-    let closed = false;
-    const unsubscribers: Array<() => void> = [];
-
-    const cleanup = () => {
-      if (closed) return;
-      closed = true;
-      while (unsubscribers.length > 0) {
-        const unsubscribe = unsubscribers.pop();
-        try {
-          unsubscribe?.();
-        } catch {
-          // Ignore unsubscribe failures.
-        }
-      }
-    };
-
-    const safeEnqueue = (controller: ReadableStreamDefaultController, payload: A2AStreamEvent) => {
-      if (closed) return;
-      try {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
-      } catch {
-        cleanup();
-      }
-    };
-
-    const safeClose = (controller: ReadableStreamDefaultController) => {
-      if (closed) return;
-      cleanup();
-      try {
-        controller.close();
-      } catch {
-        // Ignore duplicate close.
-      }
-    };
-
-    const stream = new ReadableStream({
-      start: (controller) => {
-        safeEnqueue(controller, { type: "task.started", taskId });
-
-        unsubscribers.push(this.options.eventBus.on("task.progress", (event) => {
-          const current = this.tasks.get(taskId);
-          if (!current || taskIdFromEvent(event) !== taskId) return;
-          const message = messageFromTaskProgressEvent(event);
-          if (!message) return;
-          safeEnqueue(controller, {
-            type: "task.progress",
-            taskId,
-            message,
-          });
-        }));
-
-        unsubscribers.push(this.options.eventBus.on("task.completed", (event) => {
-          const current = this.tasks.get(taskId);
-          if (!current || taskIdFromEvent(event) !== taskId) return;
-          safeEnqueue(controller, {
-            type: "task.completed",
-            task: this.serializeTask(current),
-          });
-          safeClose(controller);
-        }));
-
-        unsubscribers.push(this.options.eventBus.on("task.failed", (event) => {
-          const current = this.tasks.get(taskId);
-          if (!current || taskIdFromEvent(event) !== taskId) return;
-          safeEnqueue(controller, {
-            type: "task.failed",
-            taskId,
-            error: errorFromTaskFailedEvent(event) ?? "Task failed",
-          });
-          safeClose(controller);
-        }));
-
-        unsubscribers.push(this.options.eventBus.on("task.input-required", (event) => {
-          const current = this.tasks.get(taskId);
-          if (!current || taskIdFromEvent(event) !== taskId) return;
-          const message = messageFromTaskInputRequiredEvent(event) ?? current.messages.at(-1);
-          if (!message) return;
-          safeEnqueue(controller, {
-            type: "task.input-required",
-            taskId,
-            message,
-          });
-        }));
-
-        unsubscribers.push(this.options.eventBus.on("space.turn_event", (event) => {
-          const current = this.tasks.get(taskId);
-          if (!current || !matchesTurnEvent(current, event)) return;
-          const turnEventType = eventTypeFromTurnEvent(event);
-          if (turnEventType === "text_delta") {
-            const text = textFromTurnEvent(event);
-            if (!text) return;
-            safeEnqueue(controller, {
-              type: "task.progress",
-              taskId,
-              message: agentTextMessage(text),
-            });
-            return;
-          }
-          if (turnEventType === "feedback_requested" && current.state === "input-required") {
-            const message = current.messages.at(-1);
-            if (!message) return;
-            safeEnqueue(controller, {
-              type: "task.input-required",
-              taskId,
-              message,
-            });
-            return;
-          }
-          if (turnEventType === "error" && current.state === "failed") {
-            safeEnqueue(controller, {
-              type: "task.failed",
-              taskId,
-              error: errorFromTurnEvent(event) ?? "Task failed",
-            });
-            safeClose(controller);
-            return;
-          }
-          if (turnEventType === "turn_completed" && current.state === "completed") {
-            safeEnqueue(controller, {
-              type: "task.completed",
-              task: this.serializeTask(current),
-            });
-            safeClose(controller);
-          }
-        }));
-
-        unsubscribers.push(this.options.eventBus.on("space.orchestrator_event", (event) => {
-          const current = this.tasks.get(taskId);
-          if (!current || !matchesOrchestratorEvent(current, event)) return;
-          const eventType = orchestratorEventType(event);
-          if (eventType === "summary.completed" && current.state === "completed") {
-            safeEnqueue(controller, {
-              type: "task.completed",
-              task: this.serializeTask(current),
-            });
-            safeClose(controller);
-            return;
-          }
-          if (eventType === "summary.failed" && current.state === "failed") {
-            safeEnqueue(controller, {
-              type: "task.failed",
-              taskId,
-              error: errorFromOrchestratorEvent(event) ?? "Task failed",
-            });
-            safeClose(controller);
-          }
-        }));
-      },
-      cancel: () => {
-        cleanup();
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
+    return streamA2ATaskEvents({
+      taskId,
+      tasks: this.tasks,
+      eventBus: this.options.eventBus,
+      serializeTask: this.serializeTask.bind(this),
     });
   }
 
   private handleTurnEvent(event: GatewayEvent): void {
-    for (const task of this.tasks.values()) {
-      if (!matchesTurnEvent(task, event)) continue;
-      const turnEventType = eventTypeFromTurnEvent(event);
-      if (turnEventType === "feedback_requested") {
-        task.state = "input-required";
-        appendAgentMessage(task, feedbackDescriptionFromTurnEvent(event) ?? "Input required");
-        continue;
-      }
-      if (turnEventType === "error") {
-        task.state = "failed";
-        appendAgentMessage(task, errorFromTurnEvent(event) ?? "Task execution failed");
-        continue;
-      }
-      if (turnEventType !== "turn_completed") {
-        continue;
-      }
-
-      const topology = topologyFromTurnEvent(event) ?? task.topology;
-      if (topology) {
-        task.topology = topology;
-      }
-      if (topology && topology !== "direct") {
-        task.state = "working";
-        continue;
-      }
-
-      task.state = "completed";
-      appendAgentMessage(task, finalTextFromTurnEvent(event));
-    }
+    applyTurnEvent(this.tasks.values(), event);
   }
 
   private handleOrchestratorEvent(event: GatewayEvent): void {
-    for (const task of this.tasks.values()) {
-      if (!matchesOrchestratorEvent(task, event)) continue;
-      const eventType = orchestratorEventType(event);
-      if (eventType === "summary.completed") {
-        task.state = "completed";
-        if (!task.turnId) {
-          task.turnId = normalizeOptional(orchestratorCorrelationId(event));
-        }
-        appendAgentMessage(task, summaryTextFromOrchestratorEvent(event));
-        continue;
-      }
-      if (eventType === "summary.failed") {
-        task.state = "failed";
-        if (!task.turnId) {
-          task.turnId = normalizeOptional(orchestratorCorrelationId(event));
-        }
-        appendAgentMessage(task, errorFromOrchestratorEvent(event) ?? "Task orchestration failed");
-      }
-    }
+    applyOrchestratorEvent(this.tasks.values(), event);
   }
 
   private handleTaskProgressEvent(event: GatewayEvent): void {
-    const taskId = taskIdFromEvent(event);
-    if (!taskId) return;
-    const task = this.tasks.get(taskId);
-    if (!task) return;
-    task.state = "working";
+    applyTaskProgressEvent(this.tasks, event);
   }
 
   private handleTaskCompletedEvent(event: GatewayEvent): void {
-    const taskId = taskIdFromEvent(event);
-    if (!taskId) return;
-    const task = this.tasks.get(taskId);
-    if (!task) return;
-    task.state = "completed";
-    appendAgentMessage(task, summaryTextFromTaskCompletedEvent(event));
+    applyTaskCompletedEvent(this.tasks, event);
   }
 
   private handleTaskFailedEvent(event: GatewayEvent): void {
-    const taskId = taskIdFromEvent(event);
-    if (!taskId) return;
-    const task = this.tasks.get(taskId);
-    if (!task) return;
-    task.state = "failed";
-    appendAgentMessage(task, errorFromTaskFailedEvent(event) ?? "Task failed");
+    applyTaskFailedEvent(this.tasks, event);
   }
 
   private handleTaskInputRequiredEvent(event: GatewayEvent): void {
-    const taskId = taskIdFromEvent(event);
-    if (!taskId) return;
-    const task = this.tasks.get(taskId);
-    if (!task) return;
-    task.state = "input-required";
-    appendAgentMessage(task, textFromTaskInputRequiredEvent(event) ?? "Input required");
+    applyTaskInputRequiredEvent(this.tasks, event);
   }
 
   private serializeTask(task: TrackedTask): A2ATask {
@@ -725,229 +441,4 @@ export class A2AHandler {
       deviceId: normalizeOptional(resolved.deviceId),
     };
   }
-}
-
-function parseTaskMetadata(metadata: Record<string, unknown> | undefined): ParsedTaskMetadata {
-  if (!metadata) return {};
-  return {
-    templateId: normalizeOptional(asString(metadata.templateId)),
-    templateHint: normalizeOptional(asString(metadata.templateHint)),
-    agentCount: normalizePositiveInteger(metadata.agentCount),
-    agentTier: normalizeOptional(asString(metadata.agentTier)),
-    topology: normalizeTopology(asString(metadata.topology)),
-    maxTurns: normalizePositiveInteger(metadata.maxTurns),
-    spaceId: normalizeOptional(asString(metadata.spaceId)),
-  };
-}
-
-function hydrateTaskFromProgress(progress: DurableTaskProgress): TrackedTask {
-  const state = normalizeTaskState(progress.state);
-  const detail = state === "completed"
-    ? normalizeOptional(progress.progress?.finalSummaryText)
-    : state === "failed"
-      ? normalizeOptional(progress.errorMessage) ?? normalizeOptional(progress.progress?.latestMessage)
-      : normalizeOptional(progress.progress?.latestMessage);
-  const messages: A2AMessage[] = [
-    {
-      role: "user",
-      parts: [{ type: "text", text: progress.taskDescription }],
-    },
-  ];
-  if (detail) {
-    messages.push(agentTextMessage(detail));
-  }
-  return {
-    taskId: progress.taskId,
-    spaceId: progress.spaceId,
-    turnId: normalizeOptional(progress.progress?.rootTurnId),
-    state,
-    messages,
-    createdAt: new Date(progress.createdAt),
-    topology: normalizeTopology(progress.topology),
-  };
-}
-
-function buildTaskMetadata(task: TrackedTask): Record<string, unknown> | undefined {
-  const metadata: Record<string, unknown> = {};
-  if (task.spaceId) {
-    metadata.spaceId = task.spaceId;
-  }
-  if (task.turnId) {
-    metadata.rootTurnId = task.turnId;
-  }
-  if (task.topology) {
-    metadata.conversationTopology = task.topology;
-  }
-  return Object.keys(metadata).length > 0 ? metadata : undefined;
-}
-
-function normalizeTaskState(value: string): A2ATaskState {
-  switch (value) {
-    case "submitted":
-      return "submitted";
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "canceled":
-      return "canceled";
-    case "input_required":
-    case "input-required":
-      return "input-required";
-    default:
-      return "working";
-  }
-}
-
-function appendAgentMessage(task: TrackedTask, text: string | undefined): void {
-  const normalized = normalizeOptional(text);
-  if (!normalized) return;
-  const last = task.messages.at(-1);
-  if (
-    last?.role === "agent"
-    && last.parts.length === 1
-    && last.parts[0]?.type === "text"
-    && last.parts[0].text === normalized
-  ) {
-    return;
-  }
-  task.messages.push(agentTextMessage(normalized));
-}
-
-function agentTextMessage(text: string): A2AMessage {
-  return {
-    role: "agent",
-    parts: [{ type: "text", text }],
-  };
-}
-
-function matchesTurnEvent(task: TrackedTask, event: GatewayEvent): boolean {
-  if (eventSpaceId(event) !== task.spaceId) return false;
-  const eventTurnId = normalizeOptional(asString((event as { turnId?: unknown }).turnId));
-  return !task.turnId || !eventTurnId || task.turnId === eventTurnId;
-}
-
-function matchesOrchestratorEvent(task: TrackedTask, event: GatewayEvent): boolean {
-  if (eventSpaceId(event) !== task.spaceId) return false;
-  const correlationId = normalizeOptional(orchestratorCorrelationId(event));
-  return !task.turnId || !correlationId || task.turnId === correlationId;
-}
-
-function eventSpaceId(event: GatewayEvent): string | undefined {
-  return normalizeOptional(asString((event as { spaceId?: unknown }).spaceId));
-}
-
-function taskIdFromEvent(event: GatewayEvent): string | undefined {
-  const data = (event as { data?: { taskId?: unknown } }).data;
-  return normalizeOptional(asString(data?.taskId));
-}
-
-function messageFromTaskProgressEvent(event: GatewayEvent): A2AMessage | undefined {
-  const data = (event as { data?: { message?: unknown } }).data;
-  const text = normalizeOptional(asString(data?.message));
-  return text ? agentTextMessage(text) : undefined;
-}
-
-function summaryTextFromTaskCompletedEvent(event: GatewayEvent): string | undefined {
-  const data = (event as { data?: { finalSummaryText?: unknown } }).data;
-  return normalizeOptional(asString(data?.finalSummaryText));
-}
-
-function messageFromTaskInputRequiredEvent(event: GatewayEvent): A2AMessage | undefined {
-  const text = textFromTaskInputRequiredEvent(event);
-  return text ? agentTextMessage(text) : undefined;
-}
-
-function textFromTaskInputRequiredEvent(event: GatewayEvent): string | undefined {
-  const data = (event as { data?: { message?: unknown } }).data;
-  return normalizeOptional(asString(data?.message));
-}
-
-function errorFromTaskFailedEvent(event: GatewayEvent): string | undefined {
-  const data = (event as { data?: { error?: unknown } }).data;
-  return normalizeOptional(asString(data?.error));
-}
-
-function eventTypeFromTurnEvent(event: GatewayEvent): string | undefined {
-  const turnEvent = (event as { event?: { type?: unknown } }).event;
-  return normalizeOptional(asString(turnEvent?.type));
-}
-
-function textFromTurnEvent(event: GatewayEvent): string | undefined {
-  const turnEvent = (event as { event?: { text?: unknown } }).event;
-  return normalizeOptional(asString(turnEvent?.text));
-}
-
-function feedbackDescriptionFromTurnEvent(event: GatewayEvent): string | undefined {
-  const turnEvent = (event as { event?: { request?: { description?: unknown } } }).event;
-  return normalizeOptional(asString(turnEvent?.request?.description));
-}
-
-function errorFromTurnEvent(event: GatewayEvent): string | undefined {
-  const turnEvent = (event as { event?: { error?: { message?: unknown } } }).event;
-  return normalizeOptional(asString(turnEvent?.error?.message));
-}
-
-function finalTextFromTurnEvent(event: GatewayEvent): string | undefined {
-  const turnEvent = (event as { event?: { result?: { finalMessage?: { content?: unknown } } } }).event;
-  return normalizeOptional(asString(turnEvent?.result?.finalMessage?.content));
-}
-
-function topologyFromTurnEvent(event: GatewayEvent): A2ATopology | undefined {
-  return normalizeTopology(asString((event as { conversationTopology?: unknown }).conversationTopology));
-}
-
-function orchestratorEventType(event: GatewayEvent): string | undefined {
-  return normalizeOptional(asString((event as { eventType?: unknown }).eventType));
-}
-
-function orchestratorCorrelationId(event: GatewayEvent): string | undefined {
-  return normalizeOptional(asString((event as { correlationId?: unknown }).correlationId));
-}
-
-function summaryTextFromOrchestratorEvent(event: GatewayEvent): string | undefined {
-  const orchestratorEvent = (event as { event?: { summary?: { finalSummaryText?: unknown } } }).event;
-  return normalizeOptional(asString(orchestratorEvent?.summary?.finalSummaryText));
-}
-
-function errorFromOrchestratorEvent(event: GatewayEvent): string | undefined {
-  const orchestratorEvent = (event as { event?: { summary?: { failureReason?: unknown } } }).event;
-  return normalizeOptional(asString(orchestratorEvent?.summary?.failureReason));
-}
-
-function summarizeTaskName(inputText: string): string {
-  const compact = inputText.trim().replace(/\s+/g, " ");
-  if (compact.length <= 60) return compact;
-  return `${compact.slice(0, 57)}...`;
-}
-
-function normalizePositiveInteger(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const normalized = Math.floor(value);
-  return normalized > 0 ? normalized : undefined;
-}
-
-function normalizeTopology(value: string | undefined): A2ATopology | undefined {
-  if (value === "direct" || value === "shared_team_chat" || value === "broadcast_team") {
-    return value;
-  }
-  return undefined;
-}
-
-function normalizeRequired(value: string | undefined, field: string): string {
-  const normalized = normalizeOptional(value);
-  if (!normalized) {
-    throw new Error(`${field} is required`);
-  }
-  return normalized;
-}
-
-function normalizeOptional(value: string | undefined): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
 }

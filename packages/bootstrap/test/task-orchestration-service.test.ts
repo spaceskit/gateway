@@ -105,7 +105,6 @@ function createProfileRepo() {
     personality_prompt: string;
     default_skill_set_ids_json: string;
     provider_hint: string;
-    model_hint: string;
     model_config_json: string;
   }>();
 
@@ -116,7 +115,7 @@ function createProfileRepo() {
     canModerate: boolean;
     preferredTier?: string;
     providerHint?: string;
-    modelHint?: string;
+    modelId?: string;
   }) => {
     rows.set(input.profileId, {
       profile_id: input.profileId,
@@ -131,8 +130,9 @@ function createProfileRepo() {
       personality_prompt: `${input.name} prompt`,
       default_skill_set_ids_json: "[]",
       provider_hint: input.providerHint ?? "",
-      model_hint: input.modelHint ?? "",
-      model_config_json: "{}",
+      model_config_json: JSON.stringify({
+        preferredModels: input.modelId ? [input.modelId] : [],
+      }),
     });
   };
 
@@ -167,7 +167,6 @@ function createProfileRepo() {
         personalityPrompt?: string;
         canModerate?: boolean;
         providerHint?: string;
-        modelHint?: string;
         modelConfig?: unknown;
       }) {
         rows.set(input.profileId, {
@@ -182,7 +181,6 @@ function createProfileRepo() {
           personality_prompt: input.personalityPrompt ?? "",
           default_skill_set_ids_json: "[]",
           provider_hint: input.providerHint ?? "",
-          model_hint: input.modelHint ?? "",
           model_config_json: JSON.stringify(input.modelConfig ?? {}),
         });
       },

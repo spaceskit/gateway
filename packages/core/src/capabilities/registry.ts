@@ -21,6 +21,11 @@ import type {
 import type { EventBus } from "../events/event-bus.js";
 import type { TurnAccessMode } from "../agents/model-provider.js";
 
+import { CapabilityDeniedError, CapabilityNotAvailableError } from "./capability-errors.js";
+import { defaultOperationMetadata } from "./capability-operation-metadata.js";
+
+export { CapabilityDeniedError, CapabilityNotAvailableError } from "./capability-errors.js";
+
 export interface CapabilityHandler {
   invoke(
     operation: string,
@@ -466,69 +471,5 @@ export class CapabilityRegistry {
       context: input.context,
       hostInvoke,
     });
-  }
-}
-
-const DEFAULT_PATH_ARGS = [
-  "path",
-  "filePath",
-  "targetPath",
-  "sourcePath",
-  "destinationPath",
-  "directory",
-  "cwd",
-];
-
-const DEFAULT_COMMAND_ARGS = ["command", "cmd", "script", "program"];
-
-function defaultOperationMetadata(
-  capability: CapabilityType,
-  operation: string,
-): CapabilityOperationMetadata {
-  const normalizedOperation = operation.trim().toLowerCase();
-  const filesystemWrite = capability === "files" && isLikelyFilesystemWriteOperation(normalizedOperation);
-  const requiresShell = capability === "shell";
-  const requiresNetwork = capability === "browser" || capability === "messaging" || capability === "mcp";
-
-  return {
-    requiresShell,
-    requiresNetwork,
-    filesystemWrite,
-    pathArgs: capability === "files" ? DEFAULT_PATH_ARGS : undefined,
-    commandArgs: requiresShell ? DEFAULT_COMMAND_ARGS : undefined,
-  };
-}
-
-function isLikelyFilesystemWriteOperation(operation: string): boolean {
-  if (!operation) return false;
-  return (
-    operation.includes("write")
-    || operation.includes("append")
-    || operation.includes("create")
-    || operation.includes("update")
-    || operation.includes("save")
-    || operation.includes("delete")
-    || operation.includes("remove")
-    || operation.includes("rename")
-    || operation.includes("move")
-    || operation.includes("mkdir")
-    || operation.includes("touch")
-    || operation.includes("copy")
-  );
-}
-
-export class CapabilityNotAvailableError extends Error {
-  constructor(capability: string, operation: string) {
-    super(`No available provider for ${capability}.${operation}`);
-    this.name = "CapabilityNotAvailableError";
-  }
-}
-
-export class CapabilityDeniedError extends Error {
-  readonly code = "PERMISSION_DENIED" as const;
-
-  constructor(capability: string, operation: string, reason?: string) {
-    super(reason ?? `Capability denied by gateway policy: ${capability}.${operation}`);
-    this.name = "CapabilityDeniedError";
   }
 }

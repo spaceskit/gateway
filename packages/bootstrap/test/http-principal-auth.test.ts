@@ -7,11 +7,11 @@ import {
 import { TEST_HTTP_PRINCIPAL_SECRET } from "./http-principal-test-helpers.js";
 
 describe("resolveHttpPrincipalContext", () => {
-  test("rejects legacy principal headers", () => {
+  test("rejects unsigned principal headers", () => {
     const request = new Request("http://localhost/test", {
       headers: {
-        "x-spaceskit-principal-id": "principal-legacy",
-        "x-spaceskit-device-id": "device-legacy",
+        "x-spaceskit-principal-id": "principal-unsigned",
+        "x-spaceskit-device-id": "device-unsigned",
       },
     });
     const result = resolveHttpPrincipalContext(request);
@@ -35,7 +35,7 @@ describe("resolveHttpPrincipalContext", () => {
   test("rejects raw bearer tokens", () => {
     const request = new Request("http://localhost/test", {
       headers: {
-        authorization: "Bearer principal-legacy",
+        authorization: "Bearer principal-unsigned",
       },
     });
     const result = resolveHttpPrincipalContext(request, {

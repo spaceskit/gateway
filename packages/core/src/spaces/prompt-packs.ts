@@ -96,7 +96,7 @@ export const PROMPT_PACKS: PromptPackDefinition[] = [
 
 const PROMPT_PACK_BY_ID = new Map(PROMPT_PACKS.map((pack) => [pack.id, pack]));
 
-const LEGACY_TURN_MODEL_TO_TOPOLOGY: Record<TurnModelStrategy, ConversationTopology> = {
+const TURN_MODEL_TO_TOPOLOGY: Record<TurnModelStrategy, ConversationTopology> = {
   sequential_all: "shared_team_chat",
   primary_only: "direct",
   first_success: "direct",
@@ -115,7 +115,7 @@ export function resolveConversationTopology(
   if (normalized === "shared_team_chat") return "shared_team_chat";
   if (normalized === "broadcast_team") return "broadcast_team";
   if (turnModel) {
-    return LEGACY_TURN_MODEL_TO_TOPOLOGY[turnModel] ?? "direct";
+    return TURN_MODEL_TO_TOPOLOGY[turnModel] ?? "direct";
   }
   return "direct";
 }

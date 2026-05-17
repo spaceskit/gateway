@@ -250,7 +250,7 @@ describe("MessageRouter space sharing handlers", () => {
       makeMessage(MessageTypes.SPACE_SHARE_JOIN, {
         spaceId: "space-main",
         inviteToken: "token-123",
-        identityModeHint: "legacy_mode",
+        identityModeHint: "stale_mode",
       }),
     );
 

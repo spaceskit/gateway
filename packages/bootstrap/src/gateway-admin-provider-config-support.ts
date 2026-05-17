@@ -78,12 +78,12 @@ export function mergeAllowedProviderModels(input: {
   providerId: string;
   model: string;
   modelIds: string[];
-  detectedModelHints: string[];
+  detectedModelIds: string[];
 }): string[] {
   const merged = uniqueModelIds([
     input.model,
     ...input.modelIds,
-    ...input.detectedModelHints,
+    ...input.detectedModelIds,
   ]);
   const normalized = normalizeProviderModelList(input.providerId, merged);
   return normalized.length > 0 ? normalized : [input.model];

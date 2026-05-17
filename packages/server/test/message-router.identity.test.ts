@@ -70,7 +70,6 @@ describe("MessageRouter identity handlers", () => {
           instructions: "",
           defaultSkillIds: [],
           providerHint: "openai",
-          modelHint: "openai/gpt-4.1",
           modelConfig: { preferredModels: ["openai/gpt-4.1"] },
           isDefault: false,
           status: "active",
@@ -90,7 +89,6 @@ describe("MessageRouter identity handlers", () => {
               instructions: "",
               defaultSkillIds: [],
               providerHint: "anthropic",
-              modelHint: "anthropic/claude-sonnet-4-5",
               modelConfig: { preferredModels: ["anthropic/claude-sonnet-4-5"] },
               isDefault: false,
               status: "active",
@@ -138,7 +136,7 @@ describe("MessageRouter identity handlers", () => {
       makeMessage(MessageTypes.IDENTITY_UPDATE_AGENT_DEFINITION, {
         agentDefinitionId: "main-profile",
         providerHint: "anthropic",
-        modelHint: "anthropic/claude-sonnet-4-5",
+        modelConfig: { preferredModels: ["anthropic/claude-sonnet-4-5"] },
       }),
     );
 
@@ -230,7 +228,6 @@ describe("MessageRouter identity handlers", () => {
           instructions: "Stay concise.",
           defaultSkillIds: [],
           providerHint: "openai",
-          modelHint: "openai/gpt-4.1",
           modelConfig: { preferredModels: ["openai/gpt-4.1"] },
           isDefault: true,
           status: "active",
@@ -251,6 +248,7 @@ describe("MessageRouter identity handlers", () => {
 
     expect(response?.type).toBe(MessageTypes.IDENTITY_LIST_AGENT_DEFINITIONS);
     expect((response?.payload as any).agentDefinitions[0]?.agentDefinitionId).toBe("main-profile");
+    expect("modelId" in (response?.payload as any).agentDefinitions[0]).toBe(false);
   });
 
   test("routes identity.create/update/archive_agent_definition", async () => {
@@ -264,7 +262,6 @@ describe("MessageRouter identity handlers", () => {
         instructions: "",
         defaultSkillIds: [],
         providerHint: "openai",
-        modelHint: "openai/gpt-4.1",
         modelConfig: { preferredModels: ["openai/gpt-4.1"] },
         isDefault: false,
         status: "active",
@@ -284,7 +281,6 @@ describe("MessageRouter identity handlers", () => {
             instructions: payload.instructions ?? "",
             defaultSkillIds: payload.defaultSkillIds ?? [],
             providerHint: payload.providerHint,
-            modelHint: payload.modelHint,
             modelConfig: payload.modelConfig,
             isDefault: payload.isDefault === true,
             status: "active",
@@ -307,7 +303,6 @@ describe("MessageRouter identity handlers", () => {
             instructions: payload.instructions ?? "",
             defaultSkillIds: payload.defaultSkillIds ?? [],
             providerHint: payload.providerHint ?? "openai",
-            modelHint: payload.modelHint ?? "openai/gpt-4.1",
             modelConfig: payload.modelConfig ?? { preferredModels: ["openai/gpt-4.1"] },
             isDefault: false,
             status: "active",
@@ -330,7 +325,6 @@ describe("MessageRouter identity handlers", () => {
             instructions: "",
             defaultSkillIds: [],
             providerHint: "openai",
-            modelHint: "openai/gpt-4.1",
             modelConfig: { preferredModels: ["openai/gpt-4.1"] },
             isDefault: false,
             status: "archived",
@@ -349,7 +343,6 @@ describe("MessageRouter identity handlers", () => {
       makeMessage(MessageTypes.IDENTITY_CREATE_AGENT_DEFINITION, {
         name: "Created Profile",
         providerHint: "openai",
-        modelHint: "openai/gpt-4.1",
         modelConfig: { preferredModels: ["openai/gpt-4.1"] },
       }),
     );
@@ -359,7 +352,6 @@ describe("MessageRouter identity handlers", () => {
       makeClient(),
       makeMessage(MessageTypes.IDENTITY_UPDATE_AGENT_DEFINITION, {
         agentDefinitionId: "existing-profile",
-        modelHint: "openai/gpt-4.1-mini",
         modelConfig: { preferredModels: ["openai/gpt-4.1-mini"] },
       }),
     );

@@ -1,4 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { InMemoryAppleNotificationLifecycleRepository } from "./apple-notification-memory-repository.js";
+import {
+  isInQuietHours,
+  normalizeAction,
+  normalizeActionList,
+  normalizeCooldownSeconds,
+  normalizeMinute,
+  normalizeOptionalString,
+  normalizePlatform,
+  normalizeRequired,
+  serviceError,
+} from "./apple-notification-lifecycle-helpers.js";
+
+export { InMemoryAppleNotificationLifecycleRepository } from "./apple-notification-memory-repository.js";
 import type { Notification } from "./types.js";
 
 export type ApplePushPlatform = "ios" | "macos";
@@ -270,7 +284,10 @@ export class AppleNotificationLifecycleService {
       ...current,
       enabled: patch.enabled ?? current.enabled,
       allowCritical: patch.allowCritical ?? current.allowCritical,
-      cooldownSeconds: normalizeCooldownSeconds(patch.cooldownSeconds ?? current.cooldownSeconds),
+      cooldownSeconds: normalizeCooldownSeconds(
+        patch.cooldownSeconds ?? current.cooldownSeconds,
+        DEFAULT_COOLDOWN_SECONDS,
+      ),
       quietHours: {
         ...current.quietHours,
         ...patch.quietHours,
@@ -460,221 +477,4 @@ export class AppleNotificationLifecycleService {
       updatedAt: this.now().toISOString(),
     };
   }
-}
-
-export class InMemoryAppleNotificationLifecycleRepository implements AppleNotificationLifecycleRepository {
-  private registrations = new Map<string, ApplePushDeviceRegistration>();
-  private preferences = new Map<string, AppleNotificationPreferences>();
-  private deliveries = new Map<string, AppleNotificationDelivery>();
-
-  upsertDeviceRegistration(input: RegisterApplePushDeviceInput & {
-    registrationId: string;
-    tokenKind: ApplePushTokenKind;
-    topic: string;
-    environment: ApplePushEnvironment;
-    createdAt: string;
-    updatedAt: string;
-    lastSeenAt: string;
-  }): ApplePushDeviceRegistration {
-    const existing = Array.from(this.registrations.values()).find((registration) =>
-      registration.principalId === input.principalId
-      && registration.deviceId === (input.deviceId ?? "")
-      && registration.tokenKind === input.tokenKind
-      && registration.environment === input.environment
-      && registration.topic === input.topic
-    );
-    const registrationId = existing?.registrationId ?? input.registrationId;
-    const createdAt = existing?.createdAt ?? input.createdAt;
-    const registration: ApplePushDeviceRegistration = {
-      registrationId,
-      principalId: input.principalId,
-      deviceId: input.deviceId ?? "",
-      platform: input.platform,
-      tokenKind: input.tokenKind,
-      pushToken: input.pushToken,
-      topic: input.topic,
-      environment: input.environment,
-      appBundleId: normalizeOptionalString(input.appBundleId),
-      deviceName: normalizeOptionalString(input.deviceName),
-      enabled: true,
-      createdAt,
-      updatedAt: input.updatedAt,
-      lastSeenAt: input.lastSeenAt,
-      staleAt: undefined,
-      metadata: input.metadata ?? {},
-    };
-    this.registrations.set(registrationId, registration);
-    return registration;
-  }
-
-  deleteDeviceRegistration(principalId: string, registrationId: string): boolean {
-    const registration = this.registrations.get(registrationId);
-    if (!registration || registration.principalId !== principalId) return false;
-    return this.registrations.delete(registrationId);
-  }
-
-  listDeviceRegistrations(principalId: string, tokenKind?: ApplePushTokenKind): ApplePushDeviceRegistration[] {
-    return Array.from(this.registrations.values()).filter((registration) =>
-      registration.principalId === principalId
-      && (tokenKind === undefined || registration.tokenKind === tokenKind)
-    );
-  }
-
-  getPreferences(principalId: string): AppleNotificationPreferences | undefined {
-    return this.preferences.get(principalId);
-  }
-
-  setPreferences(principalId: string, preferences: AppleNotificationPreferences): AppleNotificationPreferences {
-    this.preferences.set(principalId, preferences);
-    return preferences;
-  }
-
-  recordDelivery(input: RecordAppleNotificationDeliveryInput & {
-    deliveryId: string;
-    status: AppleNotificationDeliveryStatus;
-    createdAt: string;
-  }): AppleNotificationDelivery {
-    const delivery: AppleNotificationDelivery = {
-      deliveryId: input.deliveryId,
-      principalId: input.principalId,
-      registrationId: normalizeOptionalString(input.registrationId),
-      notificationId: normalizeOptionalString(input.notificationId),
-      feedbackId: normalizeOptionalString(input.feedbackId),
-      callId: normalizeOptionalString(input.callId),
-      gatewayId: normalizeOptionalString(input.gatewayId),
-      channel: input.channel,
-      status: input.status,
-      action: input.action,
-      deepLink: normalizeOptionalString(input.deepLink),
-      errorMessage: normalizeOptionalString(input.errorMessage),
-      createdAt: input.createdAt,
-      sentAt: normalizeOptionalString(input.sentAt),
-      openedAt: normalizeOptionalString(input.openedAt),
-      actionedAt: normalizeOptionalString(input.actionedAt),
-      payload: input.payload ?? {},
-    };
-    this.deliveries.set(`${delivery.principalId}:${delivery.deliveryId}`, delivery);
-    return delivery;
-  }
-
-  getDelivery(principalId: string, deliveryId: string): AppleNotificationDelivery | undefined {
-    return this.deliveries.get(`${principalId}:${deliveryId}`);
-  }
-
-  updateDelivery(input: {
-    principalId: string;
-    deliveryId: string;
-    status?: AppleNotificationDeliveryStatus;
-    action?: AppleNotificationAction;
-    openedAt?: string;
-    actionedAt?: string;
-    errorMessage?: string;
-  }): AppleNotificationDelivery | undefined {
-    const existing = this.getDelivery(input.principalId, input.deliveryId);
-    if (!existing) return undefined;
-    const next: AppleNotificationDelivery = {
-      ...existing,
-      status: input.status ?? existing.status,
-      action: input.action ?? existing.action,
-      openedAt: input.openedAt ?? existing.openedAt,
-      actionedAt: input.actionedAt ?? existing.actionedAt,
-      errorMessage: input.errorMessage ?? existing.errorMessage,
-    };
-    this.deliveries.set(`${next.principalId}:${next.deliveryId}`, next);
-    return next;
-  }
-
-  pruneStaleRegistrations(beforeIso: string): number {
-    let pruned = 0;
-    for (const registration of Array.from(this.registrations.values())) {
-      const staleAt = normalizeOptionalString(registration.staleAt);
-      if (staleAt && staleAt <= beforeIso) {
-        this.registrations.delete(registration.registrationId);
-        pruned++;
-      }
-    }
-    return pruned;
-  }
-
-  markRegistrationStale(registrationId: string, staleAt: string): void {
-    const registration = this.registrations.get(registrationId);
-    if (!registration) return;
-    this.registrations.set(registrationId, {
-      ...registration,
-      staleAt,
-      enabled: false,
-    });
-  }
-}
-
-function normalizeRequired(value: unknown, name: string): string {
-  const normalized = normalizeOptionalString(value);
-  if (!normalized) {
-    throw serviceError("INVALID_ARGUMENT", `${name} is required`);
-  }
-  return normalized;
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizePlatform(value: ApplePushPlatform): ApplePushPlatform {
-  if (value === "ios" || value === "macos") return value;
-  throw serviceError("INVALID_ARGUMENT", "platform must be ios or macos");
-}
-
-function normalizeAction(value: AppleNotificationAction): AppleNotificationAction {
-  if (
-    value === "approve"
-    || value === "reject"
-    || value === "defer"
-    || value === "revise"
-    || value === "open_app"
-  ) {
-    return value;
-  }
-  throw serviceError("INVALID_ARGUMENT", "action is not supported");
-}
-
-function normalizeActionList(value: unknown): AppleNotificationAction[] {
-  if (!Array.isArray(value)) return ["open_app"];
-  return value.filter((entry): entry is AppleNotificationAction =>
-    entry === "approve"
-    || entry === "reject"
-    || entry === "defer"
-    || entry === "revise"
-    || entry === "open_app"
-  );
-}
-
-function normalizeMinute(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  const normalized = Math.floor(value);
-  return Math.max(0, Math.min((24 * 60) - 1, normalized));
-}
-
-function normalizeCooldownSeconds(value: number): number {
-  if (!Number.isFinite(value)) return DEFAULT_COOLDOWN_SECONDS;
-  return Math.max(0, Math.floor(value));
-}
-
-function isInQuietHours(now: Date, quietHours: AppleNotificationQuietHours): boolean {
-  if (!quietHours.enabled) return false;
-  const minute = (now.getUTCHours() * 60) + now.getUTCMinutes();
-  const start = normalizeMinute(quietHours.startMinute);
-  const end = normalizeMinute(quietHours.endMinute);
-  if (start === end) return true;
-  if (start < end) {
-    return minute >= start && minute < end;
-  }
-  return minute >= start || minute < end;
-}
-
-function serviceError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code: string };
-  error.code = code;
-  return error;
 }

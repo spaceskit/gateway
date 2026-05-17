@@ -347,7 +347,7 @@ describe("CliExecutorModelProvider command building", () => {
       messages: [{ role: "user", content: "Run the Jira bridge." }],
       accessMode: "full_access",
       workingDirectory: "/tmp/workspace-root",
-      mcpBridgeConfig: {
+      gatewayToolBridgeConfig: {
         bridgeScriptPath: "/tmp/gateway-mcp-bridge-stdio.ts",
         toolDefsJson: JSON.stringify([
           { name: "shell.jira.me" },

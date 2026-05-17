@@ -85,9 +85,6 @@ export interface GatewayToolBridgeConfig {
   socketPath: string;
 }
 
-/** @deprecated Use GatewayToolBridgeConfig instead. */
-export type McpBridgeConfig = GatewayToolBridgeConfig;
-
 export interface GenerateOptions {
   messages: ModelMessage[];
   mode?: TurnExecutionMode;
@@ -105,18 +102,12 @@ export interface GenerateOptions {
   accessMode?: TurnAccessMode;
   /** Whether the approval_bypass dangerous capability is active for this turn. */
   approvalBypassEnabled?: boolean;
-  /** @deprecated Use accessMode instead. */
-  nativeCliToolsEnabled?: boolean;
   /**
    * Gateway tool bridge configuration for mediated executors. When set, the
    * runtime can expose gateway tools through an MCP bridge or dynamic tool
    * proxy, depending on provider capabilities.
    */
   gatewayToolBridgeConfig?: GatewayToolBridgeConfig;
-  /**
-   * @deprecated Use gatewayToolBridgeConfig instead.
-   */
-  mcpBridgeConfig?: McpBridgeConfig;
   /** Provider-native thinking/reasoning configuration resolved from effort + capabilities. */
   thinkingConfig?: ThinkingConfig;
   /** Opaque session handle from a prior turn for providers that support server-side history. */
@@ -217,8 +208,6 @@ export interface ToolDefinition {
    * Maps to Spaceskit's approval/feedback contract.
    */
   requiresApproval?: boolean;
-  /** @deprecated Use inputSchema instead. */
-  parameters?: Record<string, unknown>;
 }
 
 export type FinishReason =
@@ -243,7 +232,7 @@ export interface TokenUsage {
   completionTokens: number;
   totalTokens: number;
   tokenAccuracy?: "reported" | "estimated" | "mixed";
-  usageSource?: "ledger" | "local_scanner" | "legacy_turns";
+  usageSource?: "ledger" | "local_scanner";
   usageDetails?: TokenUsageDetails;
 }
 

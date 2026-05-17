@@ -120,7 +120,7 @@ function parseJsonList(raw: string | undefined): string[] {
 }
 
 describe("SpaceToolPolicyService", () => {
-  test("updates connector selectors without dropping legacy raw tool rules", async () => {
+  test("updates connector selectors without dropping existing raw tool rules", async () => {
     const context = createContext();
 
     try {
@@ -128,8 +128,8 @@ describe("SpaceToolPolicyService", () => {
         spaceId: "space-main",
         allowedTools: ["lists.*"],
         deniedTools: ["shell.run"],
-        policyVersion: "legacy-v1",
-        updatedBy: "legacy-user",
+        policyVersion: "raw-v1",
+        updatedBy: "raw-user",
       });
 
       const policy = await context.service.updateConnectorPolicy({

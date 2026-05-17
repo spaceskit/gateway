@@ -5,14 +5,12 @@ import type {
   ModelMessage,
   ToolCall,
   ToolResult,
-  ToolDefinition,
   GenerateOptions,
   GenerateResult,
   TokenUsage,
   FinishReason,
 } from "./model-provider.js";
-import type { ThinkingConfig, TurnReasoningEffort, ProviderSessionHandle } from "./model-provider.js";
-import type { ModelCapabilities } from "./model-capability-registry.js";
+import type { ProviderSessionHandle } from "./model-provider.js";
 import type {
   AgentConfig,
   AgentState,
@@ -20,7 +18,7 @@ import type {
   TurnEvent,
   RuntimeFeedbackCheckpoint,
 } from "./agent-runtime.js";
-import type { ToolExecutor, ToolPermission, ToolExecutionContext } from "./tool-executor.js";
+import type { ToolExecutor } from "./tool-executor.js";
 import type { MiddlewarePipeline } from "../middleware/pipeline.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
 import { MiddlewarePipeline as Pipeline } from "../middleware/pipeline.js";
@@ -39,17 +37,6 @@ import {
   extractRateLimitErrorInfo,
 } from "./agent-runtime-errors.js";
 import { resolveModelCapabilities } from "./model-capability-registry.js";
-import { GatewayToolProxy } from "./gateway-tool-proxy.js";
-import { resolveMcpBridgeScriptPath } from "./gateway-mcp-bridge-config.js";
-import {
-  normalizeApprovalContext,
-  resolveToolDefinitionsForTurn,
-  buildToolUsageGuidance,
-  buildMediatedToolPrompt,
-  shouldSuppressInjectedToolsForPrompt,
-  writeMcpDiscoveryConfig,
-  cleanupMcpDiscoveryConfig,
-} from "./agent-runtime-tools.js";
 import {
   parseFencedToolCalls,
   stripFencedToolCallBlocks,
@@ -62,10 +49,19 @@ import {
   mergeUsageSource,
 } from "./agent-runtime-streaming.js";
 import {
-  appendToolResultMessage,
   buildTurnResult,
 } from "./agent-runtime-turn-result.js";
 import type { ProviderFeedbackRequest, ProviderFeedbackResponse } from "./model-provider.js";
+import {
+  cleanupTurnTools,
+  configureTurnTools,
+} from "./agent-turn-loop-tool-setup.js";
+import { executeTurnToolCalls } from "./agent-turn-loop-tool-execution.js";
+import {
+  estimateMissingUsage,
+  maybeBuildToolInventoryResponse,
+  resolveThinkingConfig,
+} from "./agent-turn-loop-helpers.js";
 
 export interface AgentTurnLoopDeps {
   agentId: string;
@@ -120,9 +116,7 @@ export async function* runAgentTurnCoreLoop(
     context.accessMode,
     deps.config.accessMode,
     deps.config.modelProvider,
-    deps.config.nativeCliToolsEnabled,
   );
-  const suppressInjectedTools = shouldSuppressInjectedToolsForPrompt(context.messages);
   const nativeCliToolsMode = isNativeCliToolsMode(deps.config.modelProvider, accessMode);
   const capabilities = resolveModelCapabilities(deps.config.modelProvider, deps.config.modelId);
   const isMediated = capabilities.toolSupportMode === "mediated";
@@ -134,83 +128,23 @@ export async function* runAgentTurnCoreLoop(
     });
   }
 
-  let toolDefs: ToolDefinition[] = [];
-  let mediatedToolDefs: ToolDefinition[] = [];
-  let mediatedFallbackEnabled = false;
-  let toolProxy: GatewayToolProxy | null = null;
-  let gatewayToolBridgeConfig: import("./model-provider.js").GatewayToolBridgeConfig | undefined;
-  let mcpDiscoveryFilePath: string | undefined;
-
-  // Providers that can consume the gateway tool bridge directly.
-  const gatewayToolBridgeProviders = new Set(["claude", "codex", "claude-agent-sdk", "codex-app-server"]);
-  // Providers that also support MCP file discovery (.mcp.json in workspace).
-  const mcpDiscoveryProviders = new Set(["claude", "codex"]);
-
-  if (isMediated) {
-    mediatedToolDefs = await resolveToolDefinitionsForTurn(
-      deps.toolExecutor, context.spaceId, deps.agentId, signal,
-      context.messages, suppressInjectedTools,
-    );
-    if (mediatedToolDefs.length > 0) {
-      const bridgeScriptPath = resolveMcpBridgeScriptPath();
-      const providerSupportsGatewayToolBridge = gatewayToolBridgeProviders.has(deps.config.modelProvider);
-      const providerSupportsMcpDiscovery = mcpDiscoveryProviders.has(deps.config.modelProvider);
-      if (bridgeScriptPath && providerSupportsGatewayToolBridge) {
-        // Full MCP bridge — gateway tools become callable MCP tools
-        const executionCtx = {
-          spaceId: context.spaceId,
-          agentId: deps.agentId,
-          turnId: context.turnId,
-          lineageId: context.lineageId,
-          principalId: context.principalId,
-          deviceId: context.deviceId,
-          executionOrigin: context.executionOrigin,
-          accessMode: context.accessMode,
-          suppressInjectedTools,
-        };
-        toolProxy = await GatewayToolProxy.create(deps.toolExecutor, executionCtx, signal);
-        const toolDefsJson = JSON.stringify(mediatedToolDefs);
-
-        // Write .mcp.json to workspace for CLI auto-discovery (fallback)
-        if (providerSupportsMcpDiscovery && deps.config.workingDirectory) {
-          try {
-            mcpDiscoveryFilePath = await writeMcpDiscoveryConfig(
-              deps.config.workingDirectory,
-              { bridgeScriptPath, toolDefsJson, socketPath: toolProxy.socketPath },
-            );
-          } catch {
-            // Non-fatal — CLI flag path is primary for both Claude and Codex
-          }
-        }
-
-        gatewayToolBridgeConfig = {
-          bridgeScriptPath,
-          toolDefsJson,
-          socketPath: toolProxy.socketPath,
-        };
-      } else {
-        // Text-only fallback for Gemini/Apple or missing bridge script
-        mediatedFallbackEnabled = true;
-        messages.splice(1, 0, {
-          role: "system",
-          content: buildMediatedToolPrompt(mediatedToolDefs),
-        });
-      }
-    }
-    // toolDefs stays [] — these providers reject structured tools
-  } else {
-    // Native tool-call providers (Anthropic API, OpenAI, etc.)
-    toolDefs = await resolveToolDefinitionsForTurn(
-      deps.toolExecutor, context.spaceId, deps.agentId, signal,
-      context.messages, suppressInjectedTools,
-    );
-    if (toolDefs.length > 0) {
-      messages.splice(1, 0, {
-        role: "system",
-        content: buildToolUsageGuidance(toolDefs),
-      });
-    }
-  }
+  const toolSetup = await configureTurnTools({
+    toolExecutor: deps.toolExecutor,
+    context,
+    agentId: deps.agentId,
+    providerId: deps.config.modelProvider,
+    workingDirectory: deps.config.workingDirectory,
+    messages,
+    isMediated,
+    signal,
+  });
+  const {
+    toolDefs,
+    mediatedToolDefs,
+    mediatedFallbackEnabled,
+    suppressInjectedTools,
+    gatewayToolBridgeConfig,
+  } = toolSetup;
 
   const inventoryToolDefs = isMediated ? mediatedToolDefs : toolDefs;
   const toolInventoryResponse = maybeBuildToolInventoryResponse(context.messages, inventoryToolDefs);
@@ -286,9 +220,7 @@ export async function* runAgentTurnCoreLoop(
       workingDirectory: deps.config.workingDirectory,
       accessMode,
       approvalBypassEnabled,
-      nativeCliToolsEnabled: nativeCliToolsMode,
       gatewayToolBridgeConfig,
-      mcpBridgeConfig: gatewayToolBridgeConfig,
       thinkingConfig,
       providerSessionHandle,
       sessionTitle: context.sessionTitle,
@@ -344,7 +276,6 @@ export async function* runAgentTurnCoreLoop(
             modelProvider: deps.modelProvider,
             providerId: deps.config.modelProvider,
             modelId: deps.config.modelId,
-            nativeCliToolsEnabled: deps.config.nativeCliToolsEnabled,
             generateOpts,
             emitEvent: (event) => llmEventQueue.push(event),
           });
@@ -494,155 +425,16 @@ export async function* runAgentTurnCoreLoop(
     }
 
     if (llmResult.finishReason === "tool_calls" && llmResult.message.toolCalls) {
-      deps.setState("acting");
-      yield { type: "state_changed", state: "acting" };
-
-      const toolCalls = llmResult.message.toolCalls;
-      const executionCtx: ToolExecutionContext = {
-        spaceId: context.spaceId,
-        agentId: deps.agentId,
-        turnId: context.turnId,
-        lineageId: context.lineageId,
-        principalId: context.principalId,
-        deviceId: context.deviceId,
-        executionOrigin: context.executionOrigin,
-        accessMode: context.accessMode,
+      yield* executeTurnToolCalls({
+        deps,
+        context,
+        messages,
+        toolCalls: llmResult.message.toolCalls,
+        allToolCalls,
+        allToolResults,
         suppressInjectedTools,
-      };
-
-      const permissionChecks = await Promise.all(
-        toolCalls.map((tc) => deps.toolExecutor.checkPermission(tc, executionCtx)),
-      );
-
-      const denied: { toolCall: ToolCall; permission: ToolPermission }[] = [];
-      const needsApproval: { toolCall: ToolCall; permission: ToolPermission }[] = [];
-      const autoApproved: ToolCall[] = [];
-
-      for (let i = 0; i < toolCalls.length; i++) {
-        const toolCall = toolCalls[i];
-        const permission = permissionChecks[i];
-        allToolCalls.push(toolCall);
-
-        if (!permission.allowed) {
-          denied.push({ toolCall, permission });
-        } else if (permission.requiresApproval) {
-          needsApproval.push({ toolCall, permission });
-        } else {
-          autoApproved.push(toolCall);
-        }
-      }
-
-      for (const { toolCall, permission } of denied) {
-        yield { type: "tool_call_start", toolCall };
-        const errorResult: ToolResult = {
-          toolCallId: toolCall.id,
-          result: `Permission denied: ${permission.reason}`,
-          isError: true,
-        };
-        allToolResults.push(errorResult);
-        appendToolResultMessage({
-          messages,
-          context,
-          toolCall,
-          rawResult: errorResult.result,
-          agentId: deps.agentId,
-          providerId: deps.config.modelProvider,
-          modelId: deps.config.modelId,
-          onPromptBridgeWarning: deps.onPromptBridgeWarning,
-        });
-        yield { type: "tool_result", result: errorResult };
-      }
-
-      if (autoApproved.length > 0 && !signal.aborted) {
-        for (const toolCall of autoApproved) {
-          yield { type: "tool_call_start", toolCall };
-        }
-
-        const parallelResults = await Promise.all(
-          autoApproved.map((toolCall) =>
-            deps.toolExecutor.execute(toolCall, executionCtx),
-          ),
-        );
-
-        for (let i = 0; i < autoApproved.length; i++) {
-          const toolCall = autoApproved[i];
-          const toolResult = parallelResults[i];
-          allToolResults.push(toolResult);
-          appendToolResultMessage({
-            messages,
-            context,
-            toolCall,
-            rawResult: toolResult.result,
-            agentId: deps.agentId,
-            providerId: deps.config.modelProvider,
-            modelId: deps.config.modelId,
-            onPromptBridgeWarning: deps.onPromptBridgeWarning,
-          });
-          yield { type: "tool_result", result: toolResult };
-        }
-      }
-
-      for (const { toolCall, permission } of needsApproval) {
-        if (signal.aborted) break;
-
-        yield { type: "tool_call_start", toolCall };
-
-        const approvalContext = normalizeApprovalContext(permission.approvalContext, toolCall.name);
-        const checkpoint: RuntimeFeedbackCheckpoint = {
-          id: randomUUID(),
-          agentId: deps.agentId,
-          triggerClass: approvalContext ? "policy_escalation" : "permission_gate",
-          description: permission.reason ?? `Tool "${toolCall.name}" requires approval`,
-          options: ["approve", "reject"],
-          ...(approvalContext ? { context: approvalContext } : {}),
-        };
-
-        deps.setState("needs_feedback");
-        yield { type: "state_changed", state: "needs_feedback" };
-        yield { type: "feedback_requested", request: checkpoint };
-
-        const feedbackResult = await deps.waitForFeedback(context.turnId);
-        if (feedbackResult.action === "reject" || feedbackResult.action === "defer") {
-          const deniedResult: ToolResult = {
-            toolCallId: toolCall.id,
-            result: "Tool execution denied by human reviewer",
-            isError: true,
-          };
-          allToolResults.push(deniedResult);
-          appendToolResultMessage({
-            messages,
-            context,
-            toolCall,
-            rawResult: deniedResult.result,
-            agentId: deps.agentId,
-            providerId: deps.config.modelProvider,
-            modelId: deps.config.modelId,
-            onPromptBridgeWarning: deps.onPromptBridgeWarning,
-          });
-          yield { type: "tool_result", result: deniedResult };
-          continue;
-        }
-
-        deps.setState("acting");
-        yield { type: "state_changed", state: "acting" };
-
-        const toolResult = await deps.toolExecutor.execute(toolCall, executionCtx);
-        allToolResults.push(toolResult);
-        appendToolResultMessage({
-          messages,
-          context,
-          toolCall,
-          rawResult: toolResult.result,
-          agentId: deps.agentId,
-          providerId: deps.config.modelProvider,
-          modelId: deps.config.modelId,
-          onPromptBridgeWarning: deps.onPromptBridgeWarning,
-        });
-        yield { type: "tool_result", result: toolResult };
-      }
-
-      deps.setState("thinking");
-      yield { type: "state_changed", state: "thinking" };
+        signal,
+      });
       continue;
     }
 
@@ -659,29 +451,9 @@ export async function* runAgentTurnCoreLoop(
     yield { type: "text_delta", text: finalMessage.content };
   }
 
-  if (totalUsage.totalTokens === 0 && messages.length > 0) {
-    const estimatedInput = Math.ceil(
-      messages
-        .filter((m) => m.role !== "assistant")
-        .reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : 0), 0) / 4,
-    );
-    const estimatedOutput = Math.ceil(
-      messages
-        .filter((m) => m.role === "assistant")
-        .reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : 0), 0) / 4,
-    );
-    totalUsage.promptTokens = estimatedInput;
-    totalUsage.completionTokens = estimatedOutput;
-    totalUsage.totalTokens = estimatedInput + estimatedOutput;
-    totalUsage.tokenAccuracy = "estimated";
-    totalUsage.usageSource = "ledger";
-  }
+  estimateMissingUsage(messages, totalUsage);
 
-  // Clean up MCP bridge proxy socket and .mcp.json discovery file
-  toolProxy?.close();
-  if (mcpDiscoveryFilePath) {
-    await cleanupMcpDiscoveryConfig(mcpDiscoveryFilePath);
-  }
+  await cleanupTurnTools(toolSetup);
 
   yield {
     type: "turn_completed",
@@ -703,87 +475,4 @@ export async function* runAgentTurnCoreLoop(
       providerSessionHandle,
     }),
   };
-}
-
-function maybeBuildToolInventoryResponse(
-  messages: ModelMessage[],
-  toolDefs: ToolDefinition[],
-): string | null {
-  const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
-  const prompt = latestUserMessage?.content.trim().toLowerCase();
-  if (!prompt) {
-    return null;
-  }
-
-  const inventoryPatterns = [
-    "which tools are available",
-    "what tools are available",
-    "what tools do you have",
-    "what tools can you use",
-    "list your tools",
-    "list available tools",
-    "show available tools",
-  ];
-  if (!inventoryPatterns.some((pattern) => prompt.includes(pattern))) {
-    return null;
-  }
-
-  if (toolDefs.length === 0) {
-    return "No tools are currently available in this space for this turn.";
-  }
-
-  const groups = new Map<string, string[]>();
-  for (const tool of toolDefs) {
-    const name = tool.name.trim();
-    if (!name) continue;
-    const prefix = name.split(".")[0] ?? "other";
-    const existing = groups.get(prefix) ?? [];
-    existing.push(name);
-    groups.set(prefix, existing);
-  }
-
-  const lines = ["Available tools in this space:"];
-  for (const prefix of Array.from(groups.keys()).sort((lhs, rhs) => lhs.localeCompare(rhs))) {
-    const names = (groups.get(prefix) ?? []).sort((lhs, rhs) => lhs.localeCompare(rhs));
-    const listed = names.slice(0, 8);
-    const remaining = Math.max(0, names.length - listed.length);
-    lines.push(`- ${prefix}: ${listed.join(", ")}${remaining > 0 ? `, +${remaining} more` : ""}`);
-  }
-  if (toolDefs.length > 40) {
-    lines.push(`- Total tools: ${toolDefs.length}`);
-  }
-  return lines.join("\n");
-}
-
-/**
- * Resolve provider-native thinking configuration from the per-turn effort
- * level and the provider's declared capabilities.
- *
- * Returns undefined when the provider does not support any thinking/reasoning
- * parameters, so the adapter can safely ignore it.
- */
-function resolveThinkingConfig(
-  effort: TurnReasoningEffort | undefined,
-  capabilities: ModelCapabilities,
-): ThinkingConfig | undefined {
-  if (!effort) return undefined;
-
-  // Anthropic-style extended thinking (budget_tokens)
-  if (capabilities.supportsThinking) {
-    const budgetMap: Record<TurnReasoningEffort, number> = {
-      low: 1_024,
-      medium: 4_096,
-      high: 16_384,
-      max: 32_768,
-    };
-    return {
-      enabled: true,
-      budgetTokens: budgetMap[effort],
-      display: "summarized",
-    };
-  }
-
-  // OpenAI o-series reasoning_effort — handled directly by the provider adapter
-  // via options.effort, so no ThinkingConfig needed here.
-  return undefined;
 }

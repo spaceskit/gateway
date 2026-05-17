@@ -149,9 +149,9 @@ function parseCentralTaskFile(taskFilePath: string, projectSlug: string, now: Da
   const autonomous = parseBoolean(frontmatter.get("autonomous"));
   const verification = extractMachineReadableVerification(body);
   const dependsOn = parseFrontmatterList(frontmatter.get("depends-on"));
-  const legacyMetadata = collectMetadata(body);
-  const products = splitMetadataList(legacyMetadata.get("products") ?? frontmatter.get("products") ?? frontmatter.get("tags") ?? projectSlug);
-  const parallelKeys = splitMetadataList(legacyMetadata.get("parallel") ?? frontmatter.get("parallel") ?? frontmatter.get("tags") ?? products.join(","));
+  const bodyMetadata = collectMetadata(body);
+  const products = splitMetadataList(bodyMetadata.get("products") ?? frontmatter.get("products") ?? frontmatter.get("tags") ?? projectSlug);
+  const parallelKeys = splitMetadataList(bodyMetadata.get("parallel") ?? frontmatter.get("parallel") ?? frontmatter.get("tags") ?? products.join(","));
   const delegation = autonomous ? "autonomous" : "supervised";
   const hasActiveClaim = hasUnexpiredClaim(frontmatter.get("claim-expires-at"), now);
   const unmetDependencies = dependsOn.filter((dependency) => dependency.trim().length > 0);
@@ -167,11 +167,11 @@ function parseCentralTaskFile(taskFilePath: string, projectSlug: string, now: Da
     markdown: body,
     expectedGoalId: sourceFileGoalId(frontmatter.get("source-file")) ?? (id.includes("/") ? id.split("/").pop()! : id),
     metadata: {
-      owner: legacyMetadata.get("owner"),
-      status: legacyMetadata.get("status"),
-      delegation: legacyMetadata.get("delegation") ?? delegation,
-      aiShippable: legacyMetadata.has("ai-shippable")
-        ? normalizeMetadataBoolean(legacyMetadata.get("ai-shippable"))
+      owner: bodyMetadata.get("owner"),
+      status: bodyMetadata.get("status"),
+      delegation: bodyMetadata.get("delegation") ?? delegation,
+      aiShippable: bodyMetadata.has("ai-shippable")
+        ? normalizeMetadataBoolean(bodyMetadata.get("ai-shippable"))
         : autonomous,
       products,
     },

@@ -52,7 +52,8 @@ export function registerAgentTools(server: McpServer, client: GatewayClient): vo
       instructions: z.string().optional().describe("System prompt / instructions for the agent."),
       defaultSkillIds: z.array(z.string()).optional().describe("Default skill IDs to attach."),
       providerHint: z.string().optional().describe("Preferred provider."),
-      modelHint: z.string().optional().describe("Preferred model (e.g. 'claude/sonnet')."),
+      preferredModels: z.array(z.string()).optional().describe("Preferred model IDs, ordered by priority."),
+      fallbackModels: z.array(z.string()).optional().describe("Fallback model IDs, ordered by priority."),
     },
     async (args) => {
       try {
@@ -62,7 +63,7 @@ export function registerAgentTools(server: McpServer, client: GatewayClient): vo
           instructions: args.instructions,
           defaultSkillIds: args.defaultSkillIds,
           providerHint: args.providerHint,
-          modelHint: args.modelHint,
+          modelConfig: modelConfigFromArgs(args),
         });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
@@ -84,7 +85,8 @@ export function registerAgentTools(server: McpServer, client: GatewayClient): vo
       instructions: z.string().optional().describe("New system prompt / instructions."),
       defaultSkillIds: z.array(z.string()).optional().describe("New default skill IDs."),
       providerHint: z.string().optional().describe("New preferred provider."),
-      modelHint: z.string().optional().describe("New preferred model."),
+      preferredModels: z.array(z.string()).optional().describe("New preferred model IDs, ordered by priority."),
+      fallbackModels: z.array(z.string()).optional().describe("New fallback model IDs, ordered by priority."),
     },
     async (args) => {
       try {
@@ -95,7 +97,7 @@ export function registerAgentTools(server: McpServer, client: GatewayClient): vo
           instructions: args.instructions,
           defaultSkillIds: args.defaultSkillIds,
           providerHint: args.providerHint,
-          modelHint: args.modelHint,
+          modelConfig: modelConfigFromArgs(args),
         });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
@@ -123,4 +125,26 @@ export function registerAgentTools(server: McpServer, client: GatewayClient): vo
       }
     },
   );
+}
+
+function modelConfigFromArgs(args: {
+  preferredModels?: string[];
+  fallbackModels?: string[];
+}): { preferredModels: string[]; fallbackModels?: string[] } | undefined {
+  const preferredModels = normalizeModelIds(args.preferredModels);
+  const fallbackModels = normalizeModelIds(args.fallbackModels);
+  if (preferredModels.length === 0 && fallbackModels.length === 0) {
+    return undefined;
+  }
+  return {
+    preferredModels,
+    ...(fallbackModels.length > 0 ? { fallbackModels } : {}),
+  };
+}
+
+function normalizeModelIds(value: string[] | undefined): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(new Set(value.map((entry) => entry.trim()).filter(Boolean)));
 }

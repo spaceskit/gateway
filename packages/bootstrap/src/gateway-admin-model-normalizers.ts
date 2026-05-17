@@ -89,7 +89,6 @@ export function mergeSkillIds(existing: string[], required: readonly string[]): 
 
 export function parseModelConfig(
   value: string | null | undefined,
-  modelHint: string | null | undefined,
 ): ProfileModelConfig {
   if (value?.trim()) {
     try {
@@ -98,19 +97,17 @@ export function parseModelConfig(
       const fallbackModels = normalizeStringList(parsed.fallbackModels);
       const constraints = isObjectRecord(parsed.constraints) ? parsed.constraints : undefined;
       return {
-        preferredModels: preferredModels.length > 0
-          ? preferredModels
-          : (modelHint?.trim() ? [modelHint.trim()] : []),
+        preferredModels,
         fallbackModels,
         ...(constraints ? { constraints } : {}),
       };
     } catch {
-      // Fallback below.
+      // Treat malformed model config as empty; model_config_json is canonical.
     }
   }
 
   return {
-    preferredModels: modelHint?.trim() ? [modelHint.trim()] : [],
+    preferredModels: [],
     fallbackModels: [],
   };
 }
@@ -182,28 +179,12 @@ export function withProviderPrefix(providerId: string, modelId: string): string 
   return `${providerId}/${trimmed}`;
 }
 
-export function normalizeProviderBaseURL(providerId: string, baseURLRaw?: string): string | undefined {
+export function normalizeProviderBaseURL(_providerId: string, baseURLRaw?: string): string | undefined {
   const trimmed = baseURLRaw?.trim();
   if (!trimmed) {
     return undefined;
   }
-
-  if (providerId !== "lmstudio") {
-    return trimmed;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    const pathname = parsed.pathname.replace(/\/+$/, "");
-    if (!pathname) {
-      parsed.pathname = "/v1";
-    } else {
-      parsed.pathname = pathname;
-    }
-    return parsed.toString();
-  } catch {
-    return trimmed;
-  }
+  return trimmed;
 }
 
 export function resolveOpenAICompatibleModelsEndpoint(baseURLRaw?: string): string {
@@ -259,11 +240,11 @@ export function uniqueModelIds(modelIds: string[]): string[] {
 }
 
 export function collectProfileModelCandidates(
-  modelHint?: string,
+  modelId?: string,
   modelConfig?: ProfileModelConfig,
 ): string[] {
   const candidates = [
-    modelHint,
+    modelId,
     ...(modelConfig?.preferredModels ?? []),
     ...(modelConfig?.fallbackModels ?? []),
   ];

@@ -95,11 +95,9 @@ export function normalizeParticipantMode(value: string): "read_only" | "collabor
 export function resolveModeratorPrincipalIds(config: Record<string, unknown>): string[] {
   const direct = normalizeStringArray(config.changeSetModerators);
   if (direct.length > 0) return direct;
-  const legacy = normalizeStringArray(config.changesetModerators);
-  if (legacy.length > 0) return legacy;
   const principalIds = normalizeStringArray(config.changeSetModeratorPrincipalIds);
   if (principalIds.length > 0) return principalIds;
-  return normalizeStringArray(config.changesetModeratorPrincipalIds);
+  return [];
 }
 
 export function normalizeStringArray(value: unknown): string[] {

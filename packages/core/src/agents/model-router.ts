@@ -3,7 +3,7 @@
  *
  * Routes agents to different LLM providers based on profiles,
  * task requirements, and fallback policies. Supports:
- * - Per-agent model preferences (from AgentProfile.provider_hint/model_hint)
+ * - Per-agent model preferences (from AgentProfile.provider_hint/model_config)
  * - Task-based routing (coding → code model, chat → chat model)
  * - Automatic fallback on provider failure
  */

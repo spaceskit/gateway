@@ -1,6 +1,5 @@
 import type {
   AgentActivityState,
-  TurnEventPayload,
   TurnMetadata,
   TurnStreamPayload,
   TypedTurnEventPayload,
@@ -91,40 +90,6 @@ export function buildTurnStreamPayload(input: BuildTurnStreamPayloadInput): Turn
     seq: coerceInteger(turnEvent?.seq ?? eventRecord.seq, 0),
     done: coerceBoolean(turnEvent?.done, false),
   };
-}
-
-export function mapTurnLifecycleEventType(
-  eventSubtypeRaw: string,
-  normalizedType: string,
-): TurnEventPayload["eventType"] {
-  const eventSubtype = eventSubtypeRaw.trim().toLowerCase();
-  switch (eventSubtype) {
-    case "text_delta":
-      return "streaming";
-    case "tool_call":
-    case "tool_call_start":
-    case "tool_result":
-      return "tool_call";
-    case "feedback_requested":
-      return "feedback_requested";
-    case "feedback_resolved":
-      return "state_changed";
-    case "rate_limited":
-      return "rate_limited";
-    case "state_changed":
-      return "state_changed";
-    case "turn_completed":
-      return "completed";
-    case "turn_cancelled":
-      return "cancelled";
-    case "error":
-      return "failed";
-    default:
-      if (normalizedType === "space.turn_started") {
-        return "started";
-      }
-      return "streaming";
-  }
 }
 
 export function buildTypedTurnPayload(input: BuildTypedTurnPayloadInput): TypedTurnEventPayload | undefined {
@@ -256,14 +221,7 @@ export function buildTypedTurnPayload(input: BuildTypedTurnPayloadInput): TypedT
 
     default: {
       if (normalizedType === "space.turn_started") {
-        const launchSnapshots = normalizeLaunchSnapshots(
-          eventRecord.launchSnapshots
-          ?? (typeof eventRecord.data === "object"
-            && eventRecord.data !== null
-            && !Array.isArray(eventRecord.data)
-            ? (eventRecord.data as Record<string, unknown>).launchSnapshots
-            : undefined),
-        );
+        const launchSnapshots = normalizeLaunchSnapshots(eventRecord.launchSnapshots);
         return {
           kind: "turn.started",
           agentId,
@@ -285,23 +243,12 @@ export function resolveTurnAgentId(
 ): string {
   const fromEvent = typeof turnEvent?.agentId === "string" ? turnEvent.agentId.trim() : "";
   if (fromEvent) return fromEvent;
-  const fromLaunchSnapshot = normalizeLaunchSnapshots(
-    turnEvent && typeof turnEvent.data === "object" && turnEvent.data !== null && !Array.isArray(turnEvent.data)
-      ? (turnEvent.data as Record<string, unknown>).launchSnapshots
-      : undefined,
-  )[0]?.agentId;
+  const fromLaunchSnapshot = normalizeLaunchSnapshots(eventRecord.launchSnapshots)[0]?.agentId;
   if (fromLaunchSnapshot) return fromLaunchSnapshot;
   const fromAgents = Array.isArray(eventRecord.agents)
     ? eventRecord.agents.find((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)?.trim()
     : undefined;
   if (fromAgents) return fromAgents;
-  const resultRecord = turnEvent?.result;
-  if (resultRecord && typeof resultRecord === "object" && !Array.isArray(resultRecord)) {
-    const nested = (resultRecord as Record<string, unknown>).agentId;
-    if (typeof nested === "string" && nested.trim().length > 0) {
-      return nested.trim();
-    }
-  }
   const fromRecord = typeof eventRecord.agentId === "string" ? eventRecord.agentId.trim() : "";
   if (fromRecord) return fromRecord;
   return "unknown-agent";

@@ -2,6 +2,24 @@
 export const contractsVersion = "0.2.0-mvp-runtime-reset";
 
 export * from "./generated/spaceskit/v2/common_pb.js";
+export * from "./generated/spaceskit/v2/agent_call_types_pb.js";
+export * from "./generated/spaceskit/v2/artifact_types_pb.js";
+export * from "./generated/spaceskit/v2/capability_types_pb.js";
+export * from "./generated/spaceskit/v2/experience_types_pb.js";
+export * from "./generated/spaceskit/v2/feedback_types_pb.js";
+export * from "./generated/spaceskit/v2/gateway_admin_messages_pb.js";
+export * from "./generated/spaceskit/v2/gateway_integration_messages_pb.js";
+export * from "./generated/spaceskit/v2/profile_types_pb.js";
+export * from "./generated/spaceskit/v2/runtime_ledger_types_pb.js";
+export * from "./generated/spaceskit/v2/security_types_pb.js";
+export * from "./generated/spaceskit/v2/sharing_types_pb.js";
+export * from "./generated/spaceskit/v2/skill_types_pb.js";
+export * from "./generated/spaceskit/v2/space_admin_messages_pb.js";
+export * from "./generated/spaceskit/v2/space_collaboration_messages_pb.js";
+export * from "./generated/spaceskit/v2/space_template_messages_pb.js";
+export * from "./generated/spaceskit/v2/space_types_pb.js";
+export * from "./generated/spaceskit/v2/sync_types_pb.js";
+export * from "./generated/spaceskit/v2/voice_types_pb.js";
 export * from "./generated/spaceskit/v2/space_service_pb.js";
 export { SpaceService as SpaceServiceClient } from "./generated/spaceskit/v2/space_service_connect.js";
 export * from "./generated/spaceskit/v2/coordinator_service_pb.js";

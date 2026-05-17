@@ -18,7 +18,7 @@ export interface TierProviderHints {
   /** Ordered provider preference (first available wins). */
   providers: string[];
   /** Suggested model hints per provider (optional). */
-  modelHints: Record<string, string>;
+  modelIds: Record<string, string>;
   /** Expected context window range. */
   contextWindow: { min: number; max: number };
   /** Relative cost class for pre-flight budget checks. */
@@ -43,7 +43,7 @@ const TIER_DEFINITIONS: readonly TierDefinition[] = [
     userLabels: ["quick", "basic", "local", "free", "fast", "simple", "on-device"],
     providerHints: {
       providers: ["apple", "ollama", "lmstudio"],
-      modelHints: {},
+      modelIds: {},
       contextWindow: { min: 4_096, max: 32_768 },
       costClass: "free",
     },
@@ -53,7 +53,7 @@ const TIER_DEFINITIONS: readonly TierDefinition[] = [
     userLabels: ["good", "smart", "standard", "balanced", "default", "moderate"],
     providerHints: {
       providers: ["groq", "openrouter", "together", "mistral"],
-      modelHints: {
+      modelIds: {
         openrouter: "anthropic/claude-haiku",
         groq: "llama-3.3-70b-versatile",
       },
@@ -66,7 +66,7 @@ const TIER_DEFINITIONS: readonly TierDefinition[] = [
     userLabels: ["advanced", "best", "powerful", "thorough", "pro", "expert", "capable"],
     providerHints: {
       providers: ["anthropic", "openai", "openrouter"],
-      modelHints: {
+      modelIds: {
         anthropic: "claude-sonnet-4-20250514",
         openai: "gpt-4.1",
         openrouter: "anthropic/claude-sonnet-4",

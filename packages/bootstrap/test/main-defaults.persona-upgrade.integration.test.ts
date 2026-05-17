@@ -13,7 +13,7 @@ import {
 describe("bootstrap main defaults", () => {
   test("upgrades pre-persona databases and repairs persona assignments", { timeout: INTEGRATION_TIMEOUT }, async () => {
     const dbPath = join(tmpdir(), `spaceskit-persona-upgrade-${crypto.randomUUID()}.db`);
-    const legacyProfileId = "legacy-profile-persona-upgrade-test";
+    const seededProfileId = "seeded-profile-persona-upgrade-test";
     const previousGatewayProfile = Bun.env.SPACESKIT_GATEWAY_PROFILE;
 
     let gateway: Awaited<ReturnType<typeof startGateway>> | null = null;
@@ -26,13 +26,16 @@ describe("bootstrap main defaults", () => {
       try {
         const profiles = new ProfileRepository(seeded.db);
         profiles.create({
-          profileId: legacyProfileId,
+          profileId: seededProfileId,
           personaId: "stale-persona",
-          name: "Legacy Persona Profile",
-          description: "Legacy test profile",
+          name: "Seeded Persona Profile",
+          description: "Seeded test profile",
           personalityPrompt: "Stay concise.",
           providerHint: "openai",
-          modelHint: "openai/gpt-4.1",
+          modelConfig: {
+            preferredModels: ["openai/gpt-4.1"],
+            fallbackModels: [],
+          },
         });
 
         seeded.db.exec("DROP TABLE IF EXISTS persona_revisions");
@@ -76,7 +79,7 @@ describe("bootstrap main defaults", () => {
 
       const repairedProfile = gateway.db?.db.query(
         "SELECT persona_id FROM agent_profiles WHERE profile_id = ?",
-      ).get(legacyProfileId) as { persona_id: string } | null;
+      ).get(seededProfileId) as { persona_id: string } | null;
       expect(repairedProfile?.persona_id).toBe(DEFAULT_PERSONA_ID);
 
       const identity = new GatewayIdentityService({
@@ -86,17 +89,16 @@ describe("bootstrap main defaults", () => {
       });
 
       expect(identity.listPersonas(false).map((entry) => entry.personaId)).toContain(DEFAULT_PERSONA_ID);
-      expect(identity.listAgentDefinitions(true).map((entry) => entry.agentDefinitionId)).toContain(legacyProfileId);
+      expect(identity.listAgentDefinitions(true).map((entry) => entry.agentDefinitionId)).toContain(seededProfileId);
 
       const updated = identity.updateAgentDefinition({
-        agentDefinitionId: legacyProfileId,
-        modelHint: "openai/gpt-4.1-mini",
+        agentDefinitionId: seededProfileId,
         modelConfig: {
           preferredModels: ["openai/gpt-4.1-mini"],
         },
       });
       expect(updated.agentDefinition.personaId).toBe(DEFAULT_PERSONA_ID);
-      expect(updated.agentDefinition.modelHint).toBe("openai/gpt-4.1-mini");
+      expect(updated.agentDefinition.modelConfig?.preferredModels[0]).toBe("openai/gpt-4.1-mini");
     } finally {
       try {
         await gateway?.shutdown();

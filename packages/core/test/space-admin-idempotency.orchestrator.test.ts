@@ -31,7 +31,7 @@ describe("SpaceAdminService idempotency", () => {
 
     expect(first.orchestratorProfileId).toBe("profile-orch");
     expect(second.orchestratorProfileId).toBe("profile-orch");
-    expect(stores.updateSpaceConfigCalls - updateCallsBefore).toBe(2);
+    expect(stores.updateSpaceConfigCalls - updateCallsBefore).toBe(1);
   });
 
   test("setSpaceOrchestrator keeps a single coordinator and primary assignment", async () => {

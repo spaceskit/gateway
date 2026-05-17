@@ -17,7 +17,7 @@ export interface EffectiveToolAccessSnapshot {
   }>;
 }
 
-export function legacyEffectiveToolMatrixFromAccess(
+export function effectiveToolMatrixFromAccess(
   access: EffectiveToolAccessSnapshot,
 ): EffectiveToolMatrixPayload {
   return {

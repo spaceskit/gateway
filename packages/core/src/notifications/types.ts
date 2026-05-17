@@ -11,7 +11,6 @@
 
 export type NotificationCategory =
   | "space.started"
-  | "space.completed"
   | "space.failed"
   | "space.paused"
   | "task.progress"

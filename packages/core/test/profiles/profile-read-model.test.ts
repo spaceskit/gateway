@@ -19,7 +19,7 @@ function makeProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     defaultSkillIds: ["web-search", "summarise"],
     defaultActionIds: ["browse", "cite"],
     providerHint: "anthropic",
-    modelHint: "claude-sonnet-4-20250514",
+    modelId: "claude-sonnet-4-20250514",
     canModerate: false,
     isDefault: false,
     activeRevision: 3,
@@ -44,7 +44,7 @@ describe("toAgentTemplateReadModel", () => {
     expect(rm.name).toBe("Research Agent");
     expect(rm.personalitySummary).toBe("You are a thorough research assistant.");
     expect(rm.skills).toEqual(["web-search", "summarise"]);
-    expect(rm.modelHints).toEqual(["anthropic", "claude-sonnet-4-20250514"]);
+    expect(rm.modelIds).toEqual(["anthropic", "claude-sonnet-4-20250514"]);
     expect(rm.status).toBe("active");
     expect(rm.usageCount).toBe(42);
     expect(rm.createdAt).toBe("2026-01-15T10:00:00.000Z");
@@ -52,10 +52,10 @@ describe("toAgentTemplateReadModel", () => {
   });
 
   test("handles missing optional hints by filtering empties", () => {
-    const profile = makeProfile({ providerHint: "", modelHint: "" });
+    const profile = makeProfile({ providerHint: "", modelId: "" });
     const rm = toAgentTemplateReadModel(profile);
 
-    expect(rm.modelHints).toEqual([]);
+    expect(rm.modelIds).toEqual([]);
   });
 
   test("uses default usageCount 0 when not provided", () => {

@@ -280,21 +280,26 @@ describe("bootstrap main defaults", () => {
       });
 
       const row = instance.db?.db.query(
-        `SELECT provider_hint, model_hint
+        `SELECT provider_hint, model_config_json
          FROM agent_profile_revisions
          WHERE profile_id = ?
          ORDER BY revision DESC
          LIMIT 1`,
-      ).get(mainProfileId) as { provider_hint: string; model_hint: string } | undefined;
+      ).get(mainProfileId) as {
+        provider_hint: string;
+        model_config_json: string;
+      } | undefined;
 
       expect(row).toBeDefined();
+      const modelConfig = JSON.parse(row!.model_config_json) as { preferredModels?: string[] };
+      const selectedModel = modelConfig.preferredModels?.[0];
       // CLI/app-server providers are auto-seeded when detected on PATH
       // and take priority over API-key providers. Codex app server is preferred
       // when available; otherwise the resolver falls through to the next
       // detected CLI or configured API-key provider.
       const validProviders = ["codex-app-server", "claude", "codex", "gemini", "openrouter"];
       expect(validProviders).toContain(row?.provider_hint);
-      expect(row!.model_hint).toStartWith(`${row!.provider_hint}/`);
+      expect(selectedModel).toStartWith(`${row!.provider_hint}/`);
     } finally {
       try {
         await instance?.shutdown();

@@ -13,12 +13,6 @@ import type {
   ToolAccessPolicyRepository,
 } from "@spaceskit/persistence";
 
-const SOURCE_SELECTOR_PREFIXES: Record<Exclude<ToolAccessRuleSelectorKind, "capability" | "mcp_server" | "tool_operation">, string> = {
-  connector_family: "connector_family:",
-  cli_bundle: "cli_bundle:",
-  connector_instance: "connector_instance:",
-};
-
 export const DANGEROUS_CAPABILITIES: DangerousCapabilityId[] = [
   "managed_shell",
   "arbitrary_shell",
@@ -166,67 +160,6 @@ function isSelectorKind(value: unknown): value is ToolAccessRuleSelectorKind {
     || value === "connector_instance"
     || value === "mcp_server"
     || value === "tool_operation";
-}
-
-export function parseLegacySpaceToolEntries(raw: string): ToolAccessRule[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const output: ToolAccessRule[] = [];
-    for (const entry of parsed as unknown[]) {
-      if (typeof entry !== "string") continue;
-      const normalized = entry.trim();
-      if (!normalized) continue;
-      if (normalized.startsWith(SOURCE_SELECTOR_PREFIXES.connector_family)) {
-        output.push({
-          selectorKind: "connector_family",
-          selectorId: normalized.slice(SOURCE_SELECTOR_PREFIXES.connector_family.length),
-          state: "disabled",
-        });
-        continue;
-      }
-      if (normalized.startsWith(SOURCE_SELECTOR_PREFIXES.cli_bundle)) {
-        output.push({
-          selectorKind: "cli_bundle",
-          selectorId: normalized.slice(SOURCE_SELECTOR_PREFIXES.cli_bundle.length),
-          state: "disabled",
-        });
-        continue;
-      }
-      if (normalized.startsWith(SOURCE_SELECTOR_PREFIXES.connector_instance)) {
-        output.push({
-          selectorKind: "connector_instance",
-          selectorId: normalized.slice(SOURCE_SELECTOR_PREFIXES.connector_instance.length),
-          state: "disabled",
-        });
-        continue;
-      }
-      if (normalized.endsWith(".*")) {
-        output.push({
-          selectorKind: "capability",
-          selectorId: normalized.slice(0, -2),
-          state: "disabled",
-        });
-        continue;
-      }
-      if (normalized.includes(".")) {
-        output.push({
-          selectorKind: "tool_operation",
-          selectorId: normalized,
-          state: "disabled",
-        });
-        continue;
-      }
-      output.push({
-        selectorKind: "capability",
-        selectorId: normalized,
-        state: "disabled",
-      });
-    }
-    return output;
-  } catch {
-    return [];
-  }
 }
 
 export function findDangerousRule(

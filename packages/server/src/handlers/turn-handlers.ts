@@ -123,8 +123,14 @@ export async function handleExecuteTurn(
     spaceId,
     spaceUid: canonicalSpaceUid,
     turnId,
-    eventType: "started",
-    data: { turnId },
+    ...(conversationTopology ? { conversationTopology } : {}),
+    agentId: targetAgentId ?? targetAgentIds[0] ?? "unknown-agent",
+    typedPayload: {
+      kind: "turn.started",
+      agentId: targetAgentId ?? targetAgentIds[0] ?? "unknown-agent",
+      turnId,
+      ...(conversationTopology ? { conversationTopology } : {}),
+    },
   } satisfies TurnEventPayload);
 }
 
@@ -195,8 +201,6 @@ export async function handleCancelTurn(
         spaceId,
         spaceUid: canonicalSpaceUid,
         turnId,
-        eventType: "cancelled",
-        data: { turnId },
         typedPayload: { kind: "turn.cancelled" },
       } satisfies TurnEventPayload,
     });
@@ -206,8 +210,6 @@ export async function handleCancelTurn(
     spaceId,
     spaceUid: canonicalSpaceUid,
     turnId,
-    eventType: "cancelled",
-    data: { acknowledged: cancelled },
     typedPayload: { kind: "turn.cancelled" },
   } satisfies TurnEventPayload);
 }
@@ -293,8 +295,6 @@ export async function handleResumeFeedback(
       spaceUid: canonicalSpaceUid,
       turnId,
       agentId: "unknown-agent",
-      eventType: "state_changed",
-      data: { type: "feedback_resolved", response: resolvedStatus },
       typedPayload: { kind: "approval.resolved" as const, requestId: turnId, response: resolvedStatus },
       ts: nowIso,
     } satisfies TurnEventPayload,
@@ -304,8 +304,8 @@ export async function handleResumeFeedback(
     spaceId,
     spaceUid: canonicalSpaceUid,
     turnId,
-    eventType: "started",
-    data: { resumed: true },
+    agentId: "unknown-agent",
+    typedPayload: { kind: "approval.resolved" as const, requestId: turnId, response: resolvedStatus },
   } satisfies TurnEventPayload);
 }
 

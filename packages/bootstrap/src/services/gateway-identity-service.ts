@@ -3,7 +3,6 @@ import type {
   PersonaRepository,
   PersonaRevisionRow,
   PersonaRow,
-  ProfileModelConfig,
   ProfileRepository,
   ProfileRevisionRow,
   ProfileRow,
@@ -32,54 +31,24 @@ import type {
   IdentityUpdatePersonaPayload,
   IdentityUpdatePersonaResponsePayload,
   PersonaSummaryPayload,
-  ProfileModelConfigPayload,
 } from "./internal-payload-types.js";
-
-export interface AgentDefinitionRuntimeContext {
-  agentDefinitionId: string;
-  personaId?: string;
-  agentInstructions: string;
-  personaInstructions: string;
-  defaultSkillIds: string[];
-  providerHint?: string;
-  modelHint?: string;
-  modelConfig?: ProfileModelConfig;
-}
-
-export interface GatewayIdentityServiceOptions {
-  profiles: ProfileRepository;
-  personas: PersonaRepository;
-  getActiveSkillMarkdownMap?: (skillIds: string[]) => Map<string, string>;
-  getSystemScaffold?: (budgetClass?: PromptBudgetClass) => string;
-  getPolicyAppendices?: () => string;
-  previewRuntimeSystemPrompt?: (
-    input: IdentityPreviewRuntimeSystemPromptPayload,
-  ) => Promise<IdentityPreviewRuntimeSystemPromptResponsePayload>;
-  previewSystemPromptMatrix?: (
-    input: IdentityPreviewSystemPromptMatrixPayload,
-  ) => Promise<IdentityPreviewSystemPromptMatrixResponsePayload>;
-  defaultPersonaId?: string;
-}
+import {
+  DEFAULT_PERSONA_DEFINITION,
+  buildPersonaInstructions,
+  isMissingPersonaTableError,
+  normalizeModelConfig,
+  normalizeOptional,
+  normalizeRequired,
+  normalizeStringArray,
+  parseModelConfig,
+  parseStringArray,
+  personaSchemaUnavailableError,
+  toModelConfigPayload,
+} from "./gateway-identity-service-helpers.js";
+import type { AgentDefinitionRuntimeContext, GatewayIdentityServiceOptions } from "./gateway-identity-service-types.js";
+export type { AgentDefinitionRuntimeContext, GatewayIdentityServiceOptions } from "./gateway-identity-service-types.js";
 
 export const DEFAULT_PERSONA_ID = "persona-default";
-
-const DEFAULT_PERSONA_DEFINITION = {
-  personaId: DEFAULT_PERSONA_ID,
-  name: "Focused Guide",
-  description: "Clear, calm, direct guidance with restrained emotion.",
-  tone: "Direct and clear.",
-  style: "Concise, structured, and practical.",
-  emotionalLayer: "Steady and supportive without excess chatter.",
-  constraints: [
-    "Do not invent facts.",
-    "State assumptions when needed.",
-    "Prefer simple explanations before advanced detail.",
-    "When citing tool results, reference the specific tool and its output.",
-    "Use markdown formatting when structure aids clarity, but do not over-format short answers.",
-  ],
-  instructions:
-    "Be warm enough to feel human, but stay precise and task-focused. Answer questions directly before elaborating. When given a command, confirm what you will do, then do it.",
-} as const;
 
 export class GatewayIdentityService {
   private readonly profiles: ProfileRepository;
@@ -192,8 +161,7 @@ export class GatewayIdentityService {
       personalityPrompt: normalizeOptional(input.instructions),
       defaultSkillIds: normalizeStringArray(input.defaultSkillIds),
       providerHint: normalizeOptional(input.providerHint),
-      modelHint: normalizeOptional(input.modelHint),
-      modelConfig: normalizeModelConfig(input.modelConfig, input.modelHint),
+      modelConfig: normalizeModelConfig(input.modelConfig),
       isDefault: input.isDefault,
       source: "manual",
     });
@@ -223,8 +191,7 @@ export class GatewayIdentityService {
       personalityPrompt: input.instructions,
       defaultSkillIds: input.defaultSkillIds,
       providerHint: input.providerHint,
-      modelHint: input.modelHint,
-      modelConfig: normalizeModelConfig(input.modelConfig, input.modelHint),
+      modelConfig: normalizeModelConfig(input.modelConfig),
       isDefault: input.isDefault,
       source: "manual",
     });
@@ -361,8 +328,8 @@ export class GatewayIdentityService {
     }
 
     const revision = this.profiles.getActiveRevision(agentDefinitionId);
-    const modelConfig = parseModelConfig(revision?.model_config_json, revision?.model_hint);
-    const preferredModelHint = modelConfig.preferredModels[0] || revision?.model_hint?.trim() || undefined;
+    const modelConfig = parseModelConfig(revision?.model_config_json);
+    const preferredModelId = modelConfig.preferredModels[0];
     const persona = row.persona_id
       ? this.withPersonaSchemaGuard(() => this.personas.getById(row.persona_id))
       : undefined;
@@ -377,7 +344,7 @@ export class GatewayIdentityService {
       personaInstructions: buildPersonaInstructions(personaRevision),
       defaultSkillIds: parseStringArray(revision?.default_skill_set_ids_json),
       providerHint: revision?.provider_hint?.trim() || undefined,
-      modelHint: preferredModelHint,
+      modelId: preferredModelId,
       modelConfig,
     };
   }
@@ -494,9 +461,7 @@ export class GatewayIdentityService {
       instructions: revision?.personality_prompt ?? "",
       defaultSkillIds: parseStringArray(revision?.default_skill_set_ids_json),
       providerHint: normalizeOptional(revision?.provider_hint),
-      modelHint: normalizeOptional(parseModelConfig(revision?.model_config_json, revision?.model_hint).preferredModels[0])
-        ?? normalizeOptional(revision?.model_hint),
-      modelConfig: toModelConfigPayload(parseModelConfig(revision?.model_config_json, revision?.model_hint)),
+      modelConfig: toModelConfigPayload(parseModelConfig(revision?.model_config_json)),
       isDefault: row.is_default === 1,
       status: row.archived === 1 ? "archived" : "active",
       activeRevision: row.active_revision,
@@ -527,130 +492,4 @@ export class GatewayIdentityService {
       updatedAt: row.updated_at,
     };
   }
-}
-
-function buildPersonaInstructions(revision: PersonaRevisionRow | undefined): string {
-  if (!revision) return "";
-  const constraints = parseStringArray(revision.constraints_json);
-  const parts: string[] = [];
-  if (revision.tone.trim()) {
-    parts.push(`Tone: ${revision.tone.trim()}`);
-  }
-  if (revision.style.trim()) {
-    parts.push(`Style: ${revision.style.trim()}`);
-  }
-  if (revision.emotional_layer.trim()) {
-    parts.push(`Emotional Layer: ${revision.emotional_layer.trim()}`);
-  }
-  if (constraints.length > 0) {
-    parts.push(`Constraints:\n${constraints.map((constraint) => `- ${constraint}`).join("\n")}`);
-  }
-  if (revision.instructions.trim()) {
-    parts.push(revision.instructions.trim());
-  }
-  return parts.join("\n\n");
-}
-
-function normalizeOptional(value: string | undefined | null): string | undefined {
-  const normalized = value?.trim();
-  if (!normalized) return undefined;
-  return normalized;
-}
-
-function normalizeRequired(value: string | undefined | null, field: string): string {
-  const normalized = normalizeOptional(value);
-  if (!normalized) {
-    throw { code: "INVALID_ARGUMENT", message: `${field} is required` };
-  }
-  return normalized;
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(new Set(
-    value
-      .filter((entry): entry is string => typeof entry === "string")
-      .map((entry) => entry.trim())
-      .filter(Boolean),
-  ));
-}
-
-function parseStringArray(value: string | null | undefined): string[] {
-  if (!value?.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return normalizeStringArray(parsed);
-  } catch {
-    return [];
-  }
-}
-
-function normalizeModelConfig(
-  input: ProfileModelConfigPayload | undefined,
-  modelHint?: string,
-): ProfileModelConfig | undefined {
-  if (!input && !normalizeOptional(modelHint)) {
-    return undefined;
-  }
-  const preferredModels = normalizeStringArray(input?.preferredModels);
-  if (preferredModels.length === 0 && normalizeOptional(modelHint)) {
-    preferredModels.push(normalizeOptional(modelHint)!);
-  }
-  const fallbackModels = normalizeStringArray(input?.fallbackModels);
-  const constraints = input?.constraints && typeof input.constraints === "object"
-    ? input.constraints
-    : undefined;
-  return {
-    preferredModels,
-    ...(fallbackModels.length > 0 ? { fallbackModels } : {}),
-    ...(constraints ? { constraints } : {}),
-  };
-}
-
-function parseModelConfig(
-  raw: string | null | undefined,
-  legacyModelHint?: string,
-): ProfileModelConfig {
-  if (raw?.trim()) {
-    try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return normalizeModelConfig({
-        preferredModels: normalizeStringArray(parsed.preferredModels),
-        fallbackModels: normalizeStringArray(parsed.fallbackModels),
-        constraints: parsed.constraints && typeof parsed.constraints === "object"
-          ? parsed.constraints as Record<string, unknown>
-          : undefined,
-      }, legacyModelHint) ?? { preferredModels: [] };
-    } catch {
-      // Fall through to legacy hint.
-    }
-  }
-
-  return normalizeModelConfig(undefined, legacyModelHint) ?? { preferredModels: [] };
-}
-
-function toModelConfigPayload(modelConfig: ProfileModelConfig | undefined): ProfileModelConfigPayload | undefined {
-  if (!modelConfig) return undefined;
-  return {
-    preferredModels: normalizeStringArray(modelConfig.preferredModels),
-    fallbackModels: normalizeStringArray(modelConfig.fallbackModels),
-    ...(modelConfig.constraints ? { constraints: modelConfig.constraints } : {}),
-  };
-}
-
-function isMissingPersonaTableError(error: unknown): boolean {
-  const message = error instanceof Error
-    ? error.message
-    : typeof error === "string"
-      ? error
-      : "";
-  return message.includes("no such table: personas")
-    || message.includes("no such table: persona_revisions");
-}
-
-function personaSchemaUnavailableError(): { code: "FAILED_PRECONDITION"; message: string } {
-  return {
-    code: "FAILED_PRECONDITION",
-    message: "Gateway persona schema is unavailable. Restart on the upgraded gateway build to repair identity storage.",
-  };
 }

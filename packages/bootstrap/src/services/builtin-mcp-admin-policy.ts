@@ -11,7 +11,7 @@ export const BUILTIN_MCP_ADMIN_TOOL_NAMES = [
 ] as const;
 
 export type BuiltinMcpAdminToolName = typeof BUILTIN_MCP_ADMIN_TOOL_NAMES[number];
-export type BuiltinMcpAdminAuthMode = "strict" | "compat" | "unavailable";
+export type BuiltinMcpAdminAuthMode = "strict" | "principal_token" | "unavailable";
 
 export interface BuiltinMcpAdminPolicy {
   enabled: boolean;
@@ -120,7 +120,7 @@ function resolveBuiltinMcpAdminAuthMode(input: {
     return "strict";
   }
   if (input.gatewayProfile === "external" || input.tokenIssuerAvailable) {
-    return "compat";
+    return "principal_token";
   }
   return "unavailable";
 }

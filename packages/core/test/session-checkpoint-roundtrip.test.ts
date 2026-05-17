@@ -35,6 +35,7 @@ describe("session-checkpoint-roundtrip", () => {
           "agent-b": {
             status: "active",
             lastTurnId: "turn-1",
+            messages: [],
           },
         },
         label: "test-checkpoint",
@@ -48,7 +49,7 @@ describe("session-checkpoint-roundtrip", () => {
       expect(loaded!.agentStates["agent-a"].messages).toEqual(messages);
       expect(loaded!.agentStates["agent-a"].status).toBe("active");
       expect(loaded!.agentStates["agent-a"].lastTurnId).toBe("turn-2");
-      expect(loaded!.agentStates["agent-b"].messages).toBeUndefined();
+      expect(loaded!.agentStates["agent-b"].messages).toEqual([]);
       expect(loaded!.agentStates["agent-b"].status).toBe("active");
       expect(loaded!.turnIds).toEqual(["turn-1", "turn-2"]);
     });
@@ -78,14 +79,13 @@ describe("session-checkpoint-roundtrip", () => {
       expect(loaded!.agentStates["agent-a"].messages).toEqual(messages);
     });
 
-    it("backward-compatible with checkpoints without messages", async () => {
-      // Directly insert a row without messages in agent states (old format)
+    it("rejects checkpoint agent states without messages", async () => {
       db.prepare(`
         INSERT INTO checkpoints (checkpoint_id, space_id, state_json, config_json, turn_ids_json, agent_states_json, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(
-        "old-checkpoint",
-        "space-old",
+        "invalid-checkpoint",
+        "space-invalid",
         "{}",
         "{}",
         '["turn-1"]',
@@ -93,10 +93,9 @@ describe("session-checkpoint-roundtrip", () => {
         new Date().toISOString(),
       );
 
-      const loaded = await checkpointManager.load("old-checkpoint");
-      expect(loaded).not.toBeNull();
-      expect(loaded!.agentStates["agent-a"].status).toBe("active");
-      expect(loaded!.agentStates["agent-a"].messages).toBeUndefined();
+      await expect(checkpointManager.load("invalid-checkpoint")).rejects.toThrow(
+        "Checkpoint agent state is missing messages: agent-a",
+      );
     });
   });
 

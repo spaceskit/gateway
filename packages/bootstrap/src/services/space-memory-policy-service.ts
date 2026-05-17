@@ -21,6 +21,16 @@ import type {
   ThinkingCapturePolicy,
 } from "@spaceskit/core";
 import type { Logger } from "@spaceskit/observability";
+import {
+  emptyDeletedCounts,
+  normalizeGatewayExperienceCapture,
+  normalizeRequired,
+  normalizeTimestamp,
+  parseSpaceConfig,
+  parseSpaceMemoryPolicy,
+  parseThinkingCapturePolicy,
+  serializeSpaceMemoryPolicy,
+} from "./space-memory-policy-service-helpers.js";
 
 export interface EffectiveSpaceMemoryPolicy {
   experienceCapture: Exclude<SpaceExperienceCaptureMode, "INHERIT">;
@@ -146,10 +156,8 @@ export class SpaceMemoryPolicyService {
     }
 
     const parsedConfig = parseSpaceConfig(space.space_config_json);
-    const configured = parseSpaceMemoryPolicy(parsedConfig.memoryPolicy ?? parsedConfig.memory_policy);
-    const configuredThinkingCapturePolicy = parseThinkingCapturePolicy(
-      parsedConfig.thinkingCapturePolicy ?? parsedConfig.thinking_capture_policy,
-    );
+    const configured = parseSpaceMemoryPolicy(parsedConfig.memoryPolicy);
+    const configuredThinkingCapturePolicy = parseThinkingCapturePolicy(parsedConfig.thinkingCapturePolicy);
     const defaults = this.getGatewayDefaults();
     const effectiveExperienceCapture = configured.privacyMode === "INCOGNITO_SESSION"
       ? "DISABLED"
@@ -236,7 +244,7 @@ export class SpaceMemoryPolicyService {
     }
 
     const parsedConfig = parseSpaceConfig(row.space_config_json);
-    const previous = parseSpaceMemoryPolicy(parsedConfig.memoryPolicy ?? parsedConfig.memory_policy);
+    const previous = parseSpaceMemoryPolicy(parsedConfig.memoryPolicy);
     const next = parseSpaceMemoryPolicy(memoryPolicyInput);
     parsedConfig.memoryPolicy = serializeSpaceMemoryPolicy(next);
     this.options.spaces.updateConfig(spaceId, JSON.stringify(parsedConfig));
@@ -437,104 +445,4 @@ export class SpaceMemoryPolicyService {
     clearTimeout(timer);
     this.inactivityTimers.delete(spaceId);
   }
-}
-
-function emptyDeletedCounts(): EndIncognitoSessionResult["deleted"] {
-  return {
-    turns: 0,
-    eventLog: 0,
-    orchestrationJournal: 0,
-    artifacts: 0,
-    experiences: 0,
-    personalityInsights: 0,
-    agentNotes: 0,
-    agentUsageSessions: 0,
-  };
-}
-
-function normalizeRequired(value: string | undefined, field: string): string {
-  const normalized = typeof value === "string" ? value.trim() : "";
-  if (!normalized) {
-    throw new Error(`${field} is required`);
-  }
-  return normalized;
-}
-
-function normalizeTimestamp(value: string | undefined): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function parseSpaceConfig(raw: string | null): Record<string, unknown> {
-  if (!raw) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Ignore malformed config payloads and fall back to defaults.
-  }
-  return {};
-}
-
-function parseSpaceMemoryPolicy(value: unknown): SpaceMemoryPolicy {
-  const record = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-  return {
-    experienceCapture: parseSpaceExperienceCaptureMode(
-      record.experienceCapture ?? record.experience_capture,
-    ),
-    privacyMode: parseSpacePrivacyMode(
-      record.privacyMode ?? record.privacy_mode,
-    ),
-  };
-}
-
-function parseSpaceExperienceCaptureMode(value: unknown): SpaceExperienceCaptureMode {
-  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
-  switch (normalized) {
-    case "ENABLED":
-      return "ENABLED";
-    case "DISABLED":
-      return "DISABLED";
-    default:
-      return "INHERIT";
-  }
-}
-
-function parseSpacePrivacyMode(value: unknown): SpacePrivacyMode {
-  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
-  return normalized === "INCOGNITO_SESSION" ? "INCOGNITO_SESSION" : "STANDARD";
-}
-
-function parseThinkingCapturePolicy(value: unknown): ThinkingCapturePolicy {
-  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
-  switch (normalized) {
-    case "OFF":
-      return "OFF";
-    case "FULL":
-      return "FULL";
-    default:
-      return "SUMMARY";
-  }
-}
-
-function serializeSpaceMemoryPolicy(value: SpaceMemoryPolicy): Record<string, SpaceExperienceCaptureMode | SpacePrivacyMode> {
-  return {
-    experienceCapture: value.experienceCapture,
-    privacyMode: value.privacyMode,
-  };
-}
-
-function normalizeGatewayExperienceCapture(
-  value: string,
-): Exclude<SpaceExperienceCaptureMode, "INHERIT"> {
-  return value === "DISABLED" ? "DISABLED" : "ENABLED";
 }

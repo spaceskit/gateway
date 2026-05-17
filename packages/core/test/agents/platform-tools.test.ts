@@ -142,7 +142,7 @@ function makeProfileRepo(profiles: Record<string, {
     personality_prompt: string;
     default_skill_set_ids_json: string;
     provider_hint: string;
-    model_hint: string;
+    model_config_json: string;
     created_at: string;
   };
 }> = {}) {
@@ -345,7 +345,10 @@ describe("platform tool executor", () => {
           personality_prompt: "You are a coordinator.",
           default_skill_set_ids_json: '["skill-a","skill-b"]',
           provider_hint: "anthropic",
-          model_hint: "claude-sonnet-4-20250514",
+          model_config_json: JSON.stringify({
+            preferredModels: ["anthropic/claude-sonnet-4-20250514"],
+            fallbackModels: [],
+          }),
           created_at: "2025-01-02",
         },
       },
@@ -362,7 +365,7 @@ describe("platform tool executor", () => {
     const data = result.result as Record<string, unknown>;
     expect(data.name).toBe("Coordinator Agent");
     expect(data.canModerate).toBe(true);
-    expect(data.modelHint).toBe("claude-sonnet-4-20250514");
+    expect(data.modelId).toBe("anthropic/claude-sonnet-4-20250514");
     expect(data.defaultSkillIds).toEqual(["skill-a", "skill-b"]);
   });
 

@@ -13,18 +13,18 @@ function templateConfig(templateId: string): Record<string, any> {
   return JSON.parse(buildTemplateConfigJson(template));
 }
 
-function profileRuntime(profileId: string): { providerHint: string; modelHint: string } {
+function profileRuntime(profileId: string): { providerHint: string; modelId: string } {
   const profile = ARCHETYPE_PROFILES.find((entry) => entry.profileId === profileId);
   if (!profile) {
     throw new Error(`Profile missing: ${profileId}`);
   }
   return {
     providerHint: profile.providerHint,
-    modelHint: profile.modelHint,
+    modelId: profile.modelId,
   };
 }
 
-function expectProfileRuntimes(expected: Record<string, { providerHint: string; modelHint: string }>): void {
+function expectProfileRuntimes(expected: Record<string, { providerHint: string; modelId: string }>): void {
   for (const [profileId, runtime] of Object.entries(expected)) {
     expect(profileRuntime(profileId)).toEqual(runtime);
   }
@@ -61,27 +61,27 @@ describe("workbench archetype templates", () => {
     expectProfileRuntimes({
       "plan-coordinator-opus": {
         providerHint: "claude-agent-sdk",
-        modelHint: "claude-agent-sdk/claude-opus-4-6",
+        modelId: "claude-agent-sdk/claude-opus-4-6",
       },
       "plan-codex-architect": {
         providerHint: "codex-app-server",
-        modelHint: "codex-app-server/gpt-5.4",
+        modelId: "codex-app-server/gpt-5.4",
       },
       "plan-opus-reviewer": {
         providerHint: "claude-agent-sdk",
-        modelHint: "claude-agent-sdk/claude-opus-4-6",
+        modelId: "claude-agent-sdk/claude-opus-4-6",
       },
       "plan-gemini-constraints": {
         providerHint: "gemini",
-        modelHint: "gemini/gemini-2.5-flash",
+        modelId: "gemini/gemini-2.5-flash",
       },
       "plan-lmstudio-maintainer": {
         providerHint: "lmstudio",
-        modelHint: "lmstudio/qwen2.5-coder",
+        modelId: "lmstudio/qwen2.5-coder",
       },
       "plan-apple-continuity": {
         providerHint: "apple",
-        modelHint: "apple/apple-on-device",
+        modelId: "apple/apple-on-device",
       },
     });
   });
@@ -115,23 +115,23 @@ describe("workbench archetype templates", () => {
     expectProfileRuntimes({
       "code-lead-codex": {
         providerHint: "codex-app-server",
-        modelHint: "codex-app-server/gpt-5.4",
+        modelId: "codex-app-server/gpt-5.4",
       },
       "code-opus-reviewer": {
         providerHint: "claude-agent-sdk",
-        modelHint: "claude-agent-sdk/claude-opus-4-6",
+        modelId: "claude-agent-sdk/claude-opus-4-6",
       },
       "code-gemini-integrator": {
         providerHint: "gemini",
-        modelHint: "gemini/gemini-2.5-flash",
+        modelId: "gemini/gemini-2.5-flash",
       },
       "code-lmstudio-maintainer": {
         providerHint: "lmstudio",
-        modelHint: "lmstudio/qwen2.5-coder",
+        modelId: "lmstudio/qwen2.5-coder",
       },
       "code-apple-continuity": {
         providerHint: "apple",
-        modelHint: "apple/apple-on-device",
+        modelId: "apple/apple-on-device",
       },
     });
   });

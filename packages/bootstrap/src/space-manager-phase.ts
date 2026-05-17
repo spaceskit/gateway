@@ -4,7 +4,6 @@ import {
   SpaceManager,
   ReflectionService,
   type ModelMessage,
-  type ProviderSessionHandle,
   type SaveTurnInput,
   type SpaceConfig,
 } from "@spaceskit/core";
@@ -22,7 +21,7 @@ import {
   uniqueStrings,
   writeDeterministicHandoffDigest,
 } from "./turn-helpers.js";
-
+import { parseProviderSessionHandle } from "./space-manager-session-handle.js";
 export function initializeSpaceManager(state: BootstrapState): void {
   const { config, logger } = state;
   const reflectionService = state.reflectionService ?? new ReflectionService({
@@ -61,7 +60,7 @@ export function initializeSpaceManager(state: BootstrapState): void {
     systemPrompt: string;
     effectiveSkillIds: string[];
     providerHint?: string;
-    modelHint?: string;
+    modelId?: string;
     spawnContext?: string;
   }> => {
     const connectorSkillIds = resolveConnectorSkillIds();
@@ -71,7 +70,7 @@ export function initializeSpaceManager(state: BootstrapState): void {
       systemPrompt: "",
       defaultSkillIds: [],
       providerHint: config.modelProvider,
-      modelHint: config.defaultModelId,
+      modelId: config.defaultModelId,
     };
     const fallback = {
       ...fallbackBase,
@@ -109,7 +108,7 @@ export function initializeSpaceManager(state: BootstrapState): void {
         ...connectorSkillIds,
       ]),
       providerHint: profileRuntime.providerHint,
-      modelHint: profileRuntime.modelHint,
+      modelId: profileRuntime.modelId,
       spawnContext: assignment.spawnContext ?? undefined,
     };
   };
@@ -391,7 +390,7 @@ export function initializeSpaceManager(state: BootstrapState): void {
       const profileRuntime = await resolveAgentProfileRuntime(spaceId, agentId);
       const providerSelection = await state.gatewayAdminService.resolveProviderForProfile(
         profileRuntime.providerHint,
-        profileRuntime.modelHint,
+        profileRuntime.modelId,
       );
       const modelProvider = state.executionAdapterFactory.createModelProvider({
         providerId: providerSelection.providerId,
@@ -400,7 +399,6 @@ export function initializeSpaceManager(state: BootstrapState): void {
         authMode: providerSelection.authMode,
         baseURL: providerSelection.baseURL,
         isLocal: providerSelection.isLocal,
-        allowUnsafeHostBypass: config.sandboxAllowHostPassthrough,
       });
       const activeSkillMarkdownById = state.gatewaySkillCatalogService
         ? state.gatewaySkillCatalogService.getActiveSkillMarkdownMap(profileRuntime.effectiveSkillIds)
@@ -435,7 +433,7 @@ export function initializeSpaceManager(state: BootstrapState): void {
           tools: [],
           maxSteps: 10,
           workingDirectory: workspace?.effectiveWorkspaceRoot,
-          nativeCliToolsEnabled: providerSelection.nativeCliToolsEnabled,
+          accessMode: providerSelection.nativeCliToolsEnabled ? "full_access" : "default",
           resolvedSafetyProfileId: (profileRuntime as { safetyProfileId?: string }).safetyProfileId ?? profileRuntime.profileId,
         },
         modelProvider,
@@ -478,33 +476,4 @@ export function initializeSpaceManager(state: BootstrapState): void {
 
   logger.info("Space manager initialized");
   state.spaceManager = spaceManager;
-}
-
-function parseProviderSessionHandle(value: string | null | undefined): ProviderSessionHandle | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return undefined;
-    }
-    const record = parsed as Record<string, unknown>;
-    if (record.type === "openai_response" && typeof record.previousResponseId === "string" && record.previousResponseId.trim()) {
-      return {
-        type: "openai_response",
-        previousResponseId: record.previousResponseId,
-      };
-    }
-    if (record.type === "codex_app_server_thread" && typeof record.threadId === "string" && record.threadId.trim()) {
-      return {
-        type: "codex_app_server_thread",
-        threadId: record.threadId,
-      };
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
 }

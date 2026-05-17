@@ -65,7 +65,6 @@ interface RunLlmCallArgs {
   modelProvider: ModelProvider;
   providerId: string;
   modelId: string;
-  nativeCliToolsEnabled?: boolean;
   generateOpts: GenerateOptions;
   emitEvent: (event: TurnEvent) => void;
 }
@@ -74,11 +73,10 @@ export async function runLlmCall({
   modelProvider,
   providerId,
   modelId,
-  nativeCliToolsEnabled,
   generateOpts,
   emitEvent,
 }: RunLlmCallArgs): Promise<LlmCallResult> {
-  if (isNativeCliToolsMode(providerId, generateOpts.accessMode, generateOpts.nativeCliToolsEnabled ?? nativeCliToolsEnabled)) {
+  if (isNativeCliToolsMode(providerId, generateOpts.accessMode)) {
     // Attempt streaming first to surface tool progress, approval events, and
     // state changes from the CLI executor. Falls back to generate() if the
     // provider does not support streaming.

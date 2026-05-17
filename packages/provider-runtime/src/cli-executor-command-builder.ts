@@ -116,7 +116,7 @@ function resolveCliAccessMode(options: GenerateOptions): TurnAccessMode {
   if (options.accessMode === "default" || options.accessMode === "full_access") {
     return options.accessMode;
   }
-  return options.nativeCliToolsEnabled === true ? "full_access" : "default";
+  return "default";
 }
 
 function resolveClaudePermissionMode(accessMode: TurnAccessMode, approvalBypassEnabled: boolean): string {
@@ -134,8 +134,8 @@ function resolveGeminiApprovalMode(accessMode: TurnAccessMode, approvalBypassEna
 }
 
 function buildMcpBridgeArgs(options: GenerateOptions): string[] {
-  if (!options.mcpBridgeConfig) return [];
-  const { bridgeScriptPath, toolDefsJson, socketPath } = options.mcpBridgeConfig;
+  if (!options.gatewayToolBridgeConfig) return [];
+  const { bridgeScriptPath, toolDefsJson, socketPath } = options.gatewayToolBridgeConfig;
   const mcpConfig = JSON.stringify({
     mcpServers: {
       [CLAUDE_MCP_BRIDGE_SERVER_NAME]: {
@@ -160,8 +160,8 @@ function buildMcpBridgeArgs(options: GenerateOptions): string[] {
 }
 
 function buildCodexMcpBridgeArgs(options: GenerateOptions): string[] {
-  if (!options.mcpBridgeConfig) return [];
-  const { bridgeScriptPath, toolDefsJson, socketPath } = options.mcpBridgeConfig;
+  if (!options.gatewayToolBridgeConfig) return [];
+  const { bridgeScriptPath, toolDefsJson, socketPath } = options.gatewayToolBridgeConfig;
   const toolDefsPath = writeToolDefsToTempFile(toolDefsJson);
   return [
     "-c", `mcp_servers.spaceskit-gateway.command="bun"`,

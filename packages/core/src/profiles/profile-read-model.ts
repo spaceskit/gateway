@@ -14,7 +14,7 @@ export interface AgentTemplateReadModel {
   name: string;
   personalitySummary: string;
   skills: string[];
-  modelHints: string[];
+  modelIds: string[];
   status: "active" | "archived";
   usageCount: number;
   createdAt: string;
@@ -30,7 +30,7 @@ export function toAgentTemplateReadModel(
     name: profile.name,
     personalitySummary: profile.personalityPrompt,
     skills: profile.defaultSkillIds,
-    modelHints: [profile.providerHint, profile.modelHint].filter(Boolean),
+    modelIds: [profile.providerHint, profile.modelId].filter(Boolean),
     status: profile.status,
     usageCount: usageCount ?? 0,
     createdAt: profile.createdAt.toISOString(),

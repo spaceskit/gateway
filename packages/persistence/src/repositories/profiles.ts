@@ -31,7 +31,6 @@ export interface ProfileRevisionRow {
   personality_prompt: string;
   default_skill_set_ids_json: string;
   provider_hint: string;
-  model_hint: string;
   model_config_json: string;
   source: string;
   created_at: string;
@@ -47,7 +46,6 @@ export interface CreateProfileInput {
   personalityPrompt?: string;
   defaultSkillIds?: string[];
   providerHint?: string;
-  modelHint?: string;
   modelConfig?: ProfileModelConfig;
   source?: string;
 }
@@ -60,7 +58,6 @@ export interface UpdateProfileInput {
   personalityPrompt?: string;
   defaultSkillIds?: string[];
   providerHint?: string;
-  modelHint?: string;
   modelConfig?: ProfileModelConfig;
   canModerate?: boolean;
   isDefault?: boolean;
@@ -74,7 +71,7 @@ export class ProfileRepository {
 
   create(input: CreateProfileInput): ProfileRow {
     const now = new Date().toISOString();
-    const modelConfig = normalizeModelConfig(input.modelConfig, input.modelHint);
+    const modelConfig = normalizeModelConfig(input.modelConfig);
 
     this.db.transaction(() => {
       this.db.query(`
@@ -96,14 +93,13 @@ export class ProfileRepository {
       this.db.query(`
         INSERT INTO agent_profile_revisions(
           profile_id, revision, personality_prompt, default_skill_set_ids_json,
-          provider_hint, model_hint, model_config_json, source, created_at
-        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)
+          provider_hint, model_config_json, source, created_at
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
       `).run(
         input.profileId,
         input.personalityPrompt ?? "",
         JSON.stringify(normalizeStringList(input.defaultSkillIds)),
         input.providerHint ?? "",
-        firstPreferredModel(modelConfig) ?? input.modelHint ?? "",
         JSON.stringify(modelConfig),
         input.source ?? "manual",
         now,
@@ -165,15 +161,10 @@ export class ProfileRepository {
 
     const nextRevision = profile.active_revision + 1;
     const now = new Date().toISOString();
-    const existingModelConfig = parseModelConfig(active.model_config_json, active.model_hint);
-    const nextModelConfig = normalizeModelConfig(
-      input.modelConfig ?? existingModelConfig,
-      input.modelHint ?? active.model_hint,
-    );
-    const nextModelHint = firstPreferredModel(nextModelConfig)
-      ?? input.modelHint
-      ?? active.model_hint
-      ?? "";
+    const existingModelConfig = parseModelConfig(active.model_config_json);
+    const nextModelConfig = input.modelConfig === undefined
+      ? existingModelConfig
+      : normalizeModelConfig(input.modelConfig);
     const nextDefaultSkills = input.defaultSkillIds
       ? normalizeStringList(input.defaultSkillIds)
       : parseStringArray(active.default_skill_set_ids_json);
@@ -182,15 +173,14 @@ export class ProfileRepository {
       this.db.query(`
         INSERT INTO agent_profile_revisions(
           profile_id, revision, personality_prompt, default_skill_set_ids_json,
-          provider_hint, model_hint, model_config_json, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          provider_hint, model_config_json, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.profileId,
         nextRevision,
         input.personalityPrompt ?? active.personality_prompt ?? "",
         JSON.stringify(nextDefaultSkills),
         input.providerHint ?? active.provider_hint ?? "",
-        nextModelHint,
         JSON.stringify(nextModelConfig),
         input.source ?? "manual",
         now,
@@ -275,13 +265,9 @@ function normalizeStringList(value: unknown): string[] {
 
 function normalizeModelConfig(
   config: ProfileModelConfig | undefined,
-  modelHint?: string,
 ): ProfileModelConfig {
   const preferredModels = normalizeStringList(config?.preferredModels);
   const fallbackModels = normalizeStringList(config?.fallbackModels);
-  if (preferredModels.length === 0 && modelHint?.trim()) {
-    preferredModels.push(modelHint.trim());
-  }
 
   const constraints = config?.constraints && isRecord(config.constraints)
     ? config.constraints
@@ -296,27 +282,21 @@ function normalizeModelConfig(
 
 function parseModelConfig(
   raw: string | null | undefined,
-  legacyModelHint?: string,
 ): ProfileModelConfig {
   if (raw?.trim()) {
     try {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
-      return normalizeModelConfig({
+      return {
         preferredModels: normalizeStringList(parsed.preferredModels),
         fallbackModels: normalizeStringList(parsed.fallbackModels),
-        constraints: isRecord(parsed.constraints) ? parsed.constraints : undefined,
-      }, legacyModelHint);
+        ...(isRecord(parsed.constraints) ? { constraints: parsed.constraints } : {}),
+      };
     } catch {
-      // Fallback to legacy model_hint below.
+      // Treat malformed model config as empty; model_config_json is canonical.
     }
   }
 
-  return normalizeModelConfig(undefined, legacyModelHint);
-}
-
-function firstPreferredModel(modelConfig: ProfileModelConfig | undefined): string | undefined {
-  const preferred = normalizeStringList(modelConfig?.preferredModels);
-  return preferred[0];
+  return { preferredModels: [], fallbackModels: [] };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

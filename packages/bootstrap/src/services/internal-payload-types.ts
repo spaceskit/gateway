@@ -12,7 +12,6 @@ export interface AgentDefinitionSummaryPayload {
   instructions: string;
   defaultSkillIds: string[];
   providerHint?: string;
-  modelHint?: string;
   modelConfig?: ProfileModelConfigPayload;
   isDefault: boolean;
   status: "active" | "archived";
@@ -71,7 +70,6 @@ export interface IdentityCreateAgentDefinitionPayload {
   instructions?: string;
   defaultSkillIds?: string[];
   providerHint?: string;
-  modelHint?: string;
   modelConfig?: ProfileModelConfigPayload;
   isDefault?: boolean;
 }
@@ -91,7 +89,6 @@ export interface IdentityUpdateAgentDefinitionPayload {
   instructions?: string;
   defaultSkillIds?: string[];
   providerHint?: string;
-  modelHint?: string;
   modelConfig?: ProfileModelConfigPayload;
   isDefault?: boolean;
 }

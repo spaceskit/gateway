@@ -26,7 +26,7 @@ export interface Checkpoint {
   /** Turn IDs completed before this checkpoint. */
   turnIds: string[];
   /** Agent execution states at checkpoint time. */
-  agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
+  agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
   createdAt: Date;
 }
 
@@ -51,7 +51,7 @@ export interface CheckpointData {
   stateJson: string;
   configJson: string;
   turnIds: string[];
-  agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
+  agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
   label?: string;
 }
 
@@ -149,9 +149,14 @@ export class SQLiteCheckpointManager implements CheckpointManager {
 
   private rowToCheckpoint(row: any): Checkpoint {
     let turnIds: string[] = [];
-    let agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }> = {};
+    let agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }> = {};
     try { turnIds = JSON.parse(row.turn_ids_json ?? "[]"); } catch { /* corrupted data */ }
     try { agentStates = JSON.parse(row.agent_states_json ?? "{}"); } catch { /* corrupted data */ }
+    for (const [agentId, state] of Object.entries(agentStates)) {
+      if (!Array.isArray(state.messages)) {
+        throw new Error(`Checkpoint agent state is missing messages: ${agentId}`);
+      }
+    }
     return {
       checkpointId: row.checkpoint_id,
       spaceId: row.space_id,

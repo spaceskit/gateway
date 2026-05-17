@@ -16,7 +16,6 @@ export interface NotificationHandlerOptions {
 
 /** Default notification categories clients are auto-subscribed to. */
 const DEFAULT_CATEGORIES: NotificationCategory[] = [
-  "space.completed",
   "space.failed",
   "turn.completed",
   "turn.failed",

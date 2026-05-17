@@ -10,7 +10,7 @@ import { handleGatewayDiscoverLocalAgents, handleGatewayGetConciergeAgent, handl
 import { handleGatewayCreateIntegrationRequest, handleGatewayDeleteSecretRef, handleGatewayFactoryReset, handleGatewayGetLocalUsageTelemetry, handleGatewayGetProviderSettings, handleGatewayGetProviderTelemetry, handleGatewayGetRuntimeDefaults, handleGatewayListIntegrationRequests, handleGatewayListInterconnectors, handleGatewayListSecretRefs, handleGatewayProvisionLocalProfile, handleGatewayPutSecretRef, handleGatewayRemoveProviderConfig, handleGatewayRescanInterconnectors, handleGatewaySetProviderConfig, handleGatewaySetRuntimeDefaults, handleGatewayUpdateProviderSettings, handleToolGet, handleToolList, handleToolListGrants, handleToolRegister, handleToolRemove, handleToolRevokeGrant, handleToolScaffold, handleToolSetEnabled } from "./gateway-control-handlers.js";
 import { handleConnectorSubmitInboundEvent, handleGatewayGetConnectorPolicy, handleGatewayListConnectorBindings, handleGatewayListConnectorFamilies, handleGatewayListConnectors, handleGatewayRemoveConnector, handleGatewayRemoveConnectorBinding, handleGatewayTestConnector, handleGatewayUpdateConnectorPolicy, handleGatewayUpsertConnector, handleGatewayUpsertConnectorBinding } from "./gateway-connector-handlers.js";
 import { handleIdentityArchiveAgentDefinition, handleIdentityArchivePersona, handleIdentityCreateAgentDefinition, handleIdentityCreatePersona, handleIdentityGetAgentDefinition, handleIdentityGetPersona, handleIdentityListAgentDefinitions, handleIdentityListPersonas, handleIdentityPreviewCompiledInstructions, handleIdentityPreviewRuntimeSystemPrompt, handleIdentityPreviewSystemPromptMatrix, handleIdentityUpdateAgentDefinition, handleIdentityUpdatePersona, handleSpaceArchiveTemplate, handleSpaceCreateFromTemplate, handleSpaceGetTemplate, handleSpaceListTemplates, handleSpacePreviewTemplate, handleSpaceSaveTemplate } from "./identity-template-handlers.js";
-import { handleGatewayGetPolicy, handleGatewayGrantCapability, handleGatewayKnowledgeBaseDeleteEntry, handleGatewayKnowledgeBaseListEntries, handleGatewayKnowledgeBaseUpsertEntry, handleGatewayListCapabilityGrants, handleGatewayRevokeCapability, handleGatewaySkillDelete, handleGatewaySkillGet, handleGatewaySkillList, handleGatewaySkillUpsert, handleGatewayUpdatePolicy, handleUsageGetSnapshot, handleLibraryListEntries, handleLibraryGetEntry, handleLibrarySaveSkill, handleLibraryImportEntry, handleLibraryArchiveEntry, handleLibrarySetEntryEnabled, handleLibraryDeleteEntry, handleLibraryScanEntries, handleLibraryListSkillDrafts, handleLibraryGetSkillDraft, handleLibraryCreateSkillDraft, handleLibraryDeleteSkillDraft } from "./gateway-governance-handlers.js";
+import { handleGatewayGetPolicy, handleGatewayGrantCapability, handleGatewayKnowledgeBaseDeleteEntry, handleGatewayKnowledgeBaseListEntries, handleGatewayKnowledgeBaseUpsertEntry, handleGatewayListCapabilityGrants, handleGatewayRevokeCapability, handleGatewaySkillDelete, handleGatewaySkillGet, handleGatewaySkillList, handleGatewaySkillUpsert, handleGatewayUpdatePolicy, handleUsageGetSnapshot } from "./gateway-governance-handlers.js";
 import { handleOrchestratorCommand, handleOrchestratorGetCommand, handleSchedulerCreateJob, handleSchedulerDeleteJob, handleSchedulerGetJob, handleSchedulerLinkSpace, handleSchedulerListEvalDefinitions, handleSchedulerListJobs, handleSchedulerListRuns, handleSchedulerRunNow, handleSchedulerUnlinkSpace, handleSchedulerUpdateJob } from "./scheduler-handlers.js";
 import { handleWorkbenchApproveStage, handleWorkbenchCancelRun, handleWorkbenchCreateBatch, handleWorkbenchGetPolicy, handleWorkbenchGetQueueItem, handleWorkbenchGetRun, handleWorkbenchListArtifacts, handleWorkbenchListBatches, handleWorkbenchListQueue, handleWorkbenchListRuns, handleWorkbenchRejectStage, handleWorkbenchRetryRun, handleWorkbenchSetMode, handleWorkbenchStartRun, handleWorkbenchUpdateBatch, handleWorkbenchUpdatePolicy } from "./workbench-handlers.js";
 import { handleSpaceLink, handleSpacePullSharedContext, handleSpaceShareContext, handleSpaceShareCreateInvite, handleSpaceShareJoin, handleSpaceShareListParticipants, handleSpaceShareRevoke, handleSpaceUnlink } from "./space-sharing-handlers.js";
@@ -47,18 +47,8 @@ import {
   handleSpaceUploadChangeSetFileInit,
 } from "./changeset-handlers.js";
 import { handleCapabilitiesDeregister, handleCapabilitiesRegister, handleCapabilityError, handleCapabilityResult } from "./adapter-capability-handlers.js";
-import { handleAgentMessage, handleAgentPoke, handleConciergeActionResult, handleSessionListResumable, handleSessionResume, handleTaskDependency } from "./realtime-collaboration-handlers.js";
-import {
-  handleConciergeCallAnswer,
-  handleConciergeCallAudioChunk,
-  handleConciergeCallControl,
-  handleConciergeCallEnd,
-  handleConciergeCallHandoffAccept,
-  handleConciergeCallHandoffPrepare,
-  handleConciergeCallRegisterPush,
-  handleConciergeCallSetMuted,
-  handleConciergeCallStart,
-} from "./concierge-call-handlers.js";
+import { routeLibraryMessage } from "./route-library.js";
+import { routeTransportRealtimeMessage } from "./route-transport-realtime.js";
 
 export async function routeMessage(
   router: MessageRouter,
@@ -463,23 +453,15 @@ export async function routeMessage(
     case MessageTypes.SPEECH_CONTROL:
       return handleSpeechControl(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_START:
-      return handleConciergeCallStart(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_ANSWER:
-      return handleConciergeCallAnswer(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_END:
-      return handleConciergeCallEnd(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_SET_MUTED:
-      return handleConciergeCallSetMuted(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_AUDIO_CHUNK:
-      return handleConciergeCallAudioChunk(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_CONTROL:
-      return handleConciergeCallControl(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_HANDOFF_PREPARE:
-      return handleConciergeCallHandoffPrepare(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_HANDOFF_ACCEPT:
-      return handleConciergeCallHandoffAccept(router.transportHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_CALL_REGISTER_PUSH:
-      return handleConciergeCallRegisterPush(router.transportHandlerContext(), client, msg);
+      return routeTransportRealtimeMessage(router, client, msg);
     case MessageTypes.CAPABILITIES_REGISTER:
       return handleCapabilitiesRegister(router.adapterCapabilityHandlerContext(), client, msg);
     case MessageTypes.CAPABILITIES_DEREGISTER:
@@ -495,42 +477,13 @@ export async function routeMessage(
         "authenticate is handled by GatewayServer transport-level auth flow",
       );
     case MessageTypes.AGENT_MESSAGE:
-      return handleAgentMessage(router.realtimeCollaborationHandlerContext(), client, msg);
     case MessageTypes.AGENT_POKE:
-      return handleAgentPoke(router.realtimeCollaborationHandlerContext(), client, msg);
     case MessageTypes.TASK_DEPENDENCY:
-      return handleTaskDependency(router.realtimeCollaborationHandlerContext(), client, msg);
     case MessageTypes.CONCIERGE_ACTION_RESULT:
-      return handleConciergeActionResult(router.realtimeCollaborationHandlerContext(), client, msg);
     case MessageTypes.SESSION_LIST_RESUMABLE:
-      return handleSessionListResumable(router.realtimeCollaborationHandlerContext(), client, msg);
     case MessageTypes.SESSION_RESUME:
-      return handleSessionResume(router.realtimeCollaborationHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_LIST_ENTRIES:
-      return handleLibraryListEntries(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_GET_ENTRY:
-      return handleLibraryGetEntry(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_SAVE_SKILL:
-      return handleLibrarySaveSkill(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_IMPORT_ENTRY:
-      return handleLibraryImportEntry(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_ARCHIVE_ENTRY:
-      return handleLibraryArchiveEntry(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_SET_ENTRY_ENABLED:
-      return handleLibrarySetEntryEnabled(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_DELETE_ENTRY:
-      return handleLibraryDeleteEntry(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_SCAN_ENTRIES:
-      return handleLibraryScanEntries(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_LIST_SKILL_DRAFTS:
-      return handleLibraryListSkillDrafts(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_GET_SKILL_DRAFT:
-      return handleLibraryGetSkillDraft(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_CREATE_SKILL_DRAFT:
-      return handleLibraryCreateSkillDraft(router.gatewayGovernanceHandlerContext(), client, msg);
-    case MessageTypes.LIBRARY_DELETE_SKILL_DRAFT:
-      return handleLibraryDeleteSkillDraft(router.gatewayGovernanceHandlerContext(), client, msg);
+      return routeTransportRealtimeMessage(router, client, msg);
     default:
-      return router.errorResponse(msg.id, "INVALID_ARGUMENT", `Unknown message type: ${msg.type}`);
+      return routeLibraryMessage(router, client, msg);
   }
 }

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createContext } from "./gateway-admin-service-test-helpers.js";
 
 describe("DefaultGatewayAdminService profile resolution", () => {
-  test("prefers model-hint provider when providerHint and modelHint conflict", async () => {
+  test("prefers model-hint provider when providerHint and modelId conflict", async () => {
     const ctx = createContext();
     try {
       ctx.admin.setProviderConfig({
@@ -71,14 +71,14 @@ describe("DefaultGatewayAdminService profile resolution", () => {
     }
   });
 
-  test("rejects conflicting providerHint and modelHint in profile selection validation", () => {
+  test("rejects conflicting providerHint and modelId in profile selection validation", () => {
     const ctx = createContext();
     try {
       let error: unknown;
       try {
         ctx.admin.validateProfileModelSelection({
           providerHint: "anthropic",
-          modelHint: "openai/gpt-4.1",
+          modelId: "openai/gpt-4.1",
         });
       } catch (err) {
         error = err;

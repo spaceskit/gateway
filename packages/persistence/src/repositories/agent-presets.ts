@@ -199,16 +199,6 @@ export class AgentPresetRepository {
     return { preset, revision, created };
   }
 
-  claimOwnerIfUnowned(presetId: string, ownerPrincipalId: string): boolean {
-    return this.db.query(`
-      UPDATE agent_presets
-      SET owner_principal_id = ?,
-          updated_at = ?
-      WHERE preset_id = ?
-        AND owner_principal_id = ''
-    `).run(ownerPrincipalId, new Date().toISOString(), presetId).changes > 0;
-  }
-
   archive(presetId: string): boolean {
     return this.db.query(`
       UPDATE agent_presets

@@ -84,7 +84,7 @@ export class SessionContinuityManager {
     spaceId: string,
     clientId: string,
     spaceState?: {
-      agentStates: Record<string, { status: string; lastTurnId?: string; messages?: ModelMessage[] }>;
+      agentStates: Record<string, { status: string; lastTurnId?: string; messages: ModelMessage[] }>;
       turnIds: string[];
     },
   ): Promise<void> {

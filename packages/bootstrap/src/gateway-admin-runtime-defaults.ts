@@ -14,6 +14,7 @@ import {
   deriveProviderFromModel,
   mergeSkillIds,
   normalizeProviderId,
+  parseModelConfig,
   normalizeRuntimeDefaultSelection,
   parseStringArray,
   runtimeDefaultPriority,
@@ -139,7 +140,6 @@ export function updateGatewayAdminManagedRuntimeProfile(
   profileRepo.update({
     profileId,
     providerHint: selection.providerId,
-    modelHint: selection.modelId,
     defaultSkillIds: mergeSkillIds(
       parseStringArray(activeRevision?.default_skill_set_ids_json),
       [USER_ESCALATION_SKILL_ID],
@@ -186,9 +186,10 @@ function runtimeDefaultSelectionFromProfile(
   }
 
   const revision = profileRepo.getActiveRevision(profileId);
+  const modelConfig = parseModelConfig(revision?.model_config_json);
   return normalizeRuntimeDefaultSelection(
     revision?.provider_hint ?? undefined,
-    revision?.model_hint ?? undefined,
+    modelConfig.preferredModels[0],
   );
 }
 

@@ -19,6 +19,26 @@ import type {
   ConciergeEscalationRequestRow,
 } from "@spaceskit/persistence";
 import type { ConciergeCallRuntimeService } from "./concierge-call-runtime-service.js";
+import {
+  assertSpaceMatch,
+  buildDeepLink,
+  buildNotificationTargets,
+  buildUserMessage,
+  isRecord,
+  normalizeAllowedResponses,
+  normalizeFallbackPolicy,
+  normalizeOptional,
+  normalizeRequired,
+  normalizeResponseAction,
+  normalizeResponseMode,
+  normalizeTimeoutSeconds,
+  normalizeUnknownString,
+  normalizeUrgency,
+  parseAllowedResponses,
+  parseDate,
+  toRequestResult,
+  toStatusResult,
+} from "./concierge-escalation-service-helpers.js";
 
 const DEFAULT_RESPONSE_MODE: ConciergeEscalationResponseMode = "structured";
 const DEFAULT_TIMEOUT_SECONDS = 300;
@@ -70,13 +90,13 @@ export class ConciergeEscalationService {
     const question = normalizeRequired(input.question, "question");
     const reason = normalizeRequired(input.reason, "reason");
     const urgency = normalizeUrgency(input.urgency);
-    const responseMode = normalizeResponseMode(input.responseMode);
+    const responseMode = normalizeResponseMode(input.responseMode, DEFAULT_RESPONSE_MODE);
     const allowedResponses = normalizeAllowedResponses(input.allowedResponses);
     const fallbackPolicy = normalizeFallbackPolicy(input.fallbackPolicy);
     if (fallbackPolicy === "urgent_call_after_timeout" && urgency !== "urgent") {
       throw new Error("fallbackPolicy urgent_call_after_timeout requires urgency=urgent");
     }
-    const timeoutSeconds = normalizeTimeoutSeconds(input.timeoutSeconds, fallbackPolicy);
+    const timeoutSeconds = normalizeTimeoutSeconds(input.timeoutSeconds, fallbackPolicy, DEFAULT_TIMEOUT_SECONDS, DEFAULT_URGENT_CALL_TIMEOUT_SECONDS);
     const requestId = randomUUID();
     const expiresAt = new Date(now.getTime() + (timeoutSeconds * 1000));
     const deepLink = buildDeepLink(requestId, input.spaceId);
@@ -392,194 +412,4 @@ export class ConciergeEscalationService {
     }
     return row;
   }
-}
-
-function assertSpaceMatch(row: ConciergeEscalationRequestRow, spaceId: string): void {
-  if (row.space_id !== spaceId) {
-    throw new Error(`Concierge escalation request ${row.request_id} does not belong to space ${spaceId}`);
-  }
-}
-
-function toRequestResult(row: ConciergeEscalationRequestRow): ConciergeEscalationRequestResult {
-  return {
-    requestId: row.request_id,
-    status: row.status,
-    deliveryChannel: row.delivery_channel,
-    expiresAt: row.expires_at ?? undefined,
-    deepLink: row.deep_link || undefined,
-    response: parseResponse(row),
-  };
-}
-
-function toStatusResult(row: ConciergeEscalationRequestRow): ConciergeEscalationStatusResult {
-  return {
-    ...toRequestResult(row),
-    question: row.question,
-    reason: row.reason,
-    urgency: row.urgency,
-    allowedResponses: parseAllowedResponses(row),
-    fallbackPolicy: row.fallback_policy,
-  };
-}
-
-function parseAllowedResponses(row: ConciergeEscalationRequestRow): ConciergeEscalationAllowedResponse[] {
-  try {
-    const parsed = JSON.parse(row.allowed_responses_json);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (entry): entry is ConciergeEscalationAllowedResponse =>
-        entry === "approve"
-        || entry === "reject"
-        || entry === "defer"
-        || entry === "revise"
-        || entry === "open_app",
-    );
-  } catch {
-    return [];
-  }
-}
-
-function parseResponse(row: ConciergeEscalationRequestRow): Record<string, unknown> | undefined {
-  if (!row.response_json?.trim()) return undefined;
-  try {
-    const parsed = JSON.parse(row.response_json);
-    return isRecord(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function buildNotificationTargets(spaceId: string, principalId?: string): Notification["targets"] {
-  const targets: Notification["targets"] = [{ type: "space", spaceId }];
-  if (principalId) {
-    targets.unshift({ type: "user", userId: principalId });
-  }
-  return targets;
-}
-
-function buildDeepLink(requestId: string, spaceId: string): string {
-  return `spaces://concierge/request?requestId=${encodeURIComponent(requestId)}&spaceId=${encodeURIComponent(spaceId)}`;
-}
-
-function buildUserMessage(
-  question: string,
-  reason: string,
-  urgency: ConciergeEscalationUrgency,
-): string {
-  const normalizedQuestion = ensureQuestion(question);
-  const normalizedReason = normalizeOptional(reason);
-  if (!normalizedReason) {
-    return normalizedQuestion;
-  }
-  if (urgency === "urgent") {
-    return `${normalizedQuestion} ${capitalize(normalizedReason)}.`;
-  }
-  return `${normalizedQuestion} ${normalizedReason}.`;
-}
-
-function ensureQuestion(value: string): string {
-  const trimmed = normalizeRequired(value, "question");
-  if (/[?]$/.test(trimmed)) return trimmed;
-  return `${trimmed}?`;
-}
-
-function normalizeUrgency(value: ConciergeEscalationRequestInput["urgency"]): ConciergeEscalationUrgency {
-  return value === "passive" || value === "important" || value === "urgent"
-    ? value
-    : "important";
-}
-
-function normalizeResponseMode(
-  value: ConciergeEscalationRequestInput["responseMode"],
-): ConciergeEscalationResponseMode {
-  if (value && value !== "structured") {
-    throw new Error("Only responseMode=structured is supported");
-  }
-  return DEFAULT_RESPONSE_MODE;
-}
-
-function normalizeAllowedResponses(
-  value: ConciergeEscalationRequestInput["allowedResponses"],
-): ConciergeEscalationAllowedResponse[] {
-  const normalized = Array.isArray(value) && value.length > 0
-    ? value.filter(
-      (entry): entry is ConciergeEscalationAllowedResponse =>
-        entry === "approve"
-        || entry === "reject"
-        || entry === "defer"
-        || entry === "revise"
-        || entry === "open_app",
-    )
-    : ["approve", "reject", "defer", "revise"] as ConciergeEscalationAllowedResponse[];
-  if (normalized.length === 0) {
-    throw new Error("allowedResponses must contain at least one structured response");
-  }
-  return Array.from(new Set(normalized)) as ConciergeEscalationAllowedResponse[];
-}
-
-function normalizeFallbackPolicy(
-  value: ConciergeEscalationRequestInput["fallbackPolicy"],
-): ConciergeEscalationFallbackPolicy {
-  return value === "urgent_call_after_timeout" ? value : "none";
-}
-
-function normalizeTimeoutSeconds(
-  value: ConciergeEscalationRequestInput["timeoutSeconds"],
-  fallbackPolicy: ConciergeEscalationFallbackPolicy,
-): number {
-  const fallback = fallbackPolicy === "urgent_call_after_timeout"
-    ? DEFAULT_URGENT_CALL_TIMEOUT_SECONDS
-    : DEFAULT_TIMEOUT_SECONDS;
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.max(1, Math.floor(value));
-}
-
-function normalizeResponseAction(
-  value: unknown,
-  allowedResponses: ConciergeEscalationAllowedResponse[],
-): ConciergeEscalationAllowedResponse | undefined {
-  if (
-    value !== "approve"
-    && value !== "reject"
-    && value !== "defer"
-    && value !== "revise"
-    && value !== "open_app"
-  ) {
-    return undefined;
-  }
-  return allowedResponses.includes(value) ? value : undefined;
-}
-
-function parseDate(value: string | null | undefined): Date | undefined {
-  if (!value?.trim()) return undefined;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-}
-
-function normalizeRequired(value: string | undefined | null, field: string): string {
-  const normalized = normalizeOptional(value);
-  if (!normalized) {
-    throw new Error(`${field} is required`);
-  }
-  return normalized;
-}
-
-function normalizeOptional(value: string | undefined | null): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeUnknownString(value: unknown): string | undefined {
-  return typeof value === "string" ? normalizeOptional(value) : undefined;
-}
-
-function capitalize(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

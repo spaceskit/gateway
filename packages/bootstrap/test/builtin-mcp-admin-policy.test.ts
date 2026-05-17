@@ -6,7 +6,7 @@ import {
 } from "../src/services/builtin-mcp-admin-policy.js";
 
 describe("builtin MCP admin policy", () => {
-  test("seeds legacy defaults from bootstrap enablement when no stored policy exists", () => {
+  test("seeds bootstrap defaults when no stored policy exists", () => {
     const policy = resolveBuiltinMcpAdminPolicy({
       globalFlags: {},
       bootstrapDefaultEnabled: true,
@@ -66,6 +66,19 @@ describe("builtin MCP admin policy", () => {
     expect(metadata.authMode).toBe("strict");
     expect(metadata.tokenIssuerAvailable).toBe(true);
     expect(metadata.defaultTargetSpaceId).toBe("main-space");
+  });
+
+  test("uses principal token auth mode when principal tokens are available", () => {
+    const metadata = buildBuiltinMcpAdminRuntimeMetadata({
+      globalFlags: undefined,
+      bootstrapDefaultEnabled: true,
+      gatewayProfile: "external",
+      strictHttpPrincipalAuth: false,
+      tokenIssuerAvailable: true,
+      defaultTargetSpaceId: "main-space",
+    });
+
+    expect(metadata.authMode).toBe("principal_token");
   });
 
   test("marks embedded gateways without HTTP principal support as unavailable", () => {

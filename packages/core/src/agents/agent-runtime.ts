@@ -38,8 +38,6 @@ export interface AgentConfig {
   temperature?: number;
   workingDirectory?: string;
   accessMode?: TurnAccessMode;
-  /** @deprecated Use accessMode instead. */
-  nativeCliToolsEnabled?: boolean;
   resolvedSafetyProfileId?: string;
 }
 

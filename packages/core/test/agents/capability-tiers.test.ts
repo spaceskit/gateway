@@ -17,7 +17,7 @@ describe("capability tiers", () => {
   test("returns the configured provider hints for advanced capability", () => {
     expect(resolveTierProviderHints("advanced")).toEqual({
       providers: ["anthropic", "openai", "openrouter"],
-      modelHints: {
+      modelIds: {
         anthropic: "claude-sonnet-4-20250514",
         openai: "gpt-4.1",
         openrouter: "anthropic/claude-sonnet-4",

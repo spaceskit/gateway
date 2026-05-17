@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { legacyEffectiveToolMatrixFromAccess } from "../src/effective-tool-matrix.js";
+import { effectiveToolMatrixFromAccess } from "../src/effective-tool-matrix.js";
 
-describe("legacyEffectiveToolMatrixFromAccess", () => {
+describe("effectiveToolMatrixFromAccess", () => {
   test("preserves allowed operations without deny reasons", () => {
-    const matrix = legacyEffectiveToolMatrixFromAccess({
+    const matrix = effectiveToolMatrixFromAccess({
       spaceId: "space-1",
       agentId: "agent-1",
       policyVersion: "policy-1",
@@ -33,8 +33,8 @@ describe("legacyEffectiveToolMatrixFromAccess", () => {
     });
   });
 
-  test("maps denied operations to the legacy denyReasons payload", () => {
-    const matrix = legacyEffectiveToolMatrixFromAccess({
+  test("maps denied operations to the denyReasons payload", () => {
+    const matrix = effectiveToolMatrixFromAccess({
       spaceId: "space-1",
       policyVersion: "policy-2",
       generatedAt: "2026-04-09T08:05:00.000Z",

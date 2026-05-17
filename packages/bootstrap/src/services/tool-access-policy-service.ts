@@ -4,14 +4,10 @@ import type {
   CapabilityRegistry,
   CapabilityExecutionOrigin,
   CapabilityType,
-  DangerousCapabilityId,
   DangerousCapabilityRule,
-  EffectiveDangerousCapability,
   EffectiveToolAccess,
-  EffectiveToolAccessOperation,
   GuestAccessPreset,
   SafetyProfileDefinition,
-  SafetyProfileId,
   SpaceAdminService,
   ToolAccessEvaluation,
   ToolAccessPolicy,
@@ -19,7 +15,6 @@ import type {
   ToolAccessRule,
   TurnRequestAccessMode,
 } from "@spaceskit/core";
-import { DEFAULT_SAFETY_PROFILES } from "@spaceskit/core";
 import {
   createGatewayCoreState,
   getGatewayCoreProfile,
@@ -28,17 +23,12 @@ import {
 import type {
   AccessGrantRepository,
   AuditEventsRepository,
-  ConnectorPolicyRepository,
   SafetyProfileRepository,
-  SpaceToolPolicyRepository,
   ToolAccessPolicyRepository,
 } from "@spaceskit/persistence";
-import type { DefaultGatewayPolicyService } from "./gateway-policy-service.js";
 import type { CliToolService } from "./cli-tool-service.js";
 import type { GatewayCapabilityAccessService } from "./gateway-capability-access-service.js";
 import {
-  resolveEffectiveAccessMode as resolveEffectiveAccessModeHelper,
-  resolveExecutionOrigin as resolveExecutionOriginHelper,
   resolveGatewayCapabilityAccess as resolveGatewayCapabilityAccessHelper,
   type GatewayCapabilityAccessDecision,
   type GatewayCapabilityAccessEvaluatorDeps,
@@ -46,27 +36,48 @@ import {
 import type { SpaceSharingService } from "./space-sharing-service.js";
 import type { ToolApprovalGrantService } from "./tool-approval-grant-service.js";
 import {
-  ensureLegacyPolicyMigrated as ensureLegacyPolicyMigratedHelper,
-  type LegacyPolicyMigrationDeps,
-} from "./tool-access-policy-legacy-migration.js";
+  buildEffectiveToolAccessOperation,
+  evaluateSelectorAvailability as evaluateSelectorAvailabilityHelper,
+  evaluateSelectorsAgainstPolicies,
+  evaluateToolOperationAccess,
+  resolveToolProviderVisibilityDecision,
+  type SelectorPolicyEvaluationDeps,
+  type ToolAccessSelectorDecision,
+  type ToolSelectorAvailabilityDeps,
+  type ToolSelectorAvailabilityInput,
+} from "./tool-access-policy-decisions.js";
+import {
+  describeDangerousCapability,
+  evaluateDangerousCapability as evaluateDangerousCapabilityHelper,
+  type DangerousCapabilityAccessEvaluationInput,
+  type DangerousCapabilityPolicyDeps,
+} from "./tool-access-policy-dangerous.js";
+import { createGatewayCapabilityAccessEvaluatorDeps } from "./tool-access-policy-gateway-deps.js";
 import {
   DANGEROUS_CAPABILITIES,
-  capabilitySupportsFullAccess,
-  capitalize,
-  emptyPolicy,
-  findDangerousRule,
-  isRecord,
   normalizeDangerousCapabilities,
   normalizeGuestAccessPreset,
   normalizeOptional,
-  normalizePolicy,
   normalizeRequired,
   normalizeRules,
-  normalizeSafetyProfileId,
-  parseDangerousCapabilities,
-  parseRules,
   rowToPolicy,
 } from "./tool-access-policy-normalizers.js";
+import {
+  listSafetyProfiles as listSafetyProfilesHelper,
+  resolveAgentPolicy as resolveAgentPolicyHelper,
+  resolveAgentSafetyProfile,
+  resolveSafetyProfile,
+  seedDefaultSafetyProfiles as seedDefaultSafetyProfilesHelper,
+  type ToolAccessPolicyProfileReadDeps,
+} from "./tool-access-policy-profiles.js";
+import {
+  buildSelectorIds,
+  isManagedCliTool,
+  requiredDangerousCapability,
+  resolveCandidateOperations,
+  resolveProviders,
+  type ToolAccessCandidateOperation,
+} from "./tool-access-policy-selectors.js";
 
 export interface ToolAccessPolicyServiceOptions {
   capabilities: CapabilityRegistry;
@@ -76,9 +87,6 @@ export interface ToolAccessPolicyServiceOptions {
   accessGrants: AccessGrantRepository;
   gatewayCapabilityAccessService?: Pick<GatewayCapabilityAccessService, "evaluateInvocation"> | null;
   gatewayProfileId?: GatewayCoreProfileId;
-  legacySpaceToolPolicies?: SpaceToolPolicyRepository | null;
-  legacyGatewayPolicyService?: DefaultGatewayPolicyService | null;
-  legacyConnectorPolicies?: ConnectorPolicyRepository | null;
   spaceSharingService?: Pick<SpaceSharingService, "evaluateAccess" | "getActiveParticipant"> | null;
   cliToolService?: Pick<CliToolService, "getTool"> | null;
   toolApprovalGrantService?: Pick<ToolApprovalGrantService, "hasActiveGrant"> | null;
@@ -97,22 +105,11 @@ export class ToolAccessPolicyService {
     this.defaultGatewayCoreState = createGatewayCoreState({
       profileId: options.gatewayProfileId ?? "embedded",
     });
-    this.seedDefaultSafetyProfiles();
+    seedDefaultSafetyProfilesHelper(this.options.safetyProfiles);
   }
 
   listSafetyProfiles(): SafetyProfileDefinition[] {
-    const rows = this.options.safetyProfiles.list();
-    if (rows.length === 0) {
-      return DEFAULT_SAFETY_PROFILES;
-    }
-    return rows.map((row) => ({
-      profileId: normalizeSafetyProfileId(row.profile_id) ?? "safe",
-      displayName: row.display_name,
-      description: row.description,
-      rules: parseRules(row.rules_json),
-      dangerousCapabilities: parseDangerousCapabilities(row.dangerous_capabilities_json),
-      updatedAt: row.updated_at,
-    }));
+    return listSafetyProfilesHelper(this.options.safetyProfiles);
   }
 
   getToolPolicy(input: {
@@ -121,7 +118,6 @@ export class ToolAccessPolicyService {
   }): ToolAccessPolicy {
     const scopeType = input.scopeType;
     const scopeId = normalizeRequired(input.scopeId, "scopeId");
-    this.ensureLegacyPolicyMigrated(scopeType, scopeId);
     const row = this.options.toolPolicies.get(scopeType, scopeId);
     return rowToPolicy(scopeType, scopeId, row);
   }
@@ -158,11 +154,11 @@ export class ToolAccessPolicyService {
       normalizeOptional(input.updatedBy) ?? "system",
       scopeType === "space" ? scopeId : "*",
       {
-      scopeType,
-      scopeId,
-      rules: nextRules,
-      dangerousCapabilities: nextDangerousCapabilities,
-      guestAccessPreset: nextGuestAccessPreset,
+        scopeType,
+        scopeId,
+        rules: nextRules,
+        dangerousCapabilities: nextDangerousCapabilities,
+        guestAccessPreset: nextGuestAccessPreset,
       },
     );
     return rowToPolicy(scopeType, scopeId, row);
@@ -180,40 +176,10 @@ export class ToolAccessPolicyService {
     denyReasonCode?: string;
     denyReason?: string;
   }> {
-    const spaceId = normalizeRequired(input.spaceId, "spaceId");
-    const providers = this.resolveProviders(input.capability, spaceId)
-      .filter((provider) => provider.operations.includes(input.operation));
-    const candidates = normalizeOptional(input.targetProvider)
-      ? providers.filter((provider) => provider.id === input.targetProvider)
-      : providers;
-    const allowedProviders: string[] = [];
-    const deniedProviders: string[] = [];
-    let firstReasonCode: string | undefined;
-    let firstReason: string | undefined;
-
-    for (const provider of candidates) {
-      const evaluation = await this.evaluateSelectorAvailability({
-        spaceId,
-        agentId: normalizeOptional(input.agentId),
-        capability: input.capability,
-        operation: input.operation,
-        provider,
-      });
-      if (evaluation.allowed) {
-        allowedProviders.push(provider.id);
-      } else {
-        deniedProviders.push(provider.id);
-        firstReasonCode ??= evaluation.reasonCode;
-        firstReason ??= evaluation.reason;
-      }
-    }
-
-    return {
-      visibleProviderIds: allowedProviders,
-      deniedProviderIds: deniedProviders,
-      denyReasonCode: allowedProviders.length === 0 ? firstReasonCode : undefined,
-      denyReason: allowedProviders.length === 0 ? firstReason : undefined,
-    };
+    return resolveToolProviderVisibilityDecision({
+      resolveProviders: (capability, spaceId) => this.resolveProviders(capability, spaceId),
+      evaluateSelectorAvailability: (candidate) => this.evaluateSelectorAvailability(candidate),
+    }, input);
   }
 
   async getEffectiveToolAccess(input: {
@@ -227,98 +193,46 @@ export class ToolAccessPolicyService {
     const spaceId = normalizeRequired(input.spaceId, "spaceId");
     const agentId = normalizeOptional(input.agentId);
     const operations = await Promise.all(this.resolveCandidateOperations(spaceId).map(async (candidate) => {
-      const selectorDecision = await this.evaluateSelectorAvailability({
+      return buildEffectiveToolAccessOperation({
+        evaluateSelectorAvailability: (candidateInput) => this.evaluateSelectorAvailability(candidateInput),
+        resolveGatewayCapabilityAccess: (candidateInput) => this.resolveGatewayCapabilityAccess(candidateInput),
+        requiredDangerousCapability: (capability, operation) => (
+          requiredDangerousCapability(this.options.cliToolService, capability, operation)
+        ),
+        isManagedCliTool: (capability, operation) => (
+          isManagedCliTool(this.options.cliToolService, capability, operation)
+        ),
+        evaluateDangerousCapability: (candidateInput) => this.evaluateDangerousCapability(candidateInput),
+      }, {
         spaceId,
         agentId,
         principalId: normalizeOptional(input.principalId),
         deviceId: normalizeOptional(input.deviceId),
-        capability: candidate.capability,
-        operation: candidate.operation,
-        provider: candidate.providers[0]!,
+        executionOrigin: input.executionOrigin,
+        accessMode: input.accessMode,
+        candidate,
       });
-      const gatewayCapabilityDecision = selectorDecision.allowed
-        ? this.resolveGatewayCapabilityAccess({
-          spaceId,
-          principalId: normalizeOptional(input.principalId),
-          deviceId: normalizeOptional(input.deviceId),
-          executionOrigin: input.executionOrigin,
-          accessMode: input.accessMode,
-          capability: candidate.capability,
-          operation: candidate.operation,
-        })
-        : null;
-      // Managed CLI tools on embedded profile: treat gateway hard-block as approvable escalation
-      const gatewayBlockedButApprovable = gatewayCapabilityDecision != null
-        && !gatewayCapabilityDecision.allowed
-        && gatewayCapabilityDecision.reasonCode === "gateway_capability_blocked"
-        && this.isManagedCliTool(candidate.capability, candidate.operation);
-
-      const effectiveGatewayAllowed = gatewayCapabilityDecision?.allowed ?? true;
-      const gatewayAllowedOrApprovable = effectiveGatewayAllowed || gatewayBlockedButApprovable;
-
-      const requiredDangerousCapability = this.requiredDangerousCapability(candidate.capability, candidate.operation);
-      const dangerousEvaluation = selectorDecision.allowed && gatewayAllowedOrApprovable && requiredDangerousCapability
-        ? await this.evaluateDangerousCapability({
-          spaceId,
-          agentId,
-          principalId: normalizeOptional(input.principalId),
-          deviceId: normalizeOptional(input.deviceId),
-          executionOrigin: input.executionOrigin,
-          accessMode: input.accessMode,
-          dangerousCapabilityId: requiredDangerousCapability,
-          selectors: selectorDecision.selectors,
-        })
-        : null;
-
-      const denialReasonCode = !selectorDecision.allowed
-        ? selectorDecision.requiresApproval
-          ? undefined
-          : selectorDecision.reasonCode
-        : gatewayCapabilityDecision && !gatewayCapabilityDecision.allowed && !gatewayBlockedButApprovable
-          ? gatewayCapabilityDecision.reasonCode
-        : dangerousEvaluation && !dangerousEvaluation.allowed && !dangerousEvaluation.requiresApproval
-          ? dangerousEvaluation.reasonCode
-          : undefined;
-      const denialReason = !selectorDecision.allowed
-        ? selectorDecision.requiresApproval
-          ? undefined
-          : selectorDecision.reason
-        : gatewayCapabilityDecision && !gatewayCapabilityDecision.allowed && !gatewayBlockedButApprovable
-          ? gatewayCapabilityDecision.reason
-        : dangerousEvaluation && !dangerousEvaluation.allowed && !dangerousEvaluation.requiresApproval
-          ? dangerousEvaluation.reason
-          : undefined;
-
-      return {
-        operationId: candidate.operationId,
-        capability: candidate.capability,
-        operation: candidate.operation,
-        providerIds: candidate.providerIds,
-        selectors: selectorDecision.selectors,
-        allowed: selectorDecision.allowed
-          && gatewayAllowedOrApprovable
-          && (dangerousEvaluation?.allowed ?? true),
-        denialReasonCode,
-        denialReason,
-        requiredDangerousCapability,
-        escalationAllowed: selectorDecision.requiresApproval || gatewayBlockedButApprovable || (dangerousEvaluation?.requiresApproval ?? false),
-      } satisfies EffectiveToolAccessOperation;
     }));
 
     return {
       spaceId,
       agentId,
-      safetyProfileId: agentId ? (await this.resolveAgentSafetyProfile(spaceId, agentId)).profileId : undefined,
+      safetyProfileId: agentId
+        ? (await resolveAgentSafetyProfile(this.profileReadDeps(), spaceId, agentId)).profileId
+        : undefined,
       policyVersion: "tool_access_policy_v1",
       operations,
       dangerousCapabilities: await Promise.all(DANGEROUS_CAPABILITIES.map((capabilityId) => (
-        this.describeDangerousCapability(
-          spaceId,
-          agentId,
-          capabilityId,
-          normalizeOptional(input.principalId),
-          input.accessMode,
-          input.executionOrigin,
+        describeDangerousCapability(
+          this.dangerousCapabilityPolicyDeps(),
+          {
+            spaceId,
+            agentId,
+            capabilityId,
+            principalId: normalizeOptional(input.principalId),
+            accessMode: input.accessMode,
+            executionOrigin: input.executionOrigin,
+          },
         )
       ))),
       generatedAt: this.now().toISOString(),
@@ -336,117 +250,21 @@ export class ToolAccessPolicyService {
     operation: string;
     targetProvider?: string;
   }): Promise<ToolAccessEvaluation> {
-    const candidateProviders = normalizeOptional(input.targetProvider)
-      ? this.resolveProviders(input.capability, input.spaceId)
-        .filter((provider) => provider.id === input.targetProvider)
-      : this.resolveProviders(input.capability, input.spaceId);
-    let allowedSelectors: string[] = [];
-    let approvableSelectorDecision: (ToolAccessEvaluation & { selectors: string[] }) | null = null;
-    let deniedSelectorDecision: (ToolAccessEvaluation & { selectors: string[] }) | null = null;
-
-    for (const provider of candidateProviders) {
-      const selectorDecision = await this.evaluateSelectorAvailability({
-        spaceId: input.spaceId,
-        agentId: input.agentId,
-        principalId: normalizeOptional(input.principalId),
-        deviceId: normalizeOptional(input.deviceId),
-        capability: input.capability,
-        operation: input.operation,
-        provider,
-      });
-      if (selectorDecision.allowed) {
-        allowedSelectors = selectorDecision.selectors;
-        approvableSelectorDecision = null;
-        deniedSelectorDecision = null;
-        break;
-      }
-      if (selectorDecision.requiresApproval && approvableSelectorDecision == null) {
-        approvableSelectorDecision = selectorDecision;
-      }
-      deniedSelectorDecision ??= selectorDecision;
-    }
-
-    if (allowedSelectors.length === 0) {
-      if (approvableSelectorDecision) {
-        return approvableSelectorDecision;
-      }
-      return {
-        allowed: false,
-        reasonCode: deniedSelectorDecision?.reasonCode ?? "tool_unavailable",
-        reason: deniedSelectorDecision?.reason ?? `No providers available for ${input.capability}.${input.operation}`,
-      };
-    }
-
-    const gatewayCapabilityDecision = this.resolveGatewayCapabilityAccess({
-      spaceId: input.spaceId,
-      principalId: normalizeOptional(input.principalId),
-      deviceId: normalizeOptional(input.deviceId),
-      executionOrigin: input.executionOrigin,
-      accessMode: input.accessMode,
-      capability: input.capability,
-      operation: input.operation,
-    });
-    if (!gatewayCapabilityDecision.allowed) {
-      // For managed CLI tools on embedded profile, allow approval instead of flat deny
-      if (
-        gatewayCapabilityDecision.reasonCode === "gateway_capability_blocked" &&
-        this.isManagedCliTool(input.capability, input.operation)
-      ) {
-        // Check if user already approved this tool
-        const toolName = `${input.capability}.${input.operation}`;
-        const hasGrant = this.options.toolApprovalGrantService?.hasActiveGrant({
-          principalId: input.principalId ?? "*",
-          deviceId: input.deviceId,
-          spaceId: input.spaceId,
-          toolId: toolName,
-        }) ?? false;
-
-        if (hasGrant) {
-          // Grant exists — bypass hard-block for this managed CLI tool
-          // Fall through to dangerous capability check below
-        } else {
-          return {
-            allowed: false,
-            requiresApproval: true,
-            reasonCode: "policy_escalation_required",
-            reason: `${toolName} requires approval to run on this gateway profile.`,
-            approvalContext: {
-              kind: "policy_escalation",
-              targetKind: "tool_operation",
-              targetId: `tool_operation:${toolName}`,
-              toolName: input.operation,
-              requestedCapability: input.capability,
-              blockingScope: "gateway_profile",
-              persistentApprovalSupported: true,
-              approvalModes: ["once", "time_window", "durable"],
-              defaultTtlSeconds: 3600,
-            },
-          };
-        }
-      } else {
-        return {
-          allowed: false,
-          reasonCode: gatewayCapabilityDecision.reasonCode,
-          reason: gatewayCapabilityDecision.reason,
-        };
-      }
-    }
-
-    const requiredDangerousCapability = this.requiredDangerousCapability(input.capability, input.operation);
-    if (!requiredDangerousCapability) {
-      return { allowed: true };
-    }
-    return await this.evaluateDangerousCapability({
-      spaceId: input.spaceId,
-      agentId: input.agentId,
-      principalId: normalizeOptional(input.principalId),
-      deviceId: normalizeOptional(input.deviceId),
-      executionOrigin: input.executionOrigin,
-      accessMode: input.accessMode,
-      dangerousCapabilityId: requiredDangerousCapability,
-      selectors: allowedSelectors,
-      toolName: `${input.capability}.${input.operation}`,
-    });
+    return evaluateToolOperationAccess({
+      resolveProviders: (capability, spaceId) => this.resolveProviders(capability, spaceId),
+      evaluateSelectorAvailability: (candidateInput) => this.evaluateSelectorAvailability(candidateInput),
+      resolveGatewayCapabilityAccess: (candidateInput) => this.resolveGatewayCapabilityAccess(candidateInput),
+      requiredDangerousCapability: (capability, operation) => (
+        requiredDangerousCapability(this.options.cliToolService, capability, operation)
+      ),
+      isManagedCliTool: (capability, operation) => (
+        isManagedCliTool(this.options.cliToolService, capability, operation)
+      ),
+      hasActiveToolApprovalGrant: (grantInput) => (
+        this.options.toolApprovalGrantService?.hasActiveGrant(grantInput) ?? false
+      ),
+      evaluateDangerousCapability: (candidateInput) => this.evaluateDangerousCapability(candidateInput),
+    }, input);
   }
 
   async evaluateInjectedToolAccess(input: {
@@ -504,96 +322,18 @@ export class ToolAccessPolicyService {
     );
   }
 
-  private seedDefaultSafetyProfiles(): void {
-    for (const profile of DEFAULT_SAFETY_PROFILES) {
-      this.options.safetyProfiles.upsert({
-        profileId: profile.profileId,
-        displayName: profile.displayName,
-        description: profile.description,
-        rulesJson: JSON.stringify(profile.rules),
-        dangerousCapabilitiesJson: JSON.stringify(profile.dangerousCapabilities),
-        updatedAt: profile.updatedAt,
-      });
-    }
-  }
-
-  private ensureLegacyPolicyMigrated(scopeType: ToolAccessPolicyScopeType, scopeId: string): void {
-    ensureLegacyPolicyMigratedHelper(this.legacyPolicyMigrationDeps(), scopeType, scopeId);
-  }
-
-  private legacyPolicyMigrationDeps(): LegacyPolicyMigrationDeps {
-    return {
-      toolPolicies: this.options.toolPolicies,
-      legacyGatewayPolicyService: this.options.legacyGatewayPolicyService ?? null,
-      legacyConnectorPolicies: this.options.legacyConnectorPolicies ?? null,
-      legacySpaceToolPolicies: this.options.legacySpaceToolPolicies ?? null,
-    };
-  }
-
-  private resolveCandidateOperations(spaceId: string): Array<{
-    operationId: string;
-    capability: CapabilityType;
-    operation: string;
-    providerIds: string[];
-    providers: CapabilityProvider[];
-  }> {
-    const output = new Map<string, {
-      capability: CapabilityType;
-      operation: string;
-      providerIds: Set<string>;
-      providers: Map<string, CapabilityProvider>;
-    }>();
-    for (const capability of this.options.capabilities.getAvailableCapabilities()) {
-      const providers = this.resolveProviders(capability, spaceId);
-      for (const provider of providers) {
-        for (const operation of provider.operations) {
-          const operationId = `${capability}.${operation}`;
-          const entry = output.get(operationId) ?? {
-            capability,
-            operation,
-            providerIds: new Set<string>(),
-            providers: new Map<string, CapabilityProvider>(),
-          };
-          entry.providerIds.add(provider.id);
-          entry.providers.set(provider.id, provider);
-          output.set(operationId, entry);
-        }
-      }
-    }
-    return Array.from(output.entries()).map(([operationId, value]) => ({
-      operationId,
-      capability: value.capability,
-      operation: value.operation,
-      providerIds: Array.from(value.providerIds).sort(),
-      providers: Array.from(value.providers.values()),
-    }));
+  private resolveCandidateOperations(spaceId: string): ToolAccessCandidateOperation[] {
+    return resolveCandidateOperations(this.options.capabilities, spaceId);
   }
 
   private resolveProviders(capability: CapabilityType, spaceId: string): CapabilityProvider[] {
-    if (capability === "mcp") {
-      return this.options.capabilities.getProvidersForSpace(capability, spaceId);
-    }
-    return this.options.capabilities.getProviders(capability);
+    return resolveProviders(this.options.capabilities, capability, spaceId);
   }
 
-  private async evaluateSelectorAvailability(input: {
-    spaceId: string;
-    agentId?: string;
-    principalId?: string;
-    deviceId?: string;
-    capability: CapabilityType;
-    operation: string;
-    provider: CapabilityProvider;
-  }): Promise<ToolAccessEvaluation & { selectors: string[] }> {
-    const selectors = this.buildSelectorIds(input);
-    return this.evaluateSelectorsAgainstPolicies({
-      spaceId: input.spaceId,
-      agentId: input.agentId,
-      principalId: normalizeOptional(input.principalId),
-      deviceId: normalizeOptional(input.deviceId),
-      selectors,
-      toolName: `${input.capability}.${input.operation}`,
-    });
+  private async evaluateSelectorAvailability(
+    input: ToolSelectorAvailabilityInput,
+  ): Promise<ToolAccessSelectorDecision> {
+    return evaluateSelectorAvailabilityHelper(this.selectorAvailabilityDeps(), input);
   }
 
   private async evaluateSelectorsAgainstPolicies(input: {
@@ -603,280 +343,55 @@ export class ToolAccessPolicyService {
     deviceId?: string;
     selectors: string[];
     toolName: string;
-  }): Promise<ToolAccessEvaluation & { selectors: string[] }> {
-    const gatewayPolicy = this.getToolPolicy({ scopeType: "gateway", scopeId: "gateway" });
-    const spacePolicy = this.getToolPolicy({ scopeType: "space", scopeId: input.spaceId });
-    const agentPolicy = input.agentId
-      ? await this.resolveAgentPolicy(input.spaceId, input.agentId)
-      : emptyPolicy("agent_override", `${input.spaceId}:*`);
-
-    const policies: Array<{ scope: string; policy: ToolAccessPolicy }> = [
-      { scope: "gateway", policy: gatewayPolicy },
-      { scope: "space", policy: spacePolicy },
-      { scope: "agent", policy: agentPolicy },
-    ];
-
-    for (const { scope, policy } of policies) {
-      const matchingRule = this.findMatchingRule(policy.rules, input.selectors);
-      if (matchingRule?.state === "disabled") {
-        const targetId = `${matchingRule.selectorKind}:${matchingRule.selectorId}`;
-        const grants = this.options.accessGrants.listEffective({
-          principalId: normalizeOptional(input.principalId),
-          deviceId: normalizeOptional(input.deviceId),
-          spaceId: input.spaceId,
-          targetIds: [targetId, ...input.selectors],
-        });
-        if (grants.length > 0) {
-          return { allowed: true, selectors: input.selectors };
-        }
-        if (scope === "space") {
-          return {
-            allowed: false,
-            requiresApproval: true,
-            reasonCode: "policy_escalation_required",
-            reason: `Space policy disabled ${matchingRule.selectorKind}:${matchingRule.selectorId}`,
-            approvalContext: {
-              kind: "policy_escalation",
-              targetKind: "tool_selector",
-              targetId: `tool_operation:${input.toolName}`,
-              toolName: input.toolName,
-              requestedCapability: input.toolName,
-              selectorKind: matchingRule.selectorKind,
-              selectorId: matchingRule.selectorId,
-              selectorIds: input.selectors,
-              blockingScope: "space_policy",
-              persistentApprovalSupported: true,
-              approvalModes: ["once", "time_window", "durable"],
-              defaultTtlSeconds: 900,
-            },
-            selectors: input.selectors,
-          };
-        }
-        return {
-          allowed: false,
-          reasonCode: scope === "gateway"
-            ? "gateway_disabled"
-            : scope === "space"
-              ? "space_disabled"
-              : "agent_disabled",
-          reason: `${capitalize(scope)} policy disabled ${matchingRule.selectorKind}:${matchingRule.selectorId}`,
-          selectors: input.selectors,
-        };
-      }
-    }
-
-    return { allowed: true, selectors: input.selectors };
+  }): Promise<ToolAccessSelectorDecision> {
+    return evaluateSelectorsAgainstPolicies(this.selectorPolicyEvaluationDeps(), input);
   }
 
-  private async evaluateDangerousCapability(input: {
-    spaceId: string;
-    agentId?: string;
-    principalId?: string;
-    deviceId?: string;
-    executionOrigin?: CapabilityExecutionOrigin;
-    accessMode?: TurnRequestAccessMode;
-    dangerousCapabilityId: DangerousCapabilityId;
-    selectors: string[];
-    toolName?: string;
-  }): Promise<ToolAccessEvaluation> {
-    const resolved = await this.resolveDangerousCapabilityState(
-      input.spaceId,
-      input.agentId,
-      input.dangerousCapabilityId,
-      input.principalId,
-      input.accessMode,
-      input.executionOrigin,
-    );
-    if (resolved.enabled) {
-      return { allowed: true };
-    }
+  private async evaluateDangerousCapability(
+    input: DangerousCapabilityAccessEvaluationInput,
+  ): Promise<ToolAccessEvaluation> {
+    return evaluateDangerousCapabilityHelper(this.dangerousCapabilityPolicyDeps(), input);
+  }
 
+  private selectorPolicyEvaluationDeps(): SelectorPolicyEvaluationDeps {
     return {
-      allowed: false,
-      reasonCode: "dangerous_access_requires_owner_full_access",
-      reason: input.toolName
-        ? `${input.toolName} requires owner full access`
-        : `Dangerous capability ${input.dangerousCapabilityId} requires owner full access`,
+      getToolPolicy: (input) => this.getToolPolicy(input),
+      resolveAgentPolicy: (spaceId, agentId) => (
+        resolveAgentPolicyHelper(this.profileReadDeps(), spaceId, agentId)
+      ),
+      accessGrants: this.options.accessGrants,
     };
   }
 
-  private async describeDangerousCapability(
-    spaceId: string,
-    agentId: string | undefined,
-    capabilityId: DangerousCapabilityId,
-    principalId?: string,
-    accessMode?: TurnRequestAccessMode,
-    executionOrigin?: CapabilityExecutionOrigin,
-  ): Promise<EffectiveDangerousCapability> {
-    const resolved = await this.resolveDangerousCapabilityState(
-      spaceId,
-      agentId,
-      capabilityId,
-      principalId,
-      accessMode,
-      executionOrigin,
-    );
+  private selectorAvailabilityDeps(): ToolSelectorAvailabilityDeps {
     return {
-      capabilityId,
-      enabled: resolved.enabled,
-      source: resolved.source,
+      ...this.selectorPolicyEvaluationDeps(),
+      buildSelectorIds: (input) => buildSelectorIds({
+        ...input,
+        cliToolService: this.options.cliToolService,
+      }),
     };
   }
 
-  private async resolveDangerousCapabilityState(
-    spaceId: string,
-    agentId: string | undefined,
-    capabilityId: DangerousCapabilityId,
-    principalId?: string,
-    accessMode?: TurnRequestAccessMode,
-    executionOrigin?: CapabilityExecutionOrigin,
-  ): Promise<{ enabled: boolean; source: EffectiveDangerousCapability["source"] }> {
-    const resolvedExecutionOrigin = this.resolveExecutionOrigin(spaceId, principalId, executionOrigin);
-    const effectiveAccessMode = this.resolveEffectiveAccessMode(resolvedExecutionOrigin, accessMode);
-    if (resolvedExecutionOrigin !== "owner" || effectiveAccessMode !== "full_access") {
-      return { enabled: false, source: "default" };
-    }
-
-    const gatewayPolicy = this.getToolPolicy({ scopeType: "gateway", scopeId: "gateway" });
-    const gatewayRule = findDangerousRule(gatewayPolicy.dangerousCapabilities, capabilityId);
-    if (gatewayRule?.state === "disabled") {
-      return { enabled: false, source: "gateway_policy" };
-    }
-
-    const spacePolicy = this.getToolPolicy({ scopeType: "space", scopeId: spaceId });
-    const spaceRule = findDangerousRule(spacePolicy.dangerousCapabilities, capabilityId);
-    if (spaceRule?.state === "disabled") {
-      return { enabled: false, source: "space_policy" };
-    }
-
-    let enabled = false;
-    let source: EffectiveDangerousCapability["source"] = "default";
-
-    if (gatewayRule?.state === "enabled") {
-      enabled = true;
-      source = "gateway_policy";
-    }
-    if (spaceRule?.state === "enabled") {
-      enabled = true;
-      source = "space_policy";
-    }
-
-    const { profileId, profile } = agentId
-      ? await this.resolveAgentSafetyProfile(spaceId, agentId)
-      : { profileId: "safe" as SafetyProfileId, profile: this.resolveSafetyProfile("safe") };
-    const profileRule = findDangerousRule(profile.dangerousCapabilities, capabilityId);
-    if (!enabled && profileRule?.state === "enabled") {
-      enabled = true;
-      source = "profile";
-    }
-
-    if (agentId) {
-      const overrideRule = findDangerousRule(
-        (await this.resolveAgentPolicy(spaceId, agentId)).dangerousCapabilities,
-        capabilityId,
-      );
-      if (overrideRule?.state === "disabled") {
-        return { enabled: false, source: "agent_override" };
-      }
-      if (overrideRule?.state === "enabled") {
-        enabled = true;
-        source = "agent_override";
-      }
-    }
-
-    if (!enabled && capabilitySupportsFullAccess(capabilityId)) {
-      return {
-        enabled: true,
-        source: "turn_access_mode",
-      };
-    }
-
+  private dangerousCapabilityPolicyDeps(): DangerousCapabilityPolicyDeps {
     return {
-      enabled,
-      source: enabled ? source : profileId === "safe" ? "default" : "profile",
+      spaceSharingService: this.options.spaceSharingService ?? null,
+      getToolPolicy: (input) => this.getToolPolicy(input),
+      resolveAgentSafetyProfile: (spaceId, agentId) => (
+        resolveAgentSafetyProfile(this.profileReadDeps(), spaceId, agentId)
+      ),
+      resolveAgentPolicy: (spaceId, agentId) => (
+        resolveAgentPolicyHelper(this.profileReadDeps(), spaceId, agentId)
+      ),
+      resolveSafetyProfile: (profileId) => resolveSafetyProfile(this.options.safetyProfiles, profileId),
     };
   }
 
-  private async resolveAgentSafetyProfile(
-    spaceId: string,
-    agentId: string,
-  ): Promise<{ profileId: SafetyProfileId; profile: SafetyProfileDefinition }> {
-    const space = await this.options.spaceAdminService.getSpace(spaceId);
-    const assignment = space?.agents?.find((entry) => entry.agentId === agentId);
-    const explicit = normalizeSafetyProfileId(assignment?.safetyProfileId);
-    if (explicit) {
-      return {
-        profileId: explicit,
-        profile: this.resolveSafetyProfile(explicit),
-      };
-    }
-
-    const legacyScope = isRecord(assignment?.securityScope)
-      ? assignment?.securityScope
-      : null;
-    if (legacyScope) {
-      const allowShell = legacyScope.allowShell === true;
-      const permissionMode = typeof legacyScope.permissionMode === "string"
-        ? legacyScope.permissionMode.trim()
-        : "";
-      const filesystemScope = typeof legacyScope.filesystemScope === "string"
-        ? legacyScope.filesystemScope.trim()
-        : "";
-      if (!allowShell) {
-        return { profileId: "safe", profile: this.resolveSafetyProfile("safe") };
-      }
-      if (permissionMode === "developer" || filesystemScope === "/") {
-        return { profileId: "operator", profile: this.resolveSafetyProfile("operator") };
-      }
-      return { profileId: "workspace", profile: this.resolveSafetyProfile("workspace") };
-    }
-
-    const isPrimary = assignment?.isPrimary === true || assignment?.agentId === "main-agent";
-    const profileId: SafetyProfileId = isPrimary ? "workspace" : "safe";
-    return { profileId, profile: this.resolveSafetyProfile(profileId) };
-  }
-
-  private resolveSafetyProfile(profileId: SafetyProfileId): SafetyProfileDefinition {
-    return this.listSafetyProfiles().find((entry) => entry.profileId === profileId)
-      ?? DEFAULT_SAFETY_PROFILES.find((entry) => entry.profileId === profileId)
-      ?? DEFAULT_SAFETY_PROFILES[0]!;
-  }
-
-  private async resolveAgentPolicy(spaceId: string, agentId: string): Promise<ToolAccessPolicy> {
-    const space = await this.options.spaceAdminService.getSpace(spaceId);
-    const assignment = space?.agents?.find((entry) => entry.agentId === agentId);
-    if (assignment?.toolPolicyOverride && isRecord(assignment.toolPolicyOverride)) {
-      return normalizePolicy({
-        scopeType: "agent_override",
-        scopeId: `${spaceId}:${agentId}`,
-        rules: parseRules(JSON.stringify(assignment.toolPolicyOverride.rules ?? [])),
-        dangerousCapabilities: parseDangerousCapabilities(JSON.stringify(assignment.toolPolicyOverride.dangerousCapabilities ?? [])),
-        policyVersion: assignment.toolPolicyOverride.policyVersion ?? "tool_access_policy_v1",
-        updatedBy: assignment.toolPolicyOverride.updatedBy,
-        updatedAt: assignment.toolPolicyOverride.updatedAt,
-      });
-    }
-
-    if (assignment?.securityScope && isRecord(assignment.securityScope)) {
-      const rules: ToolAccessRule[] = [];
-      const allowedCapabilities = Array.isArray(assignment.securityScope.allowedCapabilities)
-        ? assignment.securityScope.allowedCapabilities
-        : [];
-      for (const capability of allowedCapabilities) {
-        if (typeof capability === "string" && capability.trim()) {
-          rules.push({ selectorKind: "capability", selectorId: capability.trim(), state: "enabled" });
-        }
-      }
-      return {
-        scopeType: "agent_override",
-        scopeId: `${spaceId}:${agentId}`,
-        rules: normalizeRules(rules),
-        dangerousCapabilities: [],
-        policyVersion: "tool_access_policy_v1",
-      };
-    }
-
-    return emptyPolicy("agent_override", `${spaceId}:${agentId}`);
+  private profileReadDeps(): ToolAccessPolicyProfileReadDeps {
+    return {
+      spaceAdminService: this.options.spaceAdminService,
+      safetyProfiles: this.options.safetyProfiles,
+    };
   }
 
   resolveGatewayCapabilityAccess(input: {
@@ -892,107 +407,17 @@ export class ToolAccessPolicyService {
   }
 
   private gatewayCapabilityAccessEvaluatorDeps(): GatewayCapabilityAccessEvaluatorDeps {
-    return {
+    return createGatewayCapabilityAccessEvaluatorDeps({
       gatewayProfile: this.gatewayProfile,
       defaultGatewayCoreState: this.defaultGatewayCoreState,
       gatewayCapabilityAccessService: this.options.gatewayCapabilityAccessService ?? null,
       spaceSharingService: this.options.spaceSharingService ?? null,
       getSpacePolicy: (spaceId) => this.getToolPolicy({ scopeType: "space", scopeId: spaceId }),
-      isRequiredDangerousCapability: (capability, operation) => (
-        this.requiredDangerousCapability(capability, operation) != null
+      requiredDangerousCapability: (capability, operation) => (
+        requiredDangerousCapability(this.options.cliToolService, capability, operation)
       ),
       now: this.now,
-    };
-  }
-
-  private buildSelectorIds(input: {
-    capability: CapabilityType;
-    operation: string;
-    provider: CapabilityProvider;
-  }): string[] {
-    const selectors = [
-      `capability:${input.capability}`,
-      `tool_operation:${input.capability}.${input.operation}`,
-    ];
-    if (input.capability === "calendar" && input.provider.id === "apple-calendar-eventkit") {
-      selectors.push("connector_family:apple-calendar-eventkit");
-    }
-    if (input.capability === "lists" && input.provider.id === "apple-reminders-eventkit") {
-      selectors.push("connector_family:apple-reminders-eventkit");
-    }
-    if (input.capability === "email" && input.provider.id === "apple-mail-mailkit") {
-      selectors.push("connector_family:apple-mail-mailkit");
-    }
-    if (input.capability === "shell") {
-      const tool = this.options.cliToolService?.getTool(input.operation);
-      if (tool?.bundleId?.trim()) {
-        selectors.push(`cli_bundle:${tool.bundleId.trim()}`);
-      }
-    }
-    if (input.provider.source === "connector") {
-      selectors.push(`connector_instance:${input.provider.id}`);
-      const familyId = input.provider.id.split(":")[0]?.trim();
-      if (familyId) {
-        selectors.push(`connector_family:${familyId}`);
-      }
-    }
-    if (input.capability === "mcp" && input.provider.id.trim()) {
-      selectors.push(`mcp_server:${input.provider.id.trim()}`);
-    }
-    return Array.from(new Set(selectors));
-  }
-
-  private findMatchingRule(rules: ToolAccessRule[], selectors: string[]): ToolAccessRule | undefined {
-    for (const selector of selectors) {
-      const [selectorKind, ...rest] = selector.split(":");
-      const selectorId = rest.join(":");
-      const match = rules.find((rule) => rule.selectorKind === selectorKind && rule.selectorId === selectorId);
-      if (match) {
-        return match;
-      }
-    }
-    return undefined;
-  }
-
-  private requiredDangerousCapability(
-    capability: CapabilityType,
-    operation: string,
-  ): DangerousCapabilityId | undefined {
-    if (capability !== "shell") {
-      return undefined;
-    }
-    const tool = this.options.cliToolService?.getTool(operation);
-    return tool?.bundleId?.trim() ? "managed_shell" : "arbitrary_shell";
-  }
-
-  private resolveExecutionOrigin(
-    spaceId: string,
-    principalId?: string,
-    executionOrigin?: CapabilityExecutionOrigin,
-  ): CapabilityExecutionOrigin {
-    return resolveExecutionOriginHelper(
-      { spaceSharingService: this.options.spaceSharingService ?? null },
-      spaceId,
-      principalId,
-      executionOrigin,
-    );
-  }
-
-  private resolveEffectiveAccessMode(
-    executionOrigin: CapabilityExecutionOrigin,
-    accessMode?: TurnRequestAccessMode,
-  ): TurnRequestAccessMode {
-    return resolveEffectiveAccessModeHelper(executionOrigin, accessMode);
-  }
-
-  private isManagedCliTool(capability: CapabilityType, operation: string): boolean {
-    if (capability !== "shell") return false;
-    const cliToolService = this.options.cliToolService;
-    if (!cliToolService) return false;
-    // CLI tool IDs use dot notation (e.g., "jira.issue.list")
-    // The operation in the capability request matches the tool ID
-    const tool = cliToolService.getTool(operation);
-    return tool != null;
+    });
   }
 
   private recordAudit(

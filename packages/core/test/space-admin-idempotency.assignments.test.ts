@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { makeService, makeStores } from "./space-admin-idempotency-test-helpers.js";
 
 describe("SpaceAdminService idempotency", () => {
-  test("recovers missing normalized assignment row from legacy config during update", async () => {
+  test("does not recover missing normalized assignment row from stale config during update", async () => {
     const stores = makeStores();
     const service = makeService(
       stores,
@@ -10,9 +10,9 @@ describe("SpaceAdminService idempotency", () => {
     );
 
     await service.createSpace({
-      spaceId: "space-legacy-recover",
-      resourceId: "resource-legacy-recover",
-      name: "Legacy Recover Space",
+      spaceId: "space-stale-recover",
+      resourceId: "resource-stale-recover",
+      name: "Stale Recover Space",
       initialAgents: [
         {
           agentId: "main-agent",
@@ -29,21 +29,19 @@ describe("SpaceAdminService idempotency", () => {
       ],
     });
 
-    // Simulate partial drift: one assignment row disappears while legacy config still has it.
-    stores.deleteAssignment("space-legacy-recover", "main-agent");
+    // Simulate partial drift: one assignment row disappears while stale config still has it.
+    stores.deleteAssignment("space-stale-recover", "main-agent");
 
-    const updated = await service.updateAgentAssignment({
-      spaceId: "space-legacy-recover",
+    await expect(service.updateAgentAssignment({
+      spaceId: "space-stale-recover",
       agentId: "main-agent",
       profileId: "profile-alt",
       role: "global_coordinator",
       isPrimary: true,
       turnOrder: 0,
-    });
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    expect(updated.agentId).toBe("main-agent");
-    expect(updated.profileId).toBe("profile-alt");
-    expect(stores.getAssignment("space-legacy-recover", "main-agent")?.profileId).toBe("profile-alt");
+    expect(stores.getAssignment("space-stale-recover", "main-agent")).toBeNull();
   });
 
   test("updating an assignment to coordinator demotes other coordinators and primaries", async () => {
@@ -90,7 +88,7 @@ describe("SpaceAdminService idempotency", () => {
     expect(primaries.map((entry) => entry.agentId)).toEqual(["agent-secondary"]);
   });
 
-  test("repairs missing normalized assignment rows while reading space state", async () => {
+  test("does not repair missing normalized assignment rows while reading space state", async () => {
     const stores = makeStores();
     const service = makeService(
       stores,
@@ -98,9 +96,9 @@ describe("SpaceAdminService idempotency", () => {
     );
 
     await service.createSpace({
-      spaceId: "space-legacy-read-repair",
-      resourceId: "resource-legacy-read-repair",
-      name: "Legacy Read Repair Space",
+      spaceId: "space-stale-read-repair",
+      resourceId: "resource-stale-read-repair",
+      name: "Stale Read Repair Space",
       initialAgents: [
         {
           agentId: "main-agent",
@@ -117,14 +115,14 @@ describe("SpaceAdminService idempotency", () => {
       ],
     });
 
-    stores.deleteAssignment("space-legacy-read-repair", "main-agent");
-    expect(stores.getAssignment("space-legacy-read-repair", "main-agent")).toBeNull();
+    stores.deleteAssignment("space-stale-read-repair", "main-agent");
+    expect(stores.getAssignment("space-stale-read-repair", "main-agent")).toBeNull();
 
-    const repaired = await service.getSpace("space-legacy-read-repair");
+    const loaded = await service.getSpace("space-stale-read-repair");
 
-    expect(repaired).not.toBeNull();
-    expect(repaired?.agents.some((assignment) => assignment.agentId === "main-agent")).toBe(true);
-    expect(stores.getAssignment("space-legacy-read-repair", "main-agent")).toBeDefined();
+    expect(loaded).not.toBeNull();
+    expect(loaded?.agents.some((assignment) => assignment.agentId === "main-agent")).toBe(false);
+    expect(stores.getAssignment("space-stale-read-repair", "main-agent")).toBeNull();
   });
 
   test("falls back to primary assignment profile when orchestrator is not set", async () => {

@@ -255,16 +255,12 @@ describe("DefaultGatewayAdminService telemetry", () => {
     }
   });
 
-  test("prefers Claude OAuth Keychain credentials before legacy credentials file", async () => {
+  test("loads Claude OAuth credentials from Keychain", async () => {
     const ctx = createContext();
     try {
       (ctx.admin as any).readClaudeOAuthAccessTokenFromKeychain = () => ({
         accessToken: "keychain-token",
         source: "keychain",
-      });
-      (ctx.admin as any).readClaudeOAuthAccessTokenFromCredentialsFile = () => ({
-        accessToken: "file-token",
-        source: "credentials_file",
       });
 
       const credentials = await (ctx.admin as any).readClaudeOAuthAccessToken();
@@ -278,20 +274,14 @@ describe("DefaultGatewayAdminService telemetry", () => {
     }
   });
 
-  test("falls back to Claude legacy credentials file when Keychain has no OAuth token", async () => {
+  test("reports missing Claude OAuth token when Keychain has no credentials", async () => {
     const ctx = createContext();
     try {
       (ctx.admin as any).readClaudeOAuthAccessTokenFromKeychain = () => ({});
-      (ctx.admin as any).readClaudeOAuthAccessTokenFromCredentialsFile = () => ({
-        accessToken: "file-token",
-        source: "credentials_file",
-      });
 
       const credentials = await (ctx.admin as any).readClaudeOAuthAccessToken();
-      expect(credentials).toEqual({
-        accessToken: "file-token",
-        source: "credentials_file",
-      });
+      expect(credentials.accessToken).toBeUndefined();
+      expect(credentials.message).toContain("No Claude OAuth token found");
     } finally {
       ctx.db.close();
       ctx.restoreEnv();

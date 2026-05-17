@@ -119,7 +119,6 @@ export const M001_V1_SCHEMA: readonly string[] = [
         personality_prompt TEXT NOT NULL DEFAULT '',
         default_skill_set_ids_json TEXT NOT NULL DEFAULT '[]',
         provider_hint TEXT NOT NULL DEFAULT '',
-        model_hint TEXT NOT NULL DEFAULT '',
         source TEXT NOT NULL DEFAULT 'manual',
         created_at TEXT NOT NULL
       )`,

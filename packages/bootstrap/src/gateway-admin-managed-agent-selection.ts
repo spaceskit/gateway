@@ -25,7 +25,7 @@ interface ProviderRuntimeValidationResult {
 interface PinnedProviderModelValidationResult {
   valid: boolean;
   providerHint?: string;
-  modelHint?: string;
+  modelId?: string;
   reason?: string;
 }
 
@@ -41,12 +41,12 @@ export interface ManagedAgentSelectionContext {
   ) => Promise<ProviderRuntimeValidationResult>;
   validateProfileModelSelection: (input: {
     providerHint?: string;
-    modelHint?: string;
+    modelId?: string;
     modelConfig?: ProfileModelConfig;
   }) => void;
   validatePinnedProviderModel: (
     providerHint?: string,
-    modelHint?: string,
+    modelId?: string,
   ) => PinnedProviderModelValidationResult;
 }
 
@@ -108,7 +108,6 @@ export async function applyManagedAgentProviderModelSelection(
   context.profileRepo.update({
     profileId: context.profileId,
     providerHint: providerId,
-    modelHint: modelId,
     defaultSkillIds: mergeSkillIds(
       parseStringArray(
         context.profileRepo.getActiveRevision(context.profileId)?.default_skill_set_ids_json,
@@ -151,23 +150,20 @@ export async function applyManagedAgentDefinitionSelection(
   }
 
   const applyPersonaInstructions = input.applyPersonaInstructions ?? true;
-  const sourceModelConfig = parseModelConfig(
-    sourceRevision.model_config_json,
-    sourceRevision.model_hint,
-  );
+  const sourceModelConfig = parseModelConfig(sourceRevision.model_config_json);
+  const sourceModelId = sourceModelConfig.preferredModels[0];
   const sourceProviderHint = normalizeProviderId(sourceRevision.provider_hint)
-    || deriveProviderFromModel(sourceRevision.model_hint);
-  const sourceModelHint = sourceRevision.model_hint?.trim() || undefined;
+    || deriveProviderFromModel(sourceModelId);
   context.validateProfileModelSelection({
     providerHint: sourceProviderHint ?? undefined,
-    modelHint: sourceModelHint,
+    modelId: sourceModelId,
     modelConfig: sourceModelConfig,
   });
   const sourcePinned = context.validatePinnedProviderModel(
     sourceProviderHint ?? undefined,
-    sourceModelHint,
+    sourceModelId,
   );
-  if (!sourcePinned.valid || !sourcePinned.providerHint || !sourcePinned.modelHint) {
+  if (!sourcePinned.valid || !sourcePinned.providerHint || !sourcePinned.modelId) {
     throwGatewayError(
       "FAILED_PRECONDITION",
       sourcePinned.reason
@@ -176,7 +172,7 @@ export async function applyManagedAgentDefinitionSelection(
   }
   const runtimeValidation = await context.validateProviderRuntimeSelection(
     sourcePinned.providerHint,
-    sourcePinned.modelHint,
+    sourcePinned.modelId,
   );
   if (!runtimeValidation.valid) {
     throwGatewayError(
@@ -194,7 +190,6 @@ export async function applyManagedAgentDefinitionSelection(
       [USER_ESCALATION_SKILL_ID],
     ),
     providerHint: sourceProviderHint ?? undefined,
-    modelHint: sourceModelHint,
     modelConfig: sourceModelConfig,
     source: context.updateSource,
   });

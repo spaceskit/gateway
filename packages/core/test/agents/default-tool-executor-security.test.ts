@@ -233,7 +233,7 @@ describe("DefaultToolExecutor security scope enforcement", () => {
     expect(allowed.allowed).toBe(true);
   });
 
-  test("routes shell approval decisions through unified tool access policy before legacy allowShell denial", async () => {
+  test("routes shell approval decisions through unified tool access policy before stale allowShell denial", async () => {
     const { eventBus, registry } = makeContext();
     const executor = new DefaultToolExecutor({
       capabilityRegistry: registry,
@@ -288,7 +288,7 @@ describe("DefaultToolExecutor security scope enforcement", () => {
     expect(permission.reasonCode).toBe("policy_escalation_required");
   });
 
-  test("routes shell denials through unified tool access policy before legacy allowShell denial", async () => {
+  test("routes shell denials through unified tool access policy before stale allowShell denial", async () => {
     const { eventBus, registry } = makeContext();
     const executor = new DefaultToolExecutor({
       capabilityRegistry: registry,

@@ -6,7 +6,6 @@ export interface AuthResultPayload {
 
 // ---------------------------------------------------------------------------
 // Typed event payload union — granular subtype truth via `kind` discriminator.
-// `eventType` stays coarse for backward compat; `typedPayload.kind` is canonical.
 // ---------------------------------------------------------------------------
 
 export interface TurnUsage {
@@ -60,8 +59,8 @@ export type TypedTurnEventPayload =
   | { kind: "rate_limited"; retryAfterMs: number; attempt: number; maxAttempts: number; providerId: string; retryAt: string };
 
 // ---------------------------------------------------------------------------
-// TurnEventPayload — the wire envelope. `data` is NEVER removed (backward
-// compat). `typedPayload` is the new structured truth, absent on old gateways.
+// TurnEventPayload — the wire envelope. `typedPayload.kind` is the sole turn
+// event discriminator.
 // ---------------------------------------------------------------------------
 
 export interface TurnEventPayload {
@@ -72,18 +71,7 @@ export interface TurnEventPayload {
   agentId?: string;
   conversationTopology?: string;
   transcriptVisibility?: string;
-  eventType:
-    | "started"
-    | "streaming"
-    | "tool_call"
-    | "feedback_requested"
-    | "rate_limited"
-    | "state_changed"
-    | "completed"
-    | "cancelled"
-    | "failed";
-  data: unknown;
-  typedPayload?: TypedTurnEventPayload;
+  typedPayload: TypedTurnEventPayload;
   ts?: string;
 }
 

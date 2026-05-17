@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "@spaceskit/observability";
 import {
   ProviderSecretRefRepository,
@@ -51,21 +51,17 @@ export class ProviderSecretRefError extends Error {
 }
 
 export class ProviderSecretRefService {
-  /** V0 key — always available (SHA-256 of master key, or random bytes). */
-  private readonly key: Buffer;
-  /** Raw master key passphrase — available only when an explicit key was provided. */
-  private readonly masterKeySource: string | null;
+  /** Raw master key passphrase, or a process-scoped random passphrase when unset. */
+  private readonly masterKeySource: string;
 
   constructor(private readonly options: ProviderSecretRefServiceOptions) {
     const explicitKey = options.masterKey?.trim();
     if (explicitKey) {
-      this.key = deriveKey(explicitKey);
       this.masterKeySource = explicitKey;
       return;
     }
 
-    this.key = randomBytes(32);
-    this.masterKeySource = null;
+    this.masterKeySource = randomBytes(32).toString("base64");
     options.logger?.warn(
       "SPACESKIT_SECRET_REF_MASTER_KEY is not set; provider secret refs are process-scoped only",
     );
@@ -141,38 +137,20 @@ export class ProviderSecretRefService {
 
   private encrypt(secret: string): { ciphertext: string; iv: string; authTag: string } {
     const iv = randomBytes(12);
-
-    // Use v1 (PBKDF2) when we have a passphrase master key, v0 otherwise
-    if (this.masterKeySource) {
-      const salt = randomBytes(PBKDF2_SALT_LENGTH);
-      const derivedKey = deriveKeyV1(this.masterKeySource, salt);
-      const cipher = createCipheriv("aes-256-gcm", derivedKey, iv);
-      const ciphertext = Buffer.concat([
-        cipher.update(secret, "utf8"),
-        cipher.final(),
-      ]);
-      const authTag = cipher.getAuthTag();
-
-      // iv column encodes: [version byte][salt][IV]
-      const versionedIv = Buffer.concat([Buffer.from([KDF_V1]), salt, iv]);
-      return {
-        ciphertext: ciphertext.toString("base64"),
-        iv: versionedIv.toString("base64"),
-        authTag: authTag.toString("base64"),
-      };
-    }
-
-    // v0 path: random key (no passphrase), SHA-256 derived
-    const cipher = createCipheriv("aes-256-gcm", this.key, iv);
+    const salt = randomBytes(PBKDF2_SALT_LENGTH);
+    const derivedKey = deriveKeyV1(this.masterKeySource, salt);
+    const cipher = createCipheriv("aes-256-gcm", derivedKey, iv);
     const ciphertext = Buffer.concat([
       cipher.update(secret, "utf8"),
       cipher.final(),
     ]);
     const authTag = cipher.getAuthTag();
 
+    // iv column encodes: [version byte][salt][IV]
+    const versionedIv = Buffer.concat([Buffer.from([KDF_V1]), salt, iv]);
     return {
       ciphertext: ciphertext.toString("base64"),
-      iv: iv.toString("base64"),
+      iv: versionedIv.toString("base64"),
       authTag: authTag.toString("base64"),
     };
   }
@@ -184,15 +162,12 @@ export class ProviderSecretRefService {
       let iv: Buffer;
 
       // Detect v1 format: version byte (0x01) + 16-byte salt + 12-byte IV = 29 bytes
-      if (ivData.length === 1 + PBKDF2_SALT_LENGTH + 12 && ivData[0] === KDF_V1 && this.masterKeySource) {
-        const salt = ivData.subarray(1, 1 + PBKDF2_SALT_LENGTH);
-        iv = ivData.subarray(1 + PBKDF2_SALT_LENGTH);
-        decryptionKey = deriveKeyV1(this.masterKeySource, salt);
-      } else {
-        // v0 format: raw 12-byte IV, use SHA-256 derived key
-        iv = ivData;
-        decryptionKey = this.key;
+      if (ivData.length !== 1 + PBKDF2_SALT_LENGTH + 12 || ivData[0] !== KDF_V1) {
+        throw new Error("Unsupported provider secret ref KDF version");
       }
+      const salt = ivData.subarray(1, 1 + PBKDF2_SALT_LENGTH);
+      iv = ivData.subarray(1 + PBKDF2_SALT_LENGTH);
+      decryptionKey = deriveKeyV1(this.masterKeySource, salt);
 
       const decipher = createDecipheriv("aes-256-gcm", decryptionKey, iv);
       decipher.setAuthTag(Buffer.from(row.auth_tag, "base64"));
@@ -218,28 +193,14 @@ export class ProviderSecretRefService {
 // ---------------------------------------------------------------------------
 // KDF versioning constants
 // ---------------------------------------------------------------------------
-const KDF_V0 = 0x00; // Legacy SHA-256 (no salt)
 const KDF_V1 = 0x01; // PBKDF2-SHA256, 100k iterations, 16-byte salt
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_SALT_LENGTH = 16;
 const KEY_LENGTH = 32;
 
-/** V0 (legacy): simple SHA-256 hash. */
-function deriveKeyV0(source: string): Buffer {
-  return createHash("sha256").update(source).digest();
-}
-
 /** V1: PBKDF2-SHA256 with random salt. */
 function deriveKeyV1(source: string, salt: Buffer): Buffer {
   return pbkdf2Sync(source, salt, PBKDF2_ITERATIONS, KEY_LENGTH, "sha256");
-}
-
-/**
- * Legacy derive helper — used only during construction for the initial key
- * (v0 path). Kept for backward compatibility in the constructor.
- */
-function deriveKey(source: string): Buffer {
-  return deriveKeyV0(source);
 }
 
 function mapSummary(row: ProviderSecretRefRow): ProviderSecretRefSummary {

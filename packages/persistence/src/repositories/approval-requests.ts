@@ -13,7 +13,7 @@ export interface ApprovalRequestRow {
   run_id: string;
   step_id: string;
   space_id: string;
-  compatibility_turn_id: string;
+  turn_id: string;
   agent_id: string;
   category: string;
   status: ApprovalRequestStatus;
@@ -30,7 +30,7 @@ export interface CreateApprovalRequestInput {
   runId: string;
   stepId: string;
   spaceId: string;
-  compatibilityTurnId?: string;
+  turnId?: string;
   agentId?: string;
   category?: string;
   status?: ApprovalRequestStatus;
@@ -52,7 +52,7 @@ export class ApprovalRequestRepository {
         run_id,
         step_id,
         space_id,
-        compatibility_turn_id,
+        turn_id,
         agent_id,
         category,
         status,
@@ -68,7 +68,7 @@ export class ApprovalRequestRepository {
       input.runId,
       input.stepId,
       input.spaceId,
-      input.compatibilityTurnId ?? "",
+      input.turnId ?? "",
       input.agentId ?? "",
       input.category ?? "",
       input.status ?? "pending",

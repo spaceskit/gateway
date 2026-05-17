@@ -56,6 +56,14 @@ import type {
 } from "../message-router-space-services.js";
 import { normalizeString } from "../message-router-utils.js";
 import type { SpaceManager } from "@spaceskit/core";
+export {
+  handleSpaceArchiveTemplate,
+  handleSpaceCreateFromTemplate,
+  handleSpaceGetTemplate,
+  handleSpaceListTemplates,
+  handleSpacePreviewTemplate,
+  handleSpaceSaveTemplate,
+} from "./space-template-handlers.js";
 
 export interface IdentityTemplateHandlerContext extends RouterSpaceDecorators {
   gatewayAdminService: GatewayAdminService | null;
@@ -131,11 +139,17 @@ export async function handleIdentityCreateAgentDefinition(
   if (!payload?.name) {
     return context.errorResponse(msg.id, "INVALID_ARGUMENT", "name is required");
   }
+  if (Object.prototype.hasOwnProperty.call(payload, "modelId")) {
+    return context.errorResponse(
+      msg.id,
+      "INVALID_ARGUMENT",
+      "modelId is no longer supported; use modelConfig.preferredModels",
+    );
+  }
 
   if (context.gatewayAdminService) {
     context.gatewayAdminService.validateProfileModelSelection({
       providerHint: normalizeString(payload.providerHint),
-      modelHint: normalizeString(payload.modelHint),
       modelConfig: payload.modelConfig,
     });
   }
@@ -156,6 +170,13 @@ export async function handleIdentityUpdateAgentDefinition(
   if (!payload?.agentDefinitionId) {
     return context.errorResponse(msg.id, "INVALID_ARGUMENT", "agentDefinitionId is required");
   }
+  if (Object.prototype.hasOwnProperty.call(payload, "modelId")) {
+    return context.errorResponse(
+      msg.id,
+      "INVALID_ARGUMENT",
+      "modelId is no longer supported; use modelConfig.preferredModels",
+    );
+  }
 
   const existingAgentDefinition = context.gatewayIdentityService.getAgentDefinition(payload.agentDefinitionId);
   if (!existingAgentDefinition) {
@@ -163,16 +184,12 @@ export async function handleIdentityUpdateAgentDefinition(
   }
 
   const hasProviderHint = Object.prototype.hasOwnProperty.call(payload, "providerHint");
-  const hasModelHint = Object.prototype.hasOwnProperty.call(payload, "modelHint");
   const hasModelConfig = Object.prototype.hasOwnProperty.call(payload, "modelConfig");
-  if (context.gatewayAdminService && (hasProviderHint || hasModelHint || hasModelConfig)) {
+  if (context.gatewayAdminService && (hasProviderHint || hasModelConfig)) {
     context.gatewayAdminService.validateProfileModelSelection({
       providerHint: hasProviderHint
         ? normalizeString(payload.providerHint)
         : normalizeString(existingAgentDefinition.providerHint),
-      modelHint: hasModelHint
-        ? normalizeString(payload.modelHint)
-        : normalizeString(existingAgentDefinition.modelHint),
       modelConfig: hasModelConfig ? payload.modelConfig : existingAgentDefinition.modelConfig,
     });
   }
@@ -214,12 +231,6 @@ function runtimeSelectionChanged(
   const previousProviderHint = normalizeString(previous.providerHint);
   const nextProviderHint = normalizeString(next.providerHint);
   if (previousProviderHint !== nextProviderHint) {
-    return true;
-  }
-
-  const previousModelHint = normalizeString(previous.modelHint);
-  const nextModelHint = normalizeString(next.modelHint);
-  if (previousModelHint !== nextModelHint) {
     return true;
   }
 
@@ -402,166 +413,4 @@ export async function handleIdentityPreviewSystemPromptMatrix(
 
   const result = await context.gatewayIdentityService.previewSystemPromptMatrix(payload);
   return context.response(msg.id, MessageTypes.IDENTITY_PREVIEW_SYSTEM_PROMPT_MATRIX, result satisfies IdentityPreviewSystemPromptMatrixResponsePayload);
-}
-
-export async function handleSpaceListTemplates(
-  context: IdentityTemplateHandlerContext,
-  client: ClientSession,
-  msg: GatewayMessage,
-): Promise<GatewayMessage | null> {
-  if (!context.spaceTemplateService) {
-    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space template service unavailable");
-  }
-  if (!client.publicKey) {
-    return context.errorResponse(msg.id, "UNAUTHENTICATED", "Authenticated principal key is required");
-  }
-
-  const payload = (msg.payload ?? {}) as SpaceTemplateListPayload;
-  const templates = context.spaceTemplateService.listTemplates(payload, client.publicKey);
-  return context.response(
-    msg.id,
-    MessageTypes.SPACE_LIST_TEMPLATES,
-    { templates } satisfies SpaceTemplateListResponsePayload,
-  );
-}
-
-export async function handleSpaceGetTemplate(
-  context: IdentityTemplateHandlerContext,
-  client: ClientSession,
-  msg: GatewayMessage,
-): Promise<GatewayMessage | null> {
-  if (!context.spaceTemplateService) {
-    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space template service unavailable");
-  }
-  if (!client.publicKey) {
-    return context.errorResponse(msg.id, "UNAUTHENTICATED", "Authenticated principal key is required");
-  }
-
-  const payload = msg.payload as SpaceTemplateGetPayload;
-  if (!payload?.templateId) {
-    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "templateId is required");
-  }
-
-  const template = context.spaceTemplateService.getTemplate(payload, client.publicKey);
-  return context.response(
-    msg.id,
-    MessageTypes.SPACE_GET_TEMPLATE,
-    { template } satisfies SpaceTemplateGetResponsePayload,
-  );
-}
-
-export async function handleSpacePreviewTemplate(
-  context: IdentityTemplateHandlerContext,
-  client: ClientSession,
-  msg: GatewayMessage,
-): Promise<GatewayMessage | null> {
-  if (!context.spaceTemplateService) {
-    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space template service unavailable");
-  }
-  if (!client.publicKey) {
-    return context.errorResponse(msg.id, "UNAUTHENTICATED", "Authenticated principal key is required");
-  }
-
-  const payload = msg.payload as SpacePreviewTemplatePayload;
-  if (!payload?.templateId) {
-    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "templateId is required");
-  }
-
-  const result = context.spaceTemplateService.previewTemplate(payload, client.publicKey);
-  return context.response(
-    msg.id,
-    MessageTypes.SPACE_PREVIEW_TEMPLATE,
-    result as unknown as SpacePreviewTemplateResponsePayload,
-  );
-}
-
-export async function handleSpaceCreateFromTemplate(
-  context: IdentityTemplateHandlerContext,
-  client: ClientSession,
-  msg: GatewayMessage,
-): Promise<GatewayMessage | null> {
-  if (!context.spaceTemplateService) {
-    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space template service unavailable");
-  }
-  if (!client.publicKey) {
-    return context.errorResponse(msg.id, "UNAUTHENTICATED", "Authenticated principal key is required");
-  }
-
-  const payload = msg.payload as SpaceCreateFromTemplatePayload;
-  if (!payload?.templateId || !payload?.resourceId) {
-    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "templateId and resourceId are required");
-  }
-
-  let result = await context.spaceTemplateService.createFromTemplate(
-    payload,
-    client.publicKey,
-  ) as unknown as SpaceCreateFromTemplateResponsePayload;
-  if (context.spaceWorkspaceService && result.space) {
-    if (payload.workspaceRoot !== undefined) {
-      await context.spaceWorkspaceService.setWorkspace(result.space.id, payload.workspaceRoot);
-    } else {
-      await context.spaceWorkspaceService.ensureWorkspace(result.space.id);
-    }
-  }
-  if (result.space) {
-    result = {
-      ...result,
-      space: await context.decorateSpaceSummary(result.space as unknown as SpaceSummary),
-    };
-  }
-
-  return context.response(msg.id, MessageTypes.SPACE_CREATE_FROM_TEMPLATE, result);
-}
-
-export async function handleSpaceSaveTemplate(
-  context: IdentityTemplateHandlerContext,
-  client: ClientSession,
-  msg: GatewayMessage,
-): Promise<GatewayMessage | null> {
-  if (!context.spaceTemplateService) {
-    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space template service unavailable");
-  }
-  if (!client.publicKey) {
-    return context.errorResponse(msg.id, "UNAUTHENTICATED", "Authenticated principal key is required");
-  }
-
-  const payload = msg.payload as SpaceSaveTemplatePayload;
-  if (!payload?.title) {
-    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "title is required");
-  }
-
-  const result = await context.spaceTemplateService.saveTemplate({
-    ...payload,
-    principalId: client.publicKey,
-  });
-  return context.response(
-    msg.id,
-    MessageTypes.SPACE_SAVE_TEMPLATE,
-    result as unknown as SpaceSaveTemplateResponsePayload,
-  );
-}
-
-export async function handleSpaceArchiveTemplate(
-  context: IdentityTemplateHandlerContext,
-  client: ClientSession,
-  msg: GatewayMessage,
-): Promise<GatewayMessage | null> {
-  if (!context.spaceTemplateService) {
-    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space template service unavailable");
-  }
-  if (!client.publicKey) {
-    return context.errorResponse(msg.id, "UNAUTHENTICATED", "Authenticated principal key is required");
-  }
-
-  const payload = msg.payload as SpaceTemplateArchivePayload;
-  if (!payload?.templateId) {
-    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "templateId is required");
-  }
-
-  const result = context.spaceTemplateService.archiveTemplate(payload, client.publicKey);
-  return context.response(
-    msg.id,
-    MessageTypes.SPACE_ARCHIVE_TEMPLATE,
-    result as unknown as SpaceTemplateArchiveResponsePayload,
-  );
 }

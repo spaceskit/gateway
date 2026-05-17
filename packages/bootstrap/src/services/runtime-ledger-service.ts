@@ -27,7 +27,7 @@ type TurnEventLike =
         completionTokens?: number;
         totalTokens?: number;
         tokenAccuracy?: "reported" | "estimated" | "mixed";
-        usageSource?: "ledger" | "local_scanner" | "legacy_turns";
+        usageSource?: "ledger" | "local_scanner";
         usageDetails?: Record<string, unknown>;
       };
       metadata?: { providerId?: string; modelId?: string; durationMs?: number; finishReason?: string };
@@ -74,7 +74,7 @@ export class RuntimeLedgerService {
     requestedByDeviceId?: string;
     targetAgentId?: string;
   }): RunRow | null {
-    const existing = this.runs.getByCompatibilityTurnId(input.turnId);
+    const existing = this.runs.getByTurnId(input.turnId);
     if (existing) {
       this.runIdByTurnId.set(input.turnId, existing.run_id);
       return existing;
@@ -85,7 +85,7 @@ export class RuntimeLedgerService {
       run = this.runs.create({
         runId: randomUUID(),
         spaceId: input.spaceId,
-        compatibilityTurnId: input.turnId,
+        turnId: input.turnId,
         status: "running",
         triggerSource: "space_input",
         requestedByPrincipalId: input.requestedByPrincipalId,
@@ -174,7 +174,7 @@ export class RuntimeLedgerService {
           runId: run.run_id,
           stepId,
           spaceId: input.spaceId,
-          compatibilityTurnId: input.turnId,
+          turnId: input.turnId,
           agentId,
           category: input.event.request.triggerClass ?? "",
           description: input.event.request.description,
@@ -276,15 +276,15 @@ export class RuntimeLedgerService {
   }
 
   recordApprovalResolution(
-    compatibilityTurnId: string,
+    turnId: string,
     status: ApprovalRequestStatus,
     resolution?: string,
   ): void {
-    const approvalId = this.approvalByTurnId.get(compatibilityTurnId);
+    const approvalId = this.approvalByTurnId.get(turnId);
     if (approvalId) {
       this.approvalRequests.setStatus(approvalId, status, resolution);
     }
-    const run = this.runs.getByCompatibilityTurnId(compatibilityTurnId);
+    const run = this.runs.getByTurnId(turnId);
     if (run && status !== "pending") {
       this.runs.setStatus(run.run_id, { status: "running", completedAt: null });
     }

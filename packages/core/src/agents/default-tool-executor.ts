@@ -40,16 +40,12 @@ import {
   resolveToolHint,
 } from "./default-tool-executor-hints.js";
 import {
-  evaluateFilesystemScope,
-  extractShellCommand,
-  matchesCommandAllowRule,
-} from "./default-tool-executor-scope.js";
-import {
   isCapabilityErrorOutput,
   normalizeTargetProvider,
   toCapabilityError,
 } from "./default-tool-executor-errors.js";
 import type { CapabilityError } from "./default-tool-executor-errors.js";
+import { checkDefaultToolPermission } from "./default-tool-executor-permission.js";
 
 export type { CapabilityError } from "./default-tool-executor-errors.js";
 
@@ -239,224 +235,18 @@ export class DefaultToolExecutor implements ToolExecutor {
     toolCall: ToolCall,
     context: ToolExecutionContext,
   ): Promise<ToolPermission> {
-    const scope = await this.resolveScope(context.spaceId, context.agentId);
-
-    // Injected tools (e.g. platform.*) bypass capability allowlist checks —
-    // access is already gated by the injectedToolFilter.
-    if (this.isInjectedTool(toolCall.name)) {
-      if (context.suppressInjectedTools) {
-        const denied: ToolPermission = {
-          toolName: toolCall.name,
-          allowed: false,
-          reason: "Platform introspection tools are suppressed for trivial or greeting turns",
-          reasonCode: "injected_tool_suppressed",
-        };
-        this.emitPermissionDeniedEvent(context, denied);
-        return denied;
-      }
-      const injectedAllowed = await this.checkInjectedToolAccess(context.spaceId, context.agentId, toolCall.name);
-      if (!injectedAllowed) {
-        const denied: ToolPermission = {
-          toolName: toolCall.name,
-          allowed: false,
-          reason: "Agent is not authorized for platform introspection tools",
-          reasonCode: "injected_tool_not_authorized",
-        };
-        this.emitPermissionDeniedEvent(context, denied);
-        return denied;
-      }
-      if (this.evaluateInjectedToolAccess) {
-        const decision = await this.evaluateInjectedToolAccess({
-          spaceId: context.spaceId,
-          agentId: context.agentId,
-          principalId: context.principalId,
-          deviceId: context.deviceId,
-          executionOrigin: context.executionOrigin,
-          accessMode: context.accessMode,
-          toolName: toolCall.name,
-        });
-
-        if (!decision.allowed && !decision.requiresApproval) {
-          const denied: ToolPermission = {
-            toolName: toolCall.name,
-            allowed: false,
-            reason: decision.reason ?? `Tool unavailable: ${toolCall.name}`,
-            reasonCode: decision.reasonCode ?? "tool_unavailable",
-          };
-          this.emitPermissionDeniedEvent(context, denied);
-          return denied;
-        }
-
-        if (decision.requiresApproval) {
-          return {
-            toolName: toolCall.name,
-            allowed: true,
-            requiresApproval: true,
-            reason: decision.reason ?? `Tool "${toolCall.name}" requires approval`,
-            reasonCode: decision.reasonCode,
-            approvalContext: decision.approvalContext,
-          };
-        }
-      }
-      return { toolName: toolCall.name, allowed: true };
-    }
-
-    // Parse capability.operation from tool name
-    const parts = toolCall.name.split(".");
-    const capType = parts[0];
-    const operation = parts.slice(1).join(".");
-
-    // Check capability allowlist
-    if (
-      scope.allowedCapabilities.length > 0 &&
-      !scope.allowedCapabilities.includes(capType)
-    ) {
-      const denied: ToolPermission = {
-        toolName: toolCall.name,
-        allowed: false,
-        reason: `Capability "${capType}" not in agent's allowlist`,
-        reasonCode: "capability_not_allowlisted",
-      };
-      this.emitPermissionDeniedEvent(context, denied);
-      return denied;
-    }
-
-    if (!capType || !isCapabilityType(capType) || !operation) {
-      const denied: ToolPermission = {
-        toolName: toolCall.name,
-        allowed: false,
-        reason: `Invalid tool call name: ${toolCall.name}`,
-        reasonCode: "invalid_tool_name",
-      };
-      this.emitPermissionDeniedEvent(context, denied);
-      return denied;
-    }
-
-    const invocation: CapabilityInvocation = {
-      capability: capType,
-      operation,
-      args: toolCall.arguments,
-      targetProvider: normalizeTargetProvider(toolCall.arguments.targetProvider, toolCall.name),
-    };
-    const operationMetadata = this.registry.getOperationMetadata(invocation, context.spaceId);
-
-    if (operationMetadata.requiresShell && !scope.allowShell && !this.evaluateToolAccess) {
-      const denied: ToolPermission = {
-        toolName: toolCall.name,
-        allowed: false,
-        reason: "Shell execution is disabled for this agent",
-        reasonCode: "shell_not_allowed",
-      };
-      this.emitPermissionDeniedEvent(context, denied);
-      return denied;
-    }
-
-    if (operationMetadata.requiresNetwork && !scope.allowNetwork) {
-      const denied: ToolPermission = {
-        toolName: toolCall.name,
-        allowed: false,
-        reason: "Network access is disabled for this agent",
-        reasonCode: "network_not_allowed",
-      };
-      this.emitPermissionDeniedEvent(context, denied);
-      return denied;
-    }
-
-    if (operationMetadata.requiresShell && scope.commandAllowlist.length > 0) {
-      const commandValue = extractShellCommand(toolCall.arguments, operationMetadata);
-      if (!commandValue) {
-        const denied: ToolPermission = {
-          toolName: toolCall.name,
-          allowed: false,
-          reason: "Shell command argument is required when commandAllowlist is configured",
-          reasonCode: "command_missing",
-        };
-        this.emitPermissionDeniedEvent(context, denied);
-        return denied;
-      }
-      const allowed = scope.commandAllowlist.some((rule) => matchesCommandAllowRule(commandValue, rule));
-      if (!allowed) {
-        const denied: ToolPermission = {
-          toolName: toolCall.name,
-          allowed: false,
-          reason: `Shell command not allowed: ${commandValue}`,
-          reasonCode: "command_not_allowlisted",
-        };
-        this.emitPermissionDeniedEvent(context, denied);
-        return denied;
-      }
-    }
-
-    const filesystemScopeError = evaluateFilesystemScope(toolCall, scope, operationMetadata);
-    if (filesystemScopeError) {
-      const denied: ToolPermission = {
-        toolName: toolCall.name,
-        allowed: false,
-        reason: filesystemScopeError,
-        reasonCode: "filesystem_scope_violation",
-      };
-      this.emitPermissionDeniedEvent(context, denied);
-      return denied;
-    }
-
-    // Check tool call count limit
-    const countKey = `${context.turnId}:${context.agentId}`;
-    const count = this.turnToolCallCounts.get(countKey) ?? 0;
-    if (count >= scope.maxToolCallsPerTurn) {
-      const denied: ToolPermission = {
-        toolName: toolCall.name,
-        allowed: false,
-        reason: `Max tool calls per turn (${scope.maxToolCallsPerTurn}) exceeded`,
-        reasonCode: "max_tool_calls_exceeded",
-      };
-      this.emitPermissionDeniedEvent(context, denied);
-      return denied;
-    }
-
-    if (this.evaluateToolAccess) {
-      const decision = await this.evaluateToolAccess({
-        spaceId: context.spaceId,
-        agentId: context.agentId,
-        principalId: context.principalId,
-        deviceId: context.deviceId,
-        executionOrigin: context.executionOrigin,
-        accessMode: context.accessMode,
-        capability: capType,
-        operation,
-        targetProvider: invocation.targetProvider,
-      });
-
-      if (!decision.allowed && !decision.requiresApproval) {
-        const denied: ToolPermission = {
-          toolName: toolCall.name,
-          allowed: false,
-          reason: decision.reason ?? `Tool unavailable: ${toolCall.name}`,
-          reasonCode: decision.reasonCode ?? "tool_unavailable",
-        };
-        this.emitPermissionDeniedEvent(context, denied);
-        return denied;
-      }
-
-      if (decision.requiresApproval) {
-        return {
-          toolName: toolCall.name,
-          allowed: true,
-          requiresApproval: true,
-          reason: decision.reason ?? `Tool "${toolCall.name}" requires approval`,
-          reasonCode: decision.reasonCode,
-          approvalContext: decision.approvalContext,
-        };
-      }
-    }
-
-    // Check if tool requires human approval
-    const requiresApproval = scope.requireOutputReview;
-
-    return {
-      toolName: toolCall.name,
-      allowed: true,
-      requiresApproval,
-    };
+    return checkDefaultToolPermission({
+      toolCall,
+      context,
+      registry: this.registry,
+      resolveScope: this.resolveScope,
+      isInjectedTool: this.isInjectedTool.bind(this),
+      checkInjectedToolAccess: this.checkInjectedToolAccess.bind(this),
+      evaluateInjectedToolAccess: this.evaluateInjectedToolAccess,
+      evaluateToolAccess: this.evaluateToolAccess,
+      turnToolCallCounts: this.turnToolCallCounts,
+      emitPermissionDeniedEvent: this.emitPermissionDeniedEvent.bind(this),
+    });
   }
 
   /**

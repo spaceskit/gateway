@@ -97,7 +97,6 @@ export interface SpaceAddAgentPayload {
   spaceId: string;
   agentId: string;
   profileId: string;
-  securityScope?: Record<string, unknown>;
   spawnContext?: string;
   contextOverrides?: Record<string, unknown>;
   role?: "participant" | "global_coordinator" | "space_moderator";
@@ -118,7 +117,6 @@ export interface SpaceUpdateAgentAssignmentPayload {
   spaceId: string;
   agentId: string;
   profileId?: string;
-  securityScope?: Record<string, unknown> | null;
   spawnContext?: string | null;
   contextOverrides?: Record<string, unknown> | null;
   role?: "participant" | "global_coordinator" | "space_moderator";
@@ -366,7 +364,6 @@ export interface SpaceAssignmentSummary {
   spaceId: string;
   agentId: string;
   profileId: string;
-  securityScope?: Record<string, unknown>;
   spawnContext?: string;
   contextOverrides?: Record<string, unknown>;
   role: "participant" | "global_coordinator" | "space_moderator";
