@@ -1,0 +1,23 @@
+{
+  "domain_id": "runtime-cli",
+  "description": "Smoke coverage for runtime CLI flows against an external gateway harness.",
+  "scenarios": [
+    {
+      "domain_id": "runtime-cli",
+      "scenario_id": "runtime-cli.gateway-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-e2e"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/bootstrap/test/e2e/cli-tool-runtime.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 900000
+      }
+    }
+  ]
+}

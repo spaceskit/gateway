@@ -18,6 +18,7 @@ export interface RunWorkbenchDocsPreflightOptions {
   worktreePath: string;
   timeoutMs: number;
   now: () => Date;
+  signal?: AbortSignal;
   verificationExecutor: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
 }
 
@@ -60,6 +61,7 @@ export async function runWorkbenchDocsPreflight(
     cwd: check.cwd,
     timeoutMs: options.timeoutMs,
     now: options.now,
+    signal: options.signal,
   });
   return {
     status: docsPreflightStatus(evidence),

@@ -9,6 +9,7 @@ import {
   WorkbenchBatchRepository,
   WorkbenchPolicyRepository,
   WorkbenchRunRepository,
+  WorkbenchScenarioRunRepository,
 } from "@spaceskit/persistence";
 import { WorkbenchService, auditWorkbenchOpenBacklog, auditWorkbenchPlanningRepo } from "../src/services/workbench-service.js";
 
@@ -284,9 +285,11 @@ function createHarness(
   });
   dbManagers.push(db);
 
+  const runsRepository = new WorkbenchRunRepository(db.db);
   const service = new WorkbenchService({
     batches: new WorkbenchBatchRepository(db.db),
-    runs: new WorkbenchRunRepository(db.db),
+    runs: runsRepository,
+    scenarioRuns: new WorkbenchScenarioRunRepository(db.db),
     artifacts: new WorkbenchArtifactRepository(db.db),
     policy: new WorkbenchPolicyRepository(db.db),
     repoRoot,
@@ -294,6 +297,7 @@ function createHarness(
     workbenchProjectSlug: PROJECT_SLUG,
     now: () => new Date(nowIso),
     logger: makeLogger(),
+    workbenchExecutorAutostart: false,
     ...(options.serviceOverrides ?? {}),
   } as any);
 
@@ -301,6 +305,7 @@ function createHarness(
     repoRoot,
     workProjectsRoot,
     service,
+    runsRepository,
   };
 }
 
@@ -378,6 +383,69 @@ describe("WorkbenchService", () => {
     ]);
   });
 
+  test("accepts harness feedback-loop verification commands from frontmatter", async () => {
+    const { service, repoRoot } = createHarness();
+    const taskPath = join(repoRoot, "Documents", "work", "projects", "spaces", "tasks", "T-0016.md");
+    writeFileSync(taskPath, `---
+id: spaces/T-0016
+title: "frontmatter verification task"
+status: ready
+owner: agent
+autonomous: true
+priority: medium
+created: 2026-05-19
+updated: 2026-05-19
+depends-on: []
+verification-commands: ["pnpm test", "pnpm typecheck"]
+products: [gateway]
+parallel: [independent]
+---
+
+# Task: frontmatter verification task
+
+Next action: Execute from harness enrichment.
+
+## Metadata
+- Status: Planned
+- Owner: gateway
+- Delegation: autonomous
+- Parallel: independent
+- AI-Shippable: yes
+- Type: code
+
+\`\`\`yaml goal_contract
+schemaVersion: 1
+goalId: T-0016
+contractState: reviewed
+owner: gateway
+status: Planned
+delegation: autonomous
+aiShippable: true
+products:
+  - gateway
+outcome: Do the thing.
+scope:
+  in:
+    - Do the thing.
+  out:
+    - No out-of-scope work declared.
+successCriteria:
+  - Do the thing.
+verification:
+  commands:
+    - pnpm test
+    - pnpm typecheck
+blockers: []
+\`\`\`
+`);
+
+    const item = (await service.listQueue()).find((queueItem) => queueItem.queueItemId === "spaces/T-0016");
+
+    expect(item?.verificationMode).toBe("machine_readable");
+    expect(item?.verificationCommands).toEqual(["pnpm test", "pnpm typecheck"]);
+    expect(item?.executionModeEligibility.autonomous).toBe(true);
+  });
+
   test("rejects batch creation when selected queue items conflict on parallel keys", async () => {
     const { service } = createHarness();
 
@@ -426,6 +494,58 @@ describe("WorkbenchService", () => {
     expect(artifacts[1]?.contentText).toContain("Mode: `review_only`");
   });
 
+  test("deduplicates retried Workbench run mutations by idempotency key", async () => {
+    const records = new Map<string, {
+      requestHash: string;
+      responseType: string;
+      responsePayload: string;
+    }>();
+    const { service } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: {
+        loadIdempotencyRecord: async (principalId: string, endpoint: string, idempotencyKey: string) =>
+          records.get(`${principalId}:${endpoint}:${idempotencyKey}`) ?? null,
+        saveIdempotencyRecord: async (record: {
+          principalId: string;
+          endpoint: string;
+          idempotencyKey: string;
+          requestHash: string;
+          responseType: string;
+          responsePayload: string;
+        }) => {
+          records.set(`${record.principalId}:${record.endpoint}:${record.idempotencyKey}`, {
+            requestHash: record.requestHash,
+            responseType: record.responseType,
+            responsePayload: record.responsePayload,
+          });
+        },
+      },
+    });
+
+    const first = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0004",
+      executionMode: "supervised",
+      idempotencyKey: "concierge-workbench:request-1",
+    });
+    const replay = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0004",
+      executionMode: "supervised",
+      idempotencyKey: "concierge-workbench:request-1",
+    });
+
+    expect(replay.runId).toBe(first.runId);
+    expect(await service.listRuns({ queueItemId: "spaces/T-0004" })).toHaveLength(1);
+    await expect(service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0005",
+      executionMode: "supervised",
+      idempotencyKey: "concierge-workbench:request-1",
+    })).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+    });
+  });
+
   test("executes machine-readable verification commands for autonomous runs", async () => {
     const { service, repoRoot } = createHarness();
 
@@ -434,22 +554,132 @@ describe("WorkbenchService", () => {
       queueItemId: "spaces/T-0001",
       executionMode: "autonomous",
     });
+    expect(run.status).toBe("queued");
+    expect(run.currentStage).toBe("execute");
 
-    expect(run.status).toBe("completed");
-    expect(run.currentStage).toBe("report");
-    expect(run.verificationResult?.status).toBe("passed");
-    expect(run.verificationSuites.every((suite) => suite.status === "passed")).toBe(true);
-    expect(run.verificationSuites.every((suite) => typeof suite.durationMs === "number")).toBe(true);
-    expect(run.verificationSuites.every((suite) => suite.logArtifactId)).toBe(true);
+    const [completed] = await service.processQueuedRuns();
+    expect(completed?.status).toBe("completed");
+    expect(completed?.currentStage).toBe("report");
+    expect(completed?.verificationResult?.status).toBe("passed");
+    expect(completed?.verificationSuites.every((suite) => suite.status === "passed")).toBe(true);
+    expect(completed?.verificationSuites.every((suite) => typeof suite.durationMs === "number")).toBe(true);
+    expect(completed?.verificationSuites.every((suite) => suite.logArtifactId)).toBe(true);
 
-    const artifacts = await service.listArtifacts({ runId: run.runId });
+    const artifacts = await service.listArtifacts({ runId: completed!.runId });
     const docsArtifact = artifacts.find((artifact) => artifact.kind === "docs");
     expect(docsArtifact?.contentText).toContain("Status: `not_available`");
-    expect(artifacts.filter((artifact) => artifact.kind === "verification_log").length).toBe(run.verificationSuites.length);
+    expect(artifacts.filter((artifact) => artifact.kind === "verification_log").length).toBe(completed!.verificationSuites.length);
     expect(artifacts.some((artifact) => artifact.contentText.includes("workbench-ok"))).toBe(true);
     const taskMarkdown = readFileSync(join(repoRoot, "Documents", "work", "projects", "spaces", "tasks", "T-0001.md"), "utf8");
     expect(taskMarkdown).toContain("status: review");
-    expect(taskMarkdown).toContain(`Workbench run ${run.runId} completed verification and is ready for review.`);
+    expect(taskMarkdown).toContain(`Workbench run ${completed!.runId} completed verification and is ready for review.`);
+  });
+
+  test("cancels queued runs before the executor starts", async () => {
+    const { service } = createHarness();
+
+    const run = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0001",
+      executionMode: "autonomous",
+    });
+    const cancelled = await service.cancelRun({
+      principalId: "principal-owner",
+      runId: run.runId,
+    });
+    const processed = await service.processQueuedRuns();
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.currentStage).toBe("report");
+    expect(processed).toEqual([]);
+  });
+
+  test("cancels autostart timer before the executor starts", async () => {
+    const executedRuns: string[] = [];
+    const { service } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: {
+        workbenchExecutorAutostart: true,
+        workbenchExecutorAdapter: {
+          run: async ({ runId }: { runId: string }) => {
+            executedRuns.push(runId);
+            throw new Error("executor should not start after cancellation");
+          },
+        },
+      },
+    });
+
+    const run = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0001",
+      executionMode: "autonomous",
+    });
+    await service.cancelRun({
+      principalId: "principal-owner",
+      runId: run.runId,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(executedRuns).toEqual([]);
+  });
+
+  test("aborts an active verification command when a run is cancelled", async () => {
+    let started: (() => void) | undefined;
+    const verificationStarted = new Promise<void>((resolveStarted) => {
+      started = resolveStarted;
+    });
+    const { service } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: {
+        verificationExecutor: async (options: any) => {
+          started?.();
+          return await new Promise((resolve) => {
+            options.signal?.addEventListener("abort", () => {
+              resolve(makeWorkbenchEvidence(options.command, "failed"));
+            }, { once: true });
+          });
+        },
+      },
+    });
+
+    const run = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0001",
+      executionMode: "autonomous",
+    });
+    const processing = service.processQueuedRuns();
+    await verificationStarted;
+
+    const cancelled = await service.cancelRun({
+      principalId: "principal-owner",
+      runId: run.runId,
+    });
+    await processing;
+    const persisted = await service.getRun({ runId: run.runId });
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(persisted?.status).toBe("cancelled");
+    expect(persisted?.currentStage).toBe("report");
+  });
+
+  test("marks interrupted active runs as failed during restart recovery", async () => {
+    const { service, runsRepository } = createHarness();
+    const run = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "spaces/T-0001",
+      executionMode: "autonomous",
+    });
+    runsRepository.update(run.runId, {
+      status: "running",
+      currentStage: "verify",
+    });
+
+    await service.recoverInterruptedRuns();
+    const recovered = await service.getRun({ runId: run.runId });
+
+    expect(recovered?.status).toBe("failed");
+    expect(recovered?.currentStage).toBe("report");
+    expect(recovered?.lastErrorCode).toBe("WORKBENCH_RUN_INTERRUPTED");
+    expect(recovered?.verificationResult?.status).toBe("failed");
   });
 
   test("creates an execution space, runs planning and implementation turns, then verifies", async () => {
@@ -501,10 +731,13 @@ describe("WorkbenchService", () => {
       queueItemId: "spaces/T-0001",
       executionMode: "autonomous",
     });
+    const [completed] = await service.processQueuedRuns();
 
-    expect(run.status).toBe("completed");
-    expect(run.currentStage).toBe("report");
-    expect(run.executionContext).toEqual({
+    expect(run.status).toBe("queued");
+    expect(run.currentStage).toBe("execute");
+    expect(completed?.status).toBe("completed");
+    expect(completed?.currentStage).toBe("report");
+    expect(completed?.executionContext).toEqual({
       spaceId: "workbench-space-1",
       spaceUid: "11111111-1111-4111-8111-111111111111",
       spaceName: "Workbench: spaces/T-0001",
@@ -568,7 +801,7 @@ describe("WorkbenchService", () => {
     ]);
 
     const persisted = await service.getRun({ runId: run.runId });
-    expect(persisted?.executionContext).toEqual(run.executionContext);
+    expect(persisted?.executionContext).toEqual(completed?.executionContext);
     const artifacts = await service.listArtifacts({ runId: run.runId });
     expect(artifacts.some((artifact) => artifact.title === "Agent Planning Turn" && artifact.contentText.includes("planning-turn-1"))).toBe(true);
   });
@@ -611,11 +844,14 @@ describe("WorkbenchService", () => {
       queueItemId: "spaces/T-0001",
       executionMode: "autonomous",
     });
+    const [failed] = await service.processQueuedRuns();
 
-    expect(run.status).toBe("failed");
-    expect(run.currentStage).toBe("report");
-    expect(run.lastErrorCode).toBe("AGENT_TURN_FAILED");
-    expect(run.executionContext).toMatchObject({
+    expect(run.status).toBe("queued");
+    expect(run.currentStage).toBe("execute");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.currentStage).toBe("report");
+    expect(failed?.lastErrorCode).toBe("AGENT_TURN_FAILED");
+    expect(failed?.executionContext).toMatchObject({
       spaceId: "workbench-space-failed-plan",
       stage: "failed",
     });
@@ -661,14 +897,17 @@ describe("WorkbenchService", () => {
       queueItemId: "spaces/T-0001",
       executionMode: "autonomous",
     });
+    const [failed] = await service.processQueuedRuns();
 
-    expect(run.status).toBe("failed");
-    expect(run.currentStage).toBe("report");
-    expect(run.lastErrorCode).toBe("VERIFICATION_FAILED");
-    expect(run.verificationResult?.status).toBe("failed");
-    expect(run.verificationSuites[0]?.status).toBe("passed");
-    expect(run.verificationSuites[1]?.status).toBe("failed");
-    expect(run.executionContext).toMatchObject({
+    expect(run.status).toBe("queued");
+    expect(run.currentStage).toBe("execute");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.currentStage).toBe("report");
+    expect(failed?.lastErrorCode).toBe("VERIFICATION_FAILED");
+    expect(failed?.verificationResult?.status).toBe("failed");
+    expect(failed?.verificationSuites[0]?.status).toBe("passed");
+    expect(failed?.verificationSuites[1]?.status).toBe("failed");
+    expect(failed?.executionContext).toMatchObject({
       spaceId: "workbench-space-failed-verify",
       stage: "failed",
     });
@@ -686,8 +925,9 @@ describe("WorkbenchService", () => {
       queueItemId: "spaces/T-0001",
       executionMode: "autonomous",
     });
+    const [completed] = await service.processQueuedRuns();
 
-    const artifacts = await service.listArtifacts({ runId: run.runId });
+    const artifacts = await service.listArtifacts({ runId: completed!.runId });
     const docsArtifact = artifacts.find((artifact) => artifact.kind === "docs");
     expect(docsArtifact?.contentText).toContain("Status: `fresh`");
     expect(docsArtifact?.contentText).toContain("docs-fresh");
@@ -700,6 +940,61 @@ describe("WorkbenchService", () => {
     expect(knowledgeArtifact?.contentText).toContain("generated-docs");
   });
 
+  test("reports runner capabilities and exposes gateway-owned scenario catalog", async () => {
+    const { service } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: {
+        runnerApiEnabled: true,
+      },
+    });
+
+    const policy = await service.getPolicy();
+    const catalog = await service.listScenarios();
+
+    expect(policy.runnerAvailable).toBe(true);
+    expect(policy.scenarioDiscoveryAvailable).toBe(true);
+    expect(policy.supportedExecutionModes).toEqual(["supervised", "autonomous"]);
+    expect(policy.supportedVerificationModes).toEqual(["machine_readable", "review_only"]);
+    expect(catalog.layers.map((layer) => layer.layerId)).toContain("harness-smoke");
+    expect(catalog.scenarios.map((scenario) => scenario.scenarioId)).toContain("harness.smoke.noop");
+  });
+
+  test("persists a completed deterministic scenario run and blocks start when runner API is disabled", async () => {
+    const { service } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: {
+        runnerApiEnabled: true,
+      },
+    });
+
+    const run = await service.startScenarioRun({
+      principalId: "principal-owner",
+      config: {
+        scenarioIds: ["harness.smoke.noop"],
+      },
+    });
+
+    expect(run.status).toBe("completed");
+    expect(run.overallStatus).toBe("passed");
+    expect(run.config.scenarioIds).toEqual(["harness.smoke.noop"]);
+    expect(run.summary).toContain("1 scenario passed");
+
+    const persisted = await service.getScenarioRun({ scenarioRunId: run.scenarioRunId });
+    expect(persisted?.scenarioRunId).toBe(run.scenarioRunId);
+    expect((await service.listScenarioRuns()).map((entry) => entry.scenarioRunId)).toContain(run.scenarioRunId);
+
+    const disabled = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: {
+        runnerApiEnabled: false,
+      },
+    }).service;
+    await expect(disabled.startScenarioRun({
+      principalId: "principal-owner",
+      config: { scenarioIds: ["harness.smoke.noop"] },
+    })).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+      message: "Workbench runner API is disabled",
+    });
+  });
+
   test("persists failing verification evidence", async () => {
     const { service, repoRoot } = createHarness();
 
@@ -708,19 +1003,22 @@ describe("WorkbenchService", () => {
       queueItemId: "spaces/T-0006",
       executionMode: "autonomous",
     });
+    const [failed] = await service.processQueuedRuns();
 
-    expect(run.status).toBe("failed");
-    expect(run.currentStage).toBe("report");
-    expect(run.lastErrorCode).toBe("VERIFICATION_FAILED");
-    expect(run.verificationResult?.status).toBe("failed");
-    expect(run.verificationSuites[0]?.status).toBe("failed");
-    expect(run.verificationSuites[0]?.exitCode).toBe(7);
+    expect(run.status).toBe("queued");
+    expect(run.currentStage).toBe("execute");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.currentStage).toBe("report");
+    expect(failed?.lastErrorCode).toBe("VERIFICATION_FAILED");
+    expect(failed?.verificationResult?.status).toBe("failed");
+    expect(failed?.verificationSuites[0]?.status).toBe("failed");
+    expect(failed?.verificationSuites[0]?.exitCode).toBe(7);
 
     const artifacts = await service.listArtifacts({ runId: run.runId });
     expect(artifacts.some((artifact) => artifact.kind === "verification_log" && artifact.contentText.includes("nope"))).toBe(true);
     const taskMarkdown = readFileSync(join(repoRoot, "Documents", "work", "projects", "spaces", "tasks", "T-0006.md"), "utf8");
     expect(taskMarkdown).toContain("status: blocked");
-    expect(taskMarkdown).toContain(`Workbench run ${run.runId} failed verification: Verification 1.`);
+    expect(taskMarkdown).toContain(`Workbench run ${failed!.runId} failed verification: Verification 1.`);
   });
 
   test("blocks autonomous runs when queue metadata is not autonomy-eligible", async () => {

@@ -58,12 +58,14 @@ export async function persistWorkbenchDocsPreflightArtifact(input: {
   worktreePath: string;
   verificationCommandTimeoutMs: number;
   now: () => Date;
+  signal?: AbortSignal;
   verificationExecutor: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
 }): Promise<void> {
   const preflight = await runWorkbenchDocsPreflight({
     worktreePath: input.worktreePath,
     timeoutMs: input.verificationCommandTimeoutMs,
     now: input.now,
+    signal: input.signal,
     verificationExecutor: input.verificationExecutor,
   });
   if (!preflight.check) {

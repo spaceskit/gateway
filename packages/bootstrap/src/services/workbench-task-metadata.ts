@@ -98,9 +98,17 @@ export function updateCentralTaskFile(taskFilePath: string, input: {
   setLine("claimed-at", input.claimedAt);
   setLine("claim-expires-at", input.claimExpiresAt);
   const logEntry = `- ${input.nowIso} - ${input.logMessage}`;
-  const nextBody = body.includes("\n## Log\n")
-    ? body.replace(/\n## Log\n/, `\n## Log\n\n${logEntry}\n`)
-    : `${body.trimEnd()}\n\n## Log\n\n${logEntry}\n`;
+  const feedbackEntry = input.status === "in-progress"
+    ? `\n## Attempts\n\n### Spaces Workbench Attempt Started\n- at: ${input.nowIso}\n- agent: ${input.owner ?? "agent"}\n- status: in-progress\n`
+    : input.status === "review"
+      ? `\n## Feedback\n\n### Spaces Workbench Review Requested\n- at: ${input.nowIso}\n- decision: review\n- feedback: ${input.logMessage}\n`
+      : input.status === "blocked"
+        ? `\n## Feedback\n\n### Spaces Workbench Blocked\n- at: ${input.nowIso}\n- decision: block\n- feedback: ${input.logMessage}\n`
+        : "";
+  const bodyWithFeedback = feedbackEntry ? `${body.trimEnd()}\n${feedbackEntry}` : body;
+  const nextBody = bodyWithFeedback.includes("\n## Log\n")
+    ? bodyWithFeedback.replace(/\n## Log\n/, `\n## Log\n\n${logEntry}\n`)
+    : `${bodyWithFeedback.trimEnd()}\n\n## Log\n\n${logEntry}\n`;
   writeFileSync(taskFilePath, `---\n${lines.join("\n")}\n---\n\n${nextBody.replace(/^\n+/, "")}`);
 }
 
@@ -147,7 +155,15 @@ function parseCentralTaskFile(taskFilePath: string, projectSlug: string, now: Da
   const title = stripQuotes(requiredFrontmatter(frontmatter, "title", extractTaskTitle(body) ?? basename(taskFilePath, ".md")));
   const status = normalizeCentralStatus(requiredFrontmatter(frontmatter, "status", "ready"));
   const autonomous = parseBoolean(frontmatter.get("autonomous"));
-  const verification = extractMachineReadableVerification(body);
+  const bodyVerification = extractMachineReadableVerification(body);
+  const frontmatterVerificationCommands = parseFrontmatterList(frontmatter.get("verification-commands"));
+  const verification = bodyVerification.mode === "machine_readable" || frontmatterVerificationCommands.length === 0
+    ? bodyVerification
+    : {
+        mode: "machine_readable" as const,
+        commands: frontmatterVerificationCommands,
+        malformed: false,
+      };
   const dependsOn = parseFrontmatterList(frontmatter.get("depends-on"));
   const bodyMetadata = collectMetadata(body);
   const products = splitMetadataList(bodyMetadata.get("products") ?? frontmatter.get("products") ?? frontmatter.get("tags") ?? projectSlug);

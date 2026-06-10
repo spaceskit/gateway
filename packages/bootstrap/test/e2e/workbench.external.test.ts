@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createTestClient, createTestGateway, E2E_TIMEOUT } from "./harness.js";
 
@@ -140,6 +140,47 @@ function runOrThrow(args: string[], cwd: string): void {
   throw new Error(`Command failed: ${args.join(" ")}\n${result.stderr}`);
 }
 
+async function waitForWorkbenchRunStatus(
+  client: {
+    getWorkbenchRun(input: { runId: string }): Promise<any>;
+  },
+  runId: string,
+  expectedStatus: string,
+  timeoutMs = 5_000,
+): Promise<any> {
+  const startedAt = Date.now();
+  let lastRun: any = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    lastRun = await client.getWorkbenchRun({ runId });
+    if (lastRun?.status === expectedStatus) return lastRun;
+    if (lastRun && ["cancelled", "failed"].includes(lastRun.status)) {
+      throw new Error(`Workbench run ${runId} reached ${lastRun.status} before ${expectedStatus}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for Workbench run ${runId} to reach ${expectedStatus}; last status was ${lastRun?.status ?? "missing"}`);
+}
+
+function waitForNotification(
+  client: { onNotification(handler: (payload: any) => void): () => void },
+  predicate: (payload: any) => boolean,
+  timeoutMs: number,
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`Timed out waiting for notification after ${timeoutMs}ms`));
+    }, timeoutMs);
+    unsubscribe = client.onNotification((payload: any) => {
+      if (!predicate(payload)) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(payload);
+    });
+  });
+}
+
 function createWorkbenchFixtureRepo(): string {
   const repoRoot = mkdtempSync(join(tmpdir(), "spaces-workbench-e2e-"));
   mkdirSync(join(repoRoot, "_planning", "backlog", "tasks"), { recursive: true });
@@ -207,6 +248,66 @@ function listCheckoutExternalSpaceDirs(): string[] {
 }
 
 describe("external workbench control plane", () => {
+  test("embedded gateway exposes Workbench state for the built-in concierge path", {
+    timeout: E2E_TIMEOUT,
+  }, async () => {
+    const repoRoot = createWorkbenchFixtureRepo();
+    let gateway: Awaited<ReturnType<typeof createTestGateway>> | null = null;
+    let client: Awaited<ReturnType<typeof createTestClient>> | null = null;
+
+    try {
+      gateway = await createTestGateway(undefined, {
+        gatewayProfile: "embedded",
+        env: {
+          SPACESKIT_ENABLE_CONCIERGE_WORKBENCH_TOOLS: "true",
+          SPACESKIT_WORKBENCH_REPO_ROOT: repoRoot,
+          SPACESKIT_WORKBENCH_PROJECTS_ROOT: join(repoRoot, "Documents", "work", "projects"),
+          SPACESKIT_WORKBENCH_PROJECT_SLUG: "spaces",
+          SPACESKIT_WORKBENCH_AGENT_LOOP: "false",
+        },
+      });
+      client = await createTestClient(gateway.wsUrl);
+
+      const rawRequest = (client as any).transport.requests.request as (
+        type: string,
+        payload: Record<string, unknown>,
+        timeoutMs?: number,
+      ) => Promise<any>;
+      const concierge = await rawRequest("gateway.get_concierge_agent", { repairIfMissing: true }, 10_000);
+      const runtime = await (gateway.instance.spaceManager as any).options.resolveRuntime(
+        concierge.state.spaceId,
+        concierge.state.conciergeAgentId,
+      );
+      const availableTools = await (runtime as any).toolExecutor.getAvailableTools(
+        concierge.state.spaceId,
+        concierge.state.conciergeAgentId,
+      );
+      const queue = await client.listWorkbenchQueue({ limit: 2 });
+      const policy = await client.getWorkbenchPolicy();
+      const toolNames = availableTools.map((tool: { name: string }) => tool.name);
+
+      expect(concierge.state).toMatchObject({
+        spaceId: gateway.instance.config.conciergeSpaceId,
+        conciergeAgentId: gateway.instance.config.conciergeAgentId,
+      });
+      expect(toolNames).toContain("workbench.list_queue");
+      expect(toolNames).toContain("workbench.start_run");
+      expect(queue.map((item) => item.queueItemId)).toEqual([
+        "spaces/T-0001",
+        "spaces/T-0002",
+      ]);
+      expect(policy.supportedExecutionModes).toContain("supervised");
+    } finally {
+      try {
+        await client?.disconnect();
+      } catch {}
+      try {
+        await gateway?.cleanup();
+      } catch {}
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test("isolates external gateway spaces under a temp root", {
     timeout: E2E_TIMEOUT,
   }, async () => {
@@ -366,10 +467,18 @@ describe("external workbench control plane", () => {
         executionMode: "autonomous",
       })).rejects.toThrow("Task status is in-progress, not ready");
 
-      const autonomousVerifiedRun = await client.startWorkbenchRun({
+      const autonomousQueuedRun = await client.startWorkbenchRun({
         queueItemId: "spaces/T-0004",
         executionMode: "autonomous",
       });
+      expect(autonomousQueuedRun.executionMode).toBe("autonomous");
+      expect(autonomousQueuedRun.approvalState).toBe("not_required");
+
+      const autonomousVerifiedRun = await waitForWorkbenchRunStatus(
+        client,
+        autonomousQueuedRun.runId,
+        "completed",
+      );
       expect(autonomousVerifiedRun.executionMode).toBe("autonomous");
       expect(autonomousVerifiedRun.approvalState).toBe("not_required");
       expect(autonomousVerifiedRun.status).toBe("completed");
@@ -391,6 +500,174 @@ describe("external workbench control plane", () => {
         await gateway?.cleanup();
       } catch {}
       rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("proactive concierge prompt approval starts a supervised Workbench run", {
+    timeout: E2E_TIMEOUT + 15_000,
+  }, async () => {
+    const repoRoot = createWorkbenchFixtureRepo();
+    const worktreeRoot = join(dirname(repoRoot), ".spaceskit-workbench", basename(repoRoot));
+    let gateway: Awaited<ReturnType<typeof createTestGateway>> | null = null;
+    let client: Awaited<ReturnType<typeof createTestClient>> | null = null;
+
+    try {
+      gateway = await createTestGateway(undefined, {
+        gatewayProfile: "external",
+        env: {
+          SPACESKIT_SECRET_REF_MASTER_KEY: "test-workbench-e2e-master-key",
+          SPACESKIT_WORKBENCH_REPO_ROOT: repoRoot,
+          SPACESKIT_WORKBENCH_PROJECTS_ROOT: join(repoRoot, "Documents", "work", "projects"),
+          SPACESKIT_WORKBENCH_PROJECT_SLUG: "spaces",
+          SPACESKIT_WORKBENCH_AGENT_LOOP: "false",
+          SPACESKIT_WORKBENCH_RUNNER_API_ENABLED: "true",
+          SPACESKIT_ENABLE_CONCIERGE_PROACTIVE_WORKBENCH: "true",
+          SPACESKIT_CONCIERGE_WORKBENCH_MONITOR_INTERVAL_MS: "10000",
+        },
+      });
+      client = await createTestClient(gateway.wsUrl, { requestTimeoutMs: 20_000 });
+
+      const rawRequest = (client as any).transport.requests.request as (
+        type: string,
+        payload: Record<string, unknown>,
+        timeoutMs?: number,
+      ) => Promise<any>;
+      await rawRequest("subscribe_notifications", { categories: ["feedback.requested"] }, 10_000);
+
+      const notification = await waitForNotification(
+        client,
+        (payload) =>
+          payload?.category === "feedback.requested"
+          && payload?.context?.source === "workbench"
+          && payload?.context?.signalKind === "safe_next_task"
+          && payload?.context?.requestedMutation === "workbench.start_run",
+        20_000,
+      );
+
+      const acknowledgement = await rawRequest("concierge.action_result", {
+        requestId: notification.requestId,
+        status: "ok",
+        payload: {
+          action: "approve",
+          message: "Approved supervised Workbench dispatch.",
+        },
+      }, 15_000);
+
+      expect(notification.context).toMatchObject({
+        action: "open_workbench_queue_item",
+        queueItemId: "spaces/T-0001",
+        requestedMutation: "workbench.start_run",
+        signalKind: "safe_next_task",
+        source: "workbench",
+      });
+      expect(acknowledgement.acknowledged).toBe(true);
+      expect(acknowledgement.requestId).toBe(notification.requestId);
+      expect(acknowledgement.workbenchRun).toMatchObject({
+        queueItemId: "spaces/T-0001",
+        status: "awaiting_review",
+        currentStage: "review_gate",
+        executionMode: "supervised",
+        approvalState: "pending",
+      });
+
+      const runs = await client.listWorkbenchRuns({ limit: 10 });
+      expect(runs.find((run) => run.runId === acknowledgement.workbenchRun.runId)).toMatchObject({
+        queueItemId: "spaces/T-0001",
+        status: "awaiting_review",
+        currentStage: "review_gate",
+        executionMode: "supervised",
+        approvalState: "pending",
+      });
+
+      const reviewNotification = await waitForNotification(
+        client,
+        (payload) =>
+          payload?.category === "feedback.requested"
+          && payload?.context?.source === "workbench"
+          && payload?.context?.signalKind === "run_awaiting_review"
+          && payload?.context?.runId === acknowledgement.workbenchRun.runId
+          && payload?.context?.requestedMutation === "workbench.approve_stage"
+          && payload?.context?.rejectMutation === "workbench.reject_stage",
+        20_000,
+      );
+
+      const reviewAcknowledgement = await rawRequest("concierge.action_result", {
+        requestId: reviewNotification.requestId,
+        status: "ok",
+        payload: {
+          action: "approve",
+          message: "Approved supervised review gate.",
+        },
+      }, 15_000);
+
+      expect(reviewNotification.context).toMatchObject({
+        action: "open_workbench_run",
+        runId: acknowledgement.workbenchRun.runId,
+        queueItemId: "spaces/T-0001",
+        requestedMutation: "workbench.approve_stage",
+        rejectMutation: "workbench.reject_stage",
+        signalKind: "run_awaiting_review",
+        source: "workbench",
+        stage: "review_gate",
+      });
+      expect(reviewAcknowledgement.acknowledged).toBe(true);
+      expect(reviewAcknowledgement.requestId).toBe(reviewNotification.requestId);
+      expect(reviewAcknowledgement.workbenchRun).toMatchObject({
+        runId: acknowledgement.workbenchRun.runId,
+        queueItemId: "spaces/T-0001",
+        currentStage: "execute",
+        executionMode: "supervised",
+        approvalState: "approved",
+      });
+
+      const completedRun = await waitForWorkbenchRunStatus(
+        client,
+        acknowledgement.workbenchRun.runId,
+        "completed",
+        20_000,
+      );
+      expect(completedRun).toMatchObject({
+        runId: acknowledgement.workbenchRun.runId,
+        queueItemId: "spaces/T-0001",
+        status: "completed",
+        currentStage: "report",
+        executionMode: "supervised",
+        approvalState: "approved",
+      });
+      expect(completedRun.verificationResult?.status).toBe("passed");
+
+      const completionNotification = await waitForNotification(
+        client,
+        (payload) =>
+          payload?.category === "feedback.requested"
+          && payload?.context?.source === "workbench"
+          && payload?.context?.signalKind === "run_completed"
+          && payload?.context?.runId === acknowledgement.workbenchRun.runId
+          && payload?.context?.verificationStatus === "passed",
+        30_000,
+      );
+
+      expect(completionNotification).toMatchObject({
+        category: "feedback.requested",
+        allowedResponses: ["open_app", "defer"],
+        context: {
+          action: "open_workbench_run",
+          runId: acknowledgement.workbenchRun.runId,
+          queueItemId: "spaces/T-0001",
+          signalKind: "run_completed",
+          source: "workbench",
+          verificationStatus: "passed",
+        },
+      });
+    } finally {
+      try {
+        await client?.disconnect();
+      } catch {}
+      try {
+        await gateway?.cleanup();
+      } catch {}
+      rmSync(repoRoot, { recursive: true, force: true });
+      rmSync(worktreeRoot, { recursive: true, force: true });
     }
   });
 });

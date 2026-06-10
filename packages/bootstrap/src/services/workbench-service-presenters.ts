@@ -2,6 +2,7 @@ import type {
   WorkbenchBatchRow,
   WorkbenchPolicyRow,
   WorkbenchRunRow,
+  WorkbenchScenarioRunRow,
 } from "@spaceskit/persistence";
 import type {
   WorkbenchBatchPayload,
@@ -10,6 +11,8 @@ import type {
   WorkbenchQueueItemPayload,
   WorkbenchPolicyPayload,
   WorkbenchRunPayload,
+  WorkbenchScenarioRunConfigPayload,
+  WorkbenchScenarioRunPayload,
   WorkbenchVerificationResultPayload,
   WorkbenchVerificationSuitePayload,
   WorkbenchWorktreeRefPayload,
@@ -77,14 +80,37 @@ export function toWorkbenchRunPayload(
   };
 }
 
-export function toWorkbenchPolicyPayload(row: WorkbenchPolicyRow): WorkbenchPolicyPayload {
+export function toWorkbenchPolicyPayload(
+  row: WorkbenchPolicyRow,
+  capabilities: {
+    runnerAvailable?: boolean;
+    scenarioDiscoveryAvailable?: boolean;
+  } = {},
+): WorkbenchPolicyPayload {
   return {
     defaultExecutionMode: row.default_execution_mode,
     autonomousEnabled: row.autonomous_enabled === 1,
     maxParallelRuns: row.max_parallel_runs,
     requireExplicitAutonomousOptIn: row.require_explicit_autonomous_opt_in === 1,
     requireAiShippableForAutonomous: row.require_ai_shippable_for_autonomous === 1,
+    runnerAvailable: capabilities.runnerAvailable ?? false,
+    scenarioDiscoveryAvailable: capabilities.scenarioDiscoveryAvailable ?? false,
+    supportedExecutionModes: ["supervised", "autonomous"],
+    supportedVerificationModes: ["machine_readable", "review_only"],
     updatedAt: row.updated_at,
   };
 }
 
+export function toWorkbenchScenarioRunPayload(row: WorkbenchScenarioRunRow): WorkbenchScenarioRunPayload {
+  return {
+    scenarioRunId: row.scenario_run_id,
+    status: row.status,
+    config: parseJson<WorkbenchScenarioRunConfigPayload>(row.config_json) ?? {},
+    overallStatus: row.overall_status ?? undefined,
+    startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
+    summary: row.summary || undefined,
+    reportArtifactId: row.report_artifact_id ?? undefined,
+  };
+}

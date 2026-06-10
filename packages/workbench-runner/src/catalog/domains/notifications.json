@@ -1,0 +1,23 @@
+{
+  "domain_id": "notifications",
+  "description": "Smoke coverage for notification routing and task-event notifications.",
+  "scenarios": [
+    {
+      "domain_id": "notifications",
+      "scenario_id": "notifications.gateway-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-unit"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/server/test/gateway-server.notifications.test.ts packages/core/test/default-notification-service.task-events.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

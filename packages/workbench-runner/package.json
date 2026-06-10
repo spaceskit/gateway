@@ -1,0 +1,22 @@
+{
+  "name": "@spaceskit/workbench-runner",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Gateway-owned Workbench scenario catalog and runner machinery",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc && cp -R src/catalog dist/catalog",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@spaceskit/client": "file:../../../client-ts",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}

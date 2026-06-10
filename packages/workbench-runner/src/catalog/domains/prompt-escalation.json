@@ -1,0 +1,23 @@
+{
+  "domain_id": "prompt-escalation",
+  "description": "Smoke coverage for approval prompts and escalation grant flows.",
+  "scenarios": [
+    {
+      "domain_id": "prompt-escalation",
+      "scenario_id": "prompt-escalation.gateway-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-unit"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/bootstrap/test/feedback-approval-grant-bridge.test.ts packages/core/test/feedback/approval-prompt-state.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

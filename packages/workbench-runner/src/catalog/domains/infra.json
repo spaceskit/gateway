@@ -1,0 +1,148 @@
+{
+  "domain_id": "infra",
+  "description": "Shared bootstrap, reset, and health validation for workbench runs.",
+  "scenarios": [
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.fast-preflight",
+      "adapter": "shell",
+      "order": 10,
+      "blocking": true,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["infra", "fast", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/check-fast.sh",
+        "cwd": ".",
+        "timeout_ms": 1800000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.clean-topology",
+      "adapter": "shell",
+      "order": 20,
+      "blocking": true,
+      "platform": "host",
+      "requires": ["infra.fast-preflight"],
+      "tasks": [],
+      "tags": ["infra", "topology", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/clean-topology.sh",
+        "cwd": ".",
+        "timeout_ms": 600000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.reset-app-defaults",
+      "adapter": "shell",
+      "order": 30,
+      "blocking": false,
+      "platform": "host",
+      "requires": ["infra.clean-topology"],
+      "tasks": [],
+      "tags": ["infra", "app-state", "app-prereq"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/reset-app-defaults.sh --ios",
+        "cwd": ".",
+        "timeout_ms": 600000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.start-services",
+      "adapter": "shell",
+      "order": 40,
+      "blocking": true,
+      "platform": "host",
+      "requires": ["infra.clean-topology"],
+      "tasks": [],
+      "tags": ["infra", "gateway", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/start-services.sh",
+        "cwd": ".",
+        "env": {
+          "SPACESKIT_SYNC_SHARED_SECRET": "${SPACESKIT_SYNC_SHARED_SECRET}",
+          "SPACESKIT_REQUIRE_EXPLICIT_DEVICE_AUTH": "${SPACESKIT_REQUIRE_EXPLICIT_DEVICE_AUTH}",
+          "SPACESKIT_GATEWAY_CAPABILITY_GRANTS": "${SPACESKIT_GATEWAY_CAPABILITY_GRANTS}",
+          "SPACESKIT_MAIN_ADMIN_MCP": "${SPACESKIT_MAIN_ADMIN_MCP}"
+        },
+        "timeout_ms": 900000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.wait-health-main",
+      "adapter": "shell",
+      "order": 50,
+      "blocking": true,
+      "platform": "host",
+      "requires": ["infra.start-services"],
+      "tasks": [],
+      "tags": ["infra", "health", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/wait-for-health.sh main \"${SPACESKIT_MAIN_HEALTH_URL}\"",
+        "cwd": ".",
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.wait-health-peer",
+      "adapter": "shell",
+      "order": 60,
+      "blocking": true,
+      "platform": "host",
+      "requires": ["infra.start-services"],
+      "tasks": [],
+      "tags": ["infra", "health", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/wait-for-health.sh peer \"${SPACESKIT_PEER_HEALTH_URL}\"",
+        "cwd": ".",
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.wait-health-external",
+      "adapter": "shell",
+      "order": 70,
+      "blocking": true,
+      "platform": "host",
+      "requires": ["infra.start-services"],
+      "tasks": [],
+      "tags": ["infra", "health", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "./dev-services/wait-for-health.sh external \"${SPACESKIT_EXTERNAL_HEALTH_URL}\"",
+        "cwd": ".",
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "infra",
+      "scenario_id": "infra.xcodegen-project",
+      "adapter": "shell",
+      "order": 80,
+      "blocking": false,
+      "platform": "macOS",
+      "requires": ["infra.reset-app-defaults"],
+      "tasks": [],
+      "tags": ["infra", "app-build", "app-prereq"],
+      "artifacts": ["spaces-mac-ios/Spaces.xcodeproj"],
+      "config": {
+        "command": "xcodegen generate",
+        "cwd": "spaces-mac-ios",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

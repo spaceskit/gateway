@@ -120,7 +120,29 @@ function makeWorkbenchPolicy(overrides: Record<string, unknown> = {}): any {
     maxParallelRuns: 2,
     requireExplicitAutonomousOptIn: true,
     requireAiShippableForAutonomous: true,
+    runnerAvailable: true,
+    scenarioDiscoveryAvailable: true,
+    supportedExecutionModes: ["supervised", "autonomous"],
+    supportedVerificationModes: ["machine_readable", "review_only"],
     updatedAt: now,
+    ...overrides,
+  };
+}
+
+function makeWorkbenchScenarioRun(overrides: Record<string, unknown> = {}): any {
+  const now = new Date().toISOString();
+  return {
+    scenarioRunId: "scenario-run-1",
+    status: "completed",
+    config: {
+      scenarioIds: ["harness.smoke.noop"],
+    },
+    overallStatus: "passed",
+    startedAt: now,
+    finishedAt: now,
+    durationMs: 10,
+    summary: "1 scenario passed.",
+    reportArtifactId: "artifact-scenario-report",
     ...overrides,
   };
 }
@@ -170,6 +192,11 @@ describe("MessageRouter workbench handlers", () => {
       listArtifacts: [],
       getPolicy: [],
       updatePolicy: [],
+      listScenarios: [],
+      startScenarioRun: [],
+      listScenarioRuns: [],
+      getScenarioRun: [],
+      cancelScenarioRun: [],
     };
 
     const router = makeRouter({
@@ -237,6 +264,40 @@ describe("MessageRouter workbench handlers", () => {
         updatePolicy: async (input: any) => {
           calls.updatePolicy.push(input);
           return makeWorkbenchPolicy({ autonomousEnabled: input.autonomousEnabled ?? true });
+        },
+        listScenarios: async (input: any) => {
+          calls.listScenarios.push(input);
+          return {
+            layers: [{
+              layerId: "harness-smoke",
+              name: "Harness Smoke",
+              scenarioIds: ["harness.smoke.noop"],
+            }],
+            scenarios: [{
+              scenarioId: "harness.smoke.noop",
+              layerId: "harness-smoke",
+              name: "Deterministic Harness Smoke",
+              tags: ["fast", "deterministic", "harness"],
+              requiredCapabilities: [],
+              defaultEnabled: true,
+            }],
+          };
+        },
+        startScenarioRun: async (input: any) => {
+          calls.startScenarioRun.push(input);
+          return makeWorkbenchScenarioRun({ config: input.config });
+        },
+        listScenarioRuns: async (input: any) => {
+          calls.listScenarioRuns.push(input);
+          return [makeWorkbenchScenarioRun()];
+        },
+        getScenarioRun: async (input: any) => {
+          calls.getScenarioRun.push(input);
+          return makeWorkbenchScenarioRun({ scenarioRunId: input.scenarioRunId });
+        },
+        cancelScenarioRun: async (input: any) => {
+          calls.cancelScenarioRun.push(input);
+          return makeWorkbenchScenarioRun({ scenarioRunId: input.scenarioRunId, status: "cancelled" });
         },
       },
     });
@@ -337,6 +398,33 @@ describe("MessageRouter workbench handlers", () => {
       makeMessage(MessageTypes.WORKBENCH_UPDATE_POLICY, { maxParallelRuns: 4 }),
     ))?.type).toBe(MessageTypes.WORKBENCH_UPDATE_POLICY);
 
+    expect((await router.handle(
+      client,
+      makeMessage(MessageTypes.WORKBENCH_LIST_SCENARIOS, {}),
+    ))?.type).toBe(MessageTypes.WORKBENCH_LIST_SCENARIOS);
+
+    expect((await router.handle(
+      client,
+      makeMessage(MessageTypes.WORKBENCH_START_SCENARIO_RUN, {
+        config: { scenarioIds: ["harness.smoke.noop"] },
+      }),
+    ))?.type).toBe(MessageTypes.WORKBENCH_START_SCENARIO_RUN);
+
+    expect((await router.handle(
+      client,
+      makeMessage(MessageTypes.WORKBENCH_LIST_SCENARIO_RUNS, { limit: 10 }),
+    ))?.type).toBe(MessageTypes.WORKBENCH_LIST_SCENARIO_RUNS);
+
+    expect((await router.handle(
+      client,
+      makeMessage(MessageTypes.WORKBENCH_GET_SCENARIO_RUN, { scenarioRunId: "scenario-run-1" }),
+    ))?.type).toBe(MessageTypes.WORKBENCH_GET_SCENARIO_RUN);
+
+    expect((await router.handle(
+      client,
+      makeMessage(MessageTypes.WORKBENCH_CANCEL_SCENARIO_RUN, { scenarioRunId: "scenario-run-1" }),
+    ))?.type).toBe(MessageTypes.WORKBENCH_CANCEL_SCENARIO_RUN);
+
     expect(calls.createBatch[0]?.principalId).toBe("principal-owner");
     expect(calls.updateBatch[0]?.principalId).toBe("principal-owner");
     expect(calls.startRun[0]?.principalId).toBe("principal-owner");
@@ -346,6 +434,8 @@ describe("MessageRouter workbench handlers", () => {
     expect(calls.rejectStage[0]?.principalId).toBe("principal-owner");
     expect(calls.setMode[0]?.principalId).toBe("principal-owner");
     expect(calls.updatePolicy[0]?.principalId).toBe("principal-owner");
+    expect(calls.startScenarioRun[0]?.principalId).toBe("principal-owner");
+    expect(calls.cancelScenarioRun[0]?.principalId).toBe("principal-owner");
   });
 
   test("returns NOT_AVAILABLE when workbench service is not configured", async () => {

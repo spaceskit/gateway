@@ -1,0 +1,77 @@
+{
+  "domain_id": "gateway-core",
+  "description": "Gateway bootstrap assertions and deterministic sync smoke coverage.",
+  "scenarios": [
+    {
+      "domain_id": "gateway-core",
+      "scenario_id": "gateway-core.seed-peer-artifact",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["infra.wait-health-main", "infra.wait-health-peer"],
+      "tasks": [],
+      "tags": ["gateway", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "bun run ./dev-services/scripts/seed-peer-artifact.ts",
+        "cwd": ".",
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "gateway-core",
+      "scenario_id": "gateway-core.assert-strict-device-auth",
+      "adapter": "bun",
+      "order": 20,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["gateway-core.seed-peer-artifact"],
+      "tasks": [],
+      "tags": ["gateway", "auth", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "bun run ./dev-services/scripts/assert-strict-device-auth.ts",
+        "cwd": ".",
+        "env": {
+          "SPACESKIT_MAIN_GATEWAY_WS_URL": "${SPACESKIT_MAIN_GATEWAY_WS_URL}"
+        },
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "gateway-core",
+      "scenario_id": "gateway-core.assert-sync-http",
+      "adapter": "bun",
+      "order": 30,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["gateway-core.assert-strict-device-auth"],
+      "tasks": [],
+      "tags": ["gateway", "sync", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "bun run ./dev-services/scripts/assert-sync-http.ts",
+        "cwd": ".",
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "gateway-core",
+      "scenario_id": "gateway-core.assert-sync-import",
+      "adapter": "bun",
+      "order": 40,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["gateway-core.assert-sync-http"],
+      "tasks": [],
+      "tags": ["gateway", "sync", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "bun run ./dev-services/scripts/assert-sync-import.ts",
+        "cwd": ".",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

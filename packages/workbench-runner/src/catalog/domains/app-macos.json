@@ -1,0 +1,60 @@
+{
+  "domain_id": "app-macos",
+  "description": "macOS workbench acceptance coverage for chat closeout and app smoke.",
+  "scenarios": [
+    {
+      "domain_id": "app-macos",
+      "scenario_id": "WBM-001",
+      "adapter": "xcodebuild",
+      "order": 10,
+      "blocking": false,
+      "platform": "macOS",
+      "requires": ["infra.reset-app-defaults", "infra.xcodegen-project", "client-ts.runtime-smoke", "client-swift.runtime-smoke"],
+      "tasks": ["bug-cross-platform-gateway-connect-usage-and-chat-shell-regression-repair", "us66-main-space-startup-sidebar-and-local-runtime-usage-coherence"],
+      "tags": ["app", "chat-closeout", "batch1"],
+      "artifacts": ["spaces-mac-ios/project.yml"],
+      "config": {
+        "scheme": "SpacesmacOSWorkbench",
+        "destination": "platform=macOS",
+        "only_testing": "SpacesmacOSWorkbenchTests/WorkbenchMacOSCloseoutTests/testWBM001_batch1RoutingAndUsageCloseout",
+        "timeout_ms": 1800000
+      }
+    },
+    {
+      "domain_id": "app-macos",
+      "scenario_id": "WBM-101",
+      "adapter": "xcodebuild",
+      "order": 20,
+      "blocking": false,
+      "platform": "macOS",
+      "requires": ["infra.reset-app-defaults", "infra.xcodegen-project", "client-ts.runtime-smoke", "client-swift.runtime-smoke"],
+      "tasks": ["us36-live-agent-activity-stream-and-thinking-capture", "us58-t3-chat-shell-and-composer-reframe", "us58-per-turn-mode-and-effort-contract", "us58-turn-mode-effort-history-and-inspector-surfacing", "us65-inspector-and-chat-chrome-simplification", "us67-unified-pro-toggle-chat-ui-and-right-sidebar"],
+      "tags": ["app", "chat-closeout", "batch2"],
+      "artifacts": ["spaces-mac-ios/project.yml"],
+      "config": {
+        "scheme": "SpacesmacOSWorkbench",
+        "destination": "platform=macOS",
+        "only_testing": "SpacesmacOSWorkbenchTests/WorkbenchMacOSCloseoutTests/testWBM101_batch2ModesAndInspectorCloseout",
+        "timeout_ms": 1800000
+      }
+    },
+    {
+      "domain_id": "app-macos",
+      "scenario_id": "WBM-102",
+      "adapter": "xcodebuild",
+      "order": 30,
+      "blocking": false,
+      "platform": "macOS",
+      "requires": ["infra.reset-app-defaults", "infra.xcodegen-project", "client-ts.runtime-smoke", "client-swift.runtime-smoke"],
+      "tasks": ["bug-chat-view-switch-and-large-message-crash-hardening"],
+      "tags": ["app", "chat-closeout", "batch2", "stress"],
+      "artifacts": ["spaces-mac-ios/project.yml"],
+      "config": {
+        "scheme": "SpacesmacOSWorkbench",
+        "destination": "platform=macOS",
+        "only_testing": "SpacesmacOSWorkbenchTests/WorkbenchMacOSCloseoutTests/testWBM102_batch2LargeMessageAndStressCloseout",
+        "timeout_ms": 1800000
+      }
+    }
+  ]
+}

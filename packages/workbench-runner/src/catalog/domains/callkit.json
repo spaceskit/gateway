@@ -1,0 +1,24 @@
+{
+  "domain_id": "callkit",
+  "description": "Smoke coverage for native call continuation payload behavior.",
+  "scenarios": [
+    {
+      "domain_id": "callkit",
+      "scenario_id": "callkit.macos-smoke",
+      "adapter": "xcodebuild",
+      "order": 10,
+      "blocking": false,
+      "platform": "macOS",
+      "requires": ["infra.xcodegen-project"],
+      "tasks": [],
+      "tags": ["future-domain", "apple-native"],
+      "artifacts": ["spaces-mac-ios/project.yml"],
+      "config": {
+        "scheme": "SpacesmacOS",
+        "destination": "platform=macOS",
+        "only_testing": "SpacesmacOSTests/ConciergeCallContinuationPayloadTests",
+        "timeout_ms": 1200000
+      }
+    }
+  ]
+}

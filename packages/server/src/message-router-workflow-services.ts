@@ -53,8 +53,12 @@ import type {
   WorkbenchApproveStageResponsePayload,
   WorkbenchCancelRunPayload,
   WorkbenchCancelRunResponsePayload,
+  WorkbenchCancelScenarioRunPayload,
+  WorkbenchCancelScenarioRunResponsePayload,
   WorkbenchCreateBatchPayload,
   WorkbenchCreateBatchResponsePayload,
+  WorkbenchGetScenarioRunPayload,
+  WorkbenchGetScenarioRunResponsePayload,
   WorkbenchGetPolicyPayload,
   WorkbenchGetPolicyResponsePayload,
   WorkbenchGetQueueItemPayload,
@@ -69,12 +73,18 @@ import type {
   WorkbenchListQueueResponsePayload,
   WorkbenchListRunsPayload,
   WorkbenchListRunsResponsePayload,
+  WorkbenchListScenarioRunsPayload,
+  WorkbenchListScenarioRunsResponsePayload,
+  WorkbenchListScenariosPayload,
+  WorkbenchListScenariosResponsePayload,
   WorkbenchRejectStagePayload,
   WorkbenchRejectStageResponsePayload,
   WorkbenchRetryRunPayload,
   WorkbenchRetryRunResponsePayload,
   WorkbenchSetModePayload,
   WorkbenchSetModeResponsePayload,
+  WorkbenchStartScenarioRunPayload,
+  WorkbenchStartScenarioRunResponsePayload,
   WorkbenchStartRunPayload,
   WorkbenchStartRunResponsePayload,
   WorkbenchUpdateBatchPayload,
@@ -169,6 +179,21 @@ export interface WorkbenchService {
   updatePolicy: (
     input: WorkbenchUpdatePolicyPayload & { principalId: string },
   ) => Promise<WorkbenchUpdatePolicyResponsePayload["policy"]>;
+  listScenarios: (
+    input?: WorkbenchListScenariosPayload & { principalId?: string },
+  ) => Promise<WorkbenchListScenariosResponsePayload>;
+  startScenarioRun: (
+    input: WorkbenchStartScenarioRunPayload & { principalId: string },
+  ) => Promise<WorkbenchStartScenarioRunResponsePayload["scenarioRun"]>;
+  listScenarioRuns: (
+    input?: WorkbenchListScenarioRunsPayload & { principalId?: string },
+  ) => Promise<WorkbenchListScenarioRunsResponsePayload["scenarioRuns"]>;
+  getScenarioRun: (
+    input: WorkbenchGetScenarioRunPayload & { principalId?: string },
+  ) => Promise<WorkbenchGetScenarioRunResponsePayload["scenarioRun"] | null>;
+  cancelScenarioRun: (
+    input: WorkbenchCancelScenarioRunPayload & { principalId: string },
+  ) => Promise<WorkbenchCancelScenarioRunResponsePayload["scenarioRun"]>;
 }
 
 export interface GatewayWorkspaceDefaultsService {

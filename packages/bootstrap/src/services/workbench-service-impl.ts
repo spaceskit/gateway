@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Logger } from "@spaceskit/observability";
 import {
@@ -11,8 +12,10 @@ import type {
   WorkbenchArtifactPayload,
   WorkbenchBatchPayload,
   WorkbenchCancelRunPayload,
+  WorkbenchCancelScenarioRunPayload,
   WorkbenchCreateBatchPayload,
   WorkbenchExecutionModePayload,
+  WorkbenchGetScenarioRunPayload,
   WorkbenchGetPolicyPayload,
   WorkbenchGetQueueItemPayload,
   WorkbenchGetRunPayload,
@@ -20,17 +23,23 @@ import type {
   WorkbenchListBatchesPayload,
   WorkbenchListQueuePayload,
   WorkbenchListRunsPayload,
+  WorkbenchListScenarioRunsPayload,
+  WorkbenchListScenariosPayload,
+  WorkbenchListScenariosResponsePayload,
   WorkbenchPolicyPayload,
   WorkbenchQueueItemPayload,
   WorkbenchRejectStagePayload,
   WorkbenchRetryRunPayload,
   WorkbenchRunPayload,
+  WorkbenchScenarioRunPayload,
   WorkbenchSetModePayload,
   WorkbenchSetModeResponsePayload,
+  WorkbenchStartScenarioRunPayload,
   WorkbenchStartRunPayload,
   WorkbenchUpdateBatchPayload,
   WorkbenchUpdatePolicyPayload,
   WorkbenchVerificationSuitePayload,
+  WorkbenchVerificationResultPayload,
   WorkbenchWorktreeRefPayload,
 } from "@spaceskit/server";
 import {
@@ -48,6 +57,10 @@ import {
   resolveWorkbenchQueueItems,
 } from "./workbench-queue-loader.js";
 import type { WorkbenchAgentLoopContext } from "./workbench-agent-loop.js";
+import {
+  createInternalWorkbenchExecutorAdapter,
+  type WorkbenchExecutorAdapter,
+} from "./workbench-executor-adapter.js";
 import { executeWorkbenchRunIfReady } from "./workbench-service-execution.js";
 import {
   persistWorkbenchDocsPreflightArtifact,
@@ -89,6 +102,14 @@ import {
 } from "./workbench-service-controls.js";
 import { startWorkbenchRun } from "./workbench-service-start-run.js";
 import type { WorkbenchServiceOptions } from "./workbench-service-types.js";
+import {
+  cancelWorkbenchScenarioRun,
+  getWorkbenchScenarioRun,
+  listWorkbenchScenarioRuns,
+  listWorkbenchScenariosForProduct,
+  startWorkbenchScenarioRun,
+} from "./workbench-service-scenarios.js";
+import type { WorkbenchScenarioContext } from "./workbench-service-scenarios.js";
 
 export { WorkbenchServiceError } from "./workbench-service-normalizers.js";
 export type { WorkbenchServiceOptions } from "./workbench-service-types.js";
@@ -103,6 +124,12 @@ export class WorkbenchService {
   private readonly verificationCommandTimeoutMs: number;
   private readonly verificationExecutor: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
   private readonly agentTurnCompletionTimeoutMs: number;
+  private readonly runnerApiEnabled: boolean;
+  private readonly workbenchExecutorAutostart: boolean;
+  private readonly workbenchExecutorAdapter: WorkbenchExecutorAdapter;
+  private readonly activeExecutions = new Map<string, AbortController>();
+  private readonly scheduledRunIds = new Set<string>();
+  private readonly scheduledRunTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly options: WorkbenchServiceOptions) {
     this.now = options.now ?? (() => new Date());
@@ -117,6 +144,10 @@ export class WorkbenchService {
     this.verificationCommandTimeoutMs = options.verificationCommandTimeoutMs ?? 10 * 60 * 1000;
     this.verificationExecutor = options.verificationExecutor ?? runWorkbenchCommand;
     this.agentTurnCompletionTimeoutMs = options.agentTurnCompletionTimeoutMs ?? 30 * 60 * 1000;
+    this.runnerApiEnabled = options.runnerApiEnabled ?? false;
+    this.workbenchExecutorAutostart = options.workbenchExecutorAutostart ?? true;
+    this.workbenchExecutorAdapter = options.workbenchExecutorAdapter
+      ?? createInternalWorkbenchExecutorAdapter((runId, signal) => this.executeRunIfReady(runId, signal));
   }
 
   async listQueue(
@@ -154,6 +185,26 @@ export class WorkbenchService {
   async startRun(
     input: WorkbenchStartRunPayload & { principalId: string },
   ): Promise<WorkbenchRunPayload> {
+    const principalId = normalizeRequired(input.principalId, "principalId");
+    return this.runMutationIdempotently(
+      "workbench.start_run",
+      input.idempotencyKey,
+      principalId,
+      {
+        queueItemId: input.queueItemId,
+        batchId: input.batchId,
+        executionMode: input.executionMode,
+      },
+      () => this.startRunWithoutIdempotency({
+        ...input,
+        principalId,
+      }),
+    );
+  }
+
+  private async startRunWithoutIdempotency(
+    input: WorkbenchStartRunPayload & { principalId: string },
+  ): Promise<WorkbenchRunPayload> {
     return startWorkbenchRun({
       options: this.options,
       now: this.now,
@@ -169,7 +220,7 @@ export class WorkbenchService {
         this.updateCentralTaskStatus(queueItem, status, logMessage),
       persistRunArtifacts: (row, queueItem, worktree, verificationSuites, executionMode) =>
         this.persistRunArtifacts(row, queueItem, worktree, verificationSuites, executionMode),
-      executeRunIfReady: (runId) => this.executeRunIfReady(runId),
+      scheduleRun: (runId) => this.scheduleRun(runId),
       toRunPayload: (row) => this.toRunPayload(row),
     }, input);
   }
@@ -177,24 +228,49 @@ export class WorkbenchService {
   async retryRun(
     input: WorkbenchRetryRunPayload & { principalId: string },
   ): Promise<WorkbenchRunPayload> {
-    const existing = this.requireRun(normalizeRequired(input.runId, "runId"));
-    return this.startRun({
-      principalId: normalizeRequired(input.principalId, "principalId"),
-      queueItemId: existing.queue_item_id,
-      batchId: existing.batch_id ?? undefined,
-      executionMode: existing.execution_mode as WorkbenchExecutionModePayload,
-    });
+    const principalId = normalizeRequired(input.principalId, "principalId");
+    const runId = normalizeRequired(input.runId, "runId");
+    return this.runMutationIdempotently(
+      "workbench.retry_run",
+      input.idempotencyKey,
+      principalId,
+      { runId },
+      () => {
+        const existing = this.requireRun(runId);
+        return this.startRunWithoutIdempotency({
+          principalId,
+          queueItemId: existing.queue_item_id,
+          batchId: existing.batch_id ?? undefined,
+          executionMode: existing.execution_mode as WorkbenchExecutionModePayload,
+        });
+      },
+    );
   }
 
   async cancelRun(
     input: WorkbenchCancelRunPayload & { principalId: string },
   ): Promise<WorkbenchRunPayload> {
-    return this.toRunPayload(cancelWorkbenchRun({
-      runs: this.options.runs,
-      requireRun: (runId) => this.requireRun(runId),
-      now: this.now,
-      payload: input,
-    }));
+    const principalId = normalizeRequired(input.principalId, "principalId");
+    const runId = normalizeRequired(input.runId, "runId");
+    return this.runMutationIdempotently(
+      "workbench.cancel_run",
+      input.idempotencyKey,
+      principalId,
+      { runId },
+      () => {
+        this.cancelActiveExecution(runId);
+        return Promise.resolve(this.toRunPayload(cancelWorkbenchRun({
+          runs: this.options.runs,
+          requireRun: (id) => this.requireRun(id),
+          now: this.now,
+          payload: {
+            ...input,
+            principalId,
+            runId,
+          },
+        })));
+      },
+    );
   }
 
   async listRuns(
@@ -217,46 +293,145 @@ export class WorkbenchService {
   async approveStage(
     input: WorkbenchApproveStagePayload & { principalId: string },
   ): Promise<WorkbenchRunPayload> {
-    normalizeRequired(input.principalId, "principalId");
+    const principalId = normalizeRequired(input.principalId, "principalId");
     const runId = normalizeRequired(input.runId, "runId");
-    const run = this.requireRun(runId);
-    if (run.approval_state !== "pending") {
-      throw new WorkbenchServiceError("FAILED_PRECONDITION", `Run does not require approval: ${runId}`);
-    }
+    return this.runMutationIdempotently(
+      "workbench.approve_stage",
+      input.idempotencyKey,
+      principalId,
+      { runId, stage: input.stage },
+      () => {
+        const run = this.requireRun(runId);
+        if (run.approval_state !== "pending") {
+          throw new WorkbenchServiceError("FAILED_PRECONDITION", `Run does not require approval: ${runId}`);
+        }
 
-    const updated = this.options.runs.update(runId, {
-      status: "queued",
-      currentStage: "execute",
-      approvalState: "approved",
-      lastErrorCode: null,
-      lastErrorMessage: null,
-    });
-    return this.toRunPayload(await this.executeRunIfReady((updated ?? run).run_id));
+        const updated = this.options.runs.update(runId, {
+          status: "queued",
+          currentStage: "execute",
+          approvalState: "approved",
+          lastErrorCode: null,
+          lastErrorMessage: null,
+        });
+        const row = updated ?? run;
+        this.scheduleRun(row.run_id);
+        return Promise.resolve(this.toRunPayload(row));
+      },
+    );
   }
 
-  private async executeRunIfReady(runId: string): Promise<WorkbenchRunRow> {
+  async processQueuedRuns(): Promise<WorkbenchRunPayload[]> {
+    const readyRuns = this.options.runs.listActive()
+      .filter((run) => run.status === "queued" && run.current_stage === "execute");
+    const processed: WorkbenchRunPayload[] = [];
+    for (const run of readyRuns) {
+      processed.push(this.toRunPayload(await this.processRun(run.run_id)));
+    }
+    return processed;
+  }
+
+  async recoverInterruptedRuns(): Promise<void> {
+    const activeRuns = this.options.runs.listActive();
+    for (const run of activeRuns) {
+      if (run.status === "running") {
+        this.options.runs.update(run.run_id, {
+          status: "failed",
+          currentStage: "report",
+          finishedAt: this.now().toISOString(),
+          lastErrorCode: "WORKBENCH_RUN_INTERRUPTED",
+          lastErrorMessage: "Gateway restarted while the Workbench run was active. Retry the run to continue from a fresh executor.",
+          verificationResultJson: JSON.stringify({
+            status: "failed",
+            summary: "Gateway restarted while the Workbench run was active. Retry the run to continue from a fresh executor.",
+            completedAt: this.now().toISOString(),
+          } satisfies WorkbenchVerificationResultPayload),
+        });
+      } else if (run.status === "queued" && run.current_stage === "execute") {
+        this.scheduleRun(run.run_id);
+      }
+    }
+  }
+
+  private scheduleRun(runId: string): void {
+    if (!this.workbenchExecutorAutostart || this.scheduledRunTimers.has(runId) || this.activeExecutions.has(runId)) {
+      return;
+    }
+    this.scheduledRunIds.add(runId);
+    const timer = setTimeout(() => {
+      if (this.scheduledRunTimers.get(runId) !== timer) return;
+      this.scheduledRunTimers.delete(runId);
+      if (!this.scheduledRunIds.delete(runId)) return;
+      void this.processRun(runId).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger?.error?.("Workbench executor run failed unexpectedly", { error, runId });
+        const existing = this.options.runs.get(runId);
+        if (existing && existing.status !== "cancelled") {
+          this.options.runs.update(runId, {
+            status: "failed",
+            currentStage: "report",
+            finishedAt: this.now().toISOString(),
+            lastErrorCode: "WORKBENCH_EXECUTOR_FAILED",
+            lastErrorMessage: message,
+          });
+        }
+      });
+    }, 0);
+    this.scheduledRunTimers.set(runId, timer);
+  }
+
+  private async processRun(runId: string): Promise<WorkbenchRunRow> {
+    const existingController = this.activeExecutions.get(runId);
+    if (existingController) {
+      return this.requireRun(runId);
+    }
+    const controller = new AbortController();
+    this.activeExecutions.set(runId, controller);
+    try {
+      return await this.workbenchExecutorAdapter.run({
+        runId,
+        signal: controller.signal,
+      });
+    } finally {
+      if (this.activeExecutions.get(runId) === controller) {
+        this.activeExecutions.delete(runId);
+      }
+    }
+  }
+
+  private cancelActiveExecution(runId: string): void {
+    const scheduledTimer = this.scheduledRunTimers.get(runId);
+    if (scheduledTimer) {
+      clearTimeout(scheduledTimer);
+      this.scheduledRunTimers.delete(runId);
+    }
+    this.scheduledRunIds.delete(runId);
+    this.activeExecutions.get(runId)?.abort();
+  }
+
+  private async executeRunIfReady(runId: string, signal?: AbortSignal): Promise<WorkbenchRunRow> {
     return executeWorkbenchRunIfReady({
       runs: this.options.runs,
       now: this.now,
       requireRun: (id) => this.requireRun(id),
       agentLoopContext: () => this.agentLoopContext(),
       persistDocsPreflightArtifact: (id, worktreePath) =>
-        this.persistDocsPreflightArtifact(id, worktreePath),
+        this.persistDocsPreflightArtifact(id, worktreePath, signal),
       persistGeneratedDocsKnowledgeArtifact: (id, worktreePath) =>
         this.persistGeneratedDocsKnowledgeArtifact(id, worktreePath),
       persistVerificationLog: (id, suite, evidence) =>
         this.persistVerificationLog(id, suite, evidence),
-      runVerificationCommand: (suite, worktree) =>
+      runVerificationCommand: (suite, worktree, commandSignal) =>
         this.verificationExecutor({
           command: suite.command,
           cwd: worktree.path,
           timeoutMs: this.verificationCommandTimeoutMs,
           now: this.now,
+          signal: commandSignal,
         }),
       resolveQueueItems: (queueItemIds) => this.resolveQueueItems(queueItemIds),
       updateCentralTaskStatus: (queueItem, status, logMessage) =>
         this.updateCentralTaskStatus(queueItem, status, logMessage),
-    }, runId);
+    }, runId, signal);
   }
 
   private agentLoopContext(): WorkbenchAgentLoopContext {
@@ -282,13 +457,14 @@ export class WorkbenchService {
     return persistWorkbenchVerificationLog(this.options.artifacts, runId, suite, evidence);
   }
 
-  private persistDocsPreflightArtifact(runId: string, worktreePath: string): Promise<void> {
+  private persistDocsPreflightArtifact(runId: string, worktreePath: string, signal?: AbortSignal): Promise<void> {
     return persistWorkbenchDocsPreflightArtifact({
       artifacts: this.options.artifacts,
       runId,
       worktreePath,
       verificationCommandTimeoutMs: this.verificationCommandTimeoutMs,
       now: this.now,
+      signal,
       verificationExecutor: this.verificationExecutor,
     });
   }
@@ -300,12 +476,24 @@ export class WorkbenchService {
   async rejectStage(
     input: WorkbenchRejectStagePayload & { principalId: string },
   ): Promise<WorkbenchRunPayload> {
-    return this.toRunPayload(rejectWorkbenchStage({
-      runs: this.options.runs,
-      requireRun: (runId) => this.requireRun(runId),
-      now: this.now,
-      payload: input,
-    }));
+    const principalId = normalizeRequired(input.principalId, "principalId");
+    const runId = normalizeRequired(input.runId, "runId");
+    return this.runMutationIdempotently(
+      "workbench.reject_stage",
+      input.idempotencyKey,
+      principalId,
+      { runId, stage: input.stage, reason: input.reason },
+      () => Promise.resolve(this.toRunPayload(rejectWorkbenchStage({
+        runs: this.options.runs,
+        requireRun: (id) => this.requireRun(id),
+        now: this.now,
+        payload: {
+          ...input,
+          principalId,
+          runId,
+        },
+      }))),
+    );
   }
 
   async setMode(
@@ -324,7 +512,9 @@ export class WorkbenchService {
 
       const updated = this.options.runs.update(run.run_id, modePatchForRun(executionMode));
       if (executionMode === "autonomous") {
-        return { run: this.toRunPayload(await this.executeRunIfReady((updated ?? run).run_id)) };
+        const row = updated ?? run;
+        this.scheduleRun(row.run_id);
+        return { run: this.toRunPayload(row) };
       }
       return { run: this.toRunPayload(updated ?? run) };
     }
@@ -367,6 +557,76 @@ export class WorkbenchService {
       policy: this.options.policy,
       payload: input,
     }));
+  }
+
+  async listScenarios(
+    _input: WorkbenchListScenariosPayload & { principalId?: string } = {},
+  ): Promise<WorkbenchListScenariosResponsePayload> {
+    return listWorkbenchScenariosForProduct(this.scenarioContext());
+  }
+
+  async startScenarioRun(
+    input: WorkbenchStartScenarioRunPayload & { principalId: string },
+  ): Promise<WorkbenchScenarioRunPayload> {
+    return startWorkbenchScenarioRun(this.scenarioContext(), input);
+  }
+
+  async listScenarioRuns(
+    input: WorkbenchListScenarioRunsPayload & { principalId?: string } = {},
+  ): Promise<WorkbenchScenarioRunPayload[]> {
+    return listWorkbenchScenarioRuns(this.scenarioContext(), input);
+  }
+
+  async getScenarioRun(
+    input: WorkbenchGetScenarioRunPayload & { principalId?: string },
+  ): Promise<WorkbenchScenarioRunPayload | null> {
+    return getWorkbenchScenarioRun(this.scenarioContext(), input);
+  }
+
+  async cancelScenarioRun(
+    input: WorkbenchCancelScenarioRunPayload & { principalId: string },
+  ): Promise<WorkbenchScenarioRunPayload> {
+    return cancelWorkbenchScenarioRun(this.scenarioContext(), input);
+  }
+
+  private async runMutationIdempotently<T>(
+    endpoint: string,
+    idempotencyKey: string | undefined,
+    principalId: string,
+    requestPayload: Record<string, unknown>,
+    execute: () => Promise<T>,
+  ): Promise<T> {
+    const normalizedKey = idempotencyKey?.trim();
+    if (!normalizedKey || !this.options.loadIdempotencyRecord || !this.options.saveIdempotencyRecord) {
+      return execute();
+    }
+
+    const requestHash = stableJsonHash(requestPayload);
+    const existing = await this.options.loadIdempotencyRecord(principalId, endpoint, normalizedKey);
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw new WorkbenchServiceError(
+          "FAILED_PRECONDITION",
+          `Idempotency key replay with different Workbench payload: ${normalizedKey}`,
+        );
+      }
+      try {
+        return JSON.parse(existing.responsePayload) as T;
+      } catch {
+        throw new WorkbenchServiceError("FAILED_PRECONDITION", "Stored Workbench idempotency response is invalid");
+      }
+    }
+
+    const result = await execute();
+    await this.options.saveIdempotencyRecord({
+      principalId,
+      endpoint,
+      idempotencyKey: normalizedKey,
+      requestHash,
+      responseType: "workbench_run",
+      responsePayload: JSON.stringify(result),
+    });
+    return result;
   }
 
   private resolveQueueItems(queueItemIds: string[]): WorkbenchQueueItemPayload[] {
@@ -494,6 +754,39 @@ export class WorkbenchService {
   }
 
   private toPolicyPayload(row: WorkbenchPolicyRow): WorkbenchPolicyPayload {
-    return toWorkbenchPolicyPayload(row);
+    return toWorkbenchPolicyPayload(row, {
+      runnerAvailable: this.runnerApiEnabled,
+      scenarioDiscoveryAvailable: this.runnerApiEnabled,
+    });
   }
+
+  private scenarioContext(): WorkbenchScenarioContext {
+    return {
+      scenarioRuns: this.options.scenarioRuns,
+      repoRoot: this.repoRoot,
+      runnerApiEnabled: this.runnerApiEnabled,
+      now: this.now,
+      scenarioRunner: this.options.scenarioRunner,
+    };
+  }
+}
+
+function stableJsonHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(stableJsonValue(value))).digest("hex");
+}
+
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stableJsonValue);
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const normalized: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      const entry = stableJsonValue(record[key]);
+      if (entry !== undefined) normalized[key] = entry;
+    }
+    return normalized;
+  }
+  return value;
 }

@@ -31,6 +31,7 @@ interface WorkbenchRunExecutionContext {
   runVerificationCommand(
     suite: WorkbenchVerificationSuitePayload,
     worktree: WorkbenchWorktreeRefPayload,
+    signal?: AbortSignal,
   ): Promise<WorkbenchCommandEvidence>;
   resolveQueueItems(queueItemIds: string[]): WorkbenchQueueItemPayload[];
   updateCentralTaskStatus(
@@ -43,9 +44,10 @@ interface WorkbenchRunExecutionContext {
 export async function executeWorkbenchRunIfReady(
   context: WorkbenchRunExecutionContext,
   runId: string,
+  signal?: AbortSignal,
 ): Promise<WorkbenchRunRow> {
   let run = context.requireRun(runId);
-  if (run.current_stage !== "execute" || run.status === "cancelled") {
+  if (run.current_stage !== "execute" || run.status === "cancelled" || signal?.aborted) {
     return run;
   }
 
@@ -57,7 +59,7 @@ export async function executeWorkbenchRunIfReady(
 
   const executionLoop = await runWorkbenchAgentLoop(context, run, worktree, suites);
   run = executionLoop.row;
-  if (!executionLoop.continueToVerification) {
+  if (!executionLoop.continueToVerification || signal?.aborted) {
     return run;
   }
 
@@ -74,6 +76,10 @@ export async function executeWorkbenchRunIfReady(
 
   const nextSuites: WorkbenchVerificationSuitePayload[] = [];
   for (const suite of suites) {
+    const currentRun = context.requireRun(run.run_id);
+    if (currentRun.status === "cancelled" || signal?.aborted) {
+      return currentRun;
+    }
     const runningSuite = {
       ...suite,
       status: "running" as const,
@@ -87,7 +93,11 @@ export async function executeWorkbenchRunIfReady(
       ]),
     });
 
-    const evidence = await context.runVerificationCommand(suite, worktree);
+    const evidence = await context.runVerificationCommand(suite, worktree, signal);
+    const latestRun = context.requireRun(run.run_id);
+    if (latestRun.status === "cancelled" || signal?.aborted) {
+      return latestRun;
+    }
     const logArtifactId = context.persistVerificationLog(run.run_id, suite, evidence);
     nextSuites[nextSuites.length - 1] = {
       ...runningSuite,
@@ -104,6 +114,11 @@ export async function executeWorkbenchRunIfReady(
         ...suites.slice(nextSuites.length),
       ]),
     });
+  }
+
+  const latestRun = context.requireRun(run.run_id);
+  if (latestRun.status === "cancelled" || signal?.aborted) {
+    return latestRun;
   }
 
   const failedSuite = nextSuites.find((suite) => suite.status === "failed");

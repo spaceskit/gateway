@@ -22,6 +22,7 @@ export interface RunWorkbenchCommandOptions {
   timeoutMs?: number;
   maxLogBytes?: number;
   now?: () => Date;
+  signal?: AbortSignal;
 }
 
 export async function runWorkbenchCommand(
@@ -43,6 +44,7 @@ export async function runWorkbenchCommand(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let cancelled = false;
     let finished = false;
     const startedMs = startedAtDate.getTime();
     let killTimer: ReturnType<typeof setTimeout> | null = null;
@@ -54,18 +56,19 @@ export async function runWorkbenchCommand(
       if (killTimer) {
         clearTimeout(killTimer);
       }
+      options.signal?.removeEventListener("abort", abortProcess);
       const completedAtDate = now();
       resolve({
         command: options.command,
-        status: exitCode === 0 && !timedOut ? "passed" : "failed",
-        exitCode: timedOut ? null : exitCode,
+        status: exitCode === 0 && !timedOut && !cancelled ? "passed" : "failed",
+        exitCode: timedOut || cancelled ? null : exitCode,
         durationMs: Math.max(0, completedAtDate.getTime() - startedMs),
         startedAt,
         completedAt: completedAtDate.toISOString(),
         stdout,
         stderr,
         timedOut,
-        summary,
+        summary: cancelled ? "Command cancelled by operator." : summary,
       });
     };
 
@@ -83,6 +86,27 @@ export async function runWorkbenchCommand(
         }
       }, 2_000);
     }, timeoutMs);
+
+    const requestTermination = () => {
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (!finished) {
+          child.kill("SIGKILL");
+        }
+      }, 2_000);
+    };
+
+    const abortProcess = () => {
+      if (finished) return;
+      cancelled = true;
+      requestTermination();
+    };
+
+    if (options.signal?.aborted) {
+      abortProcess();
+    } else {
+      options.signal?.addEventListener("abort", abortProcess, { once: true });
+    }
 
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout = appendBounded(stdout, chunk);

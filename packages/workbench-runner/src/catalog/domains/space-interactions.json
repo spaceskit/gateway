@@ -1,0 +1,74 @@
+{
+  "domain_id": "space-interactions",
+  "description": "Headless room/space interaction coverage for deterministic chat and MCP flows.",
+  "scenarios": [
+    {
+      "domain_id": "space-interactions",
+      "scenario_id": "space-interactions.external-chat-roundtrip",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["infra.wait-health-external"],
+      "tasks": [],
+      "tags": ["gateway", "chat", "gateway-e2e"],
+      "artifacts": [".spaceskit-workbench/workbench-runner/headless-space/external-chat-roundtrip.json"],
+      "config": {
+        "command": "bun run ./dev-services/scripts/headless-space-harness.ts --mode external --flow chat --provisioning client-api --artifact-path ./.spaceskit-workbench/workbench-runner/headless-space/external-chat-roundtrip.json",
+        "cwd": ".",
+        "timeout_ms": 600000
+      }
+    },
+    {
+      "domain_id": "space-interactions",
+      "scenario_id": "space-interactions.external-mcp-roundtrip",
+      "adapter": "bun",
+      "order": 20,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["infra.wait-health-external"],
+      "tasks": [],
+      "tags": ["gateway", "mcp", "gateway-e2e"],
+      "artifacts": [".spaceskit-workbench/workbench-runner/headless-space/external-mcp-roundtrip.json"],
+      "config": {
+        "command": "bun run ./dev-services/scripts/headless-space-harness.ts --mode external --flow mcp --provisioning client-api --artifact-path ./.spaceskit-workbench/workbench-runner/headless-space/external-mcp-roundtrip.json",
+        "cwd": ".",
+        "timeout_ms": 600000
+      }
+    },
+    {
+      "domain_id": "space-interactions",
+      "scenario_id": "space-interactions.external-admin-provisioning",
+      "adapter": "bun",
+      "order": 30,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["infra.wait-health-external"],
+      "tasks": [],
+      "tags": ["gateway", "mcp", "chat", "gateway-e2e"],
+      "artifacts": [".spaceskit-workbench/workbench-runner/headless-space/external-admin-provisioning.json"],
+      "config": {
+        "command": "bun run ./dev-services/scripts/headless-space-harness.ts --mode external --flow chat --provisioning built-in-mcp-admin --artifact-path ./.spaceskit-workbench/workbench-runner/headless-space/external-admin-provisioning.json",
+        "cwd": ".",
+        "timeout_ms": 600000
+      }
+    },
+    {
+      "domain_id": "space-interactions",
+      "scenario_id": "space-interactions.in-process-combined-smoke",
+      "adapter": "bun",
+      "order": 40,
+      "blocking": false,
+      "platform": "gateway",
+      "requires": ["infra.fast-preflight"],
+      "tasks": [],
+      "tags": ["gateway", "chat", "mcp"],
+      "artifacts": [".spaceskit-workbench/workbench-runner/headless-space/in-process-combined-smoke.json"],
+      "config": {
+        "command": "bun run ./dev-services/scripts/headless-space-harness.ts --mode in-process --flow combined --provisioning client-api --artifact-path ./.spaceskit-workbench/workbench-runner/headless-space/in-process-combined-smoke.json",
+        "cwd": ".",
+        "timeout_ms": 600000
+      }
+    }
+  ]
+}

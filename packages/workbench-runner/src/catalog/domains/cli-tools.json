@@ -1,0 +1,23 @@
+{
+  "domain_id": "cli-tools",
+  "description": "Smoke coverage for bundled CLI tool registration and resolution.",
+  "scenarios": [
+    {
+      "domain_id": "cli-tools",
+      "scenario_id": "cli-tools.gateway-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-unit"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/bootstrap/test/jira-cli-bundle.test.ts packages/bootstrap/test/cli-tool-service.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "domain_id": "client-swift",
+  "description": "Swift SDK runtime smoke coverage against the running gateway baseline.",
+  "scenarios": [
+    {
+      "domain_id": "client-swift",
+      "scenario_id": "client-swift.runtime-smoke",
+      "adapter": "swift",
+      "order": 10,
+      "blocking": false,
+      "platform": "macOS",
+      "requires": ["gateway-core.assert-sync-import"],
+      "tasks": [],
+      "tags": ["client-swift", "runtime", "baseline"],
+      "artifacts": [],
+      "config": {
+        "command": "swift test --filter GatewayRuntimeIntegrationTests",
+        "cwd": "client-swift",
+        "env": {
+          "SPACESKIT_E2E_RUNTIME": "1",
+          "SPACESKIT_MAIN_GATEWAY_WS_URL": "${SPACESKIT_MAIN_GATEWAY_WS_URL}",
+          "SPACESKIT_REQUIRE_EXPLICIT_DEVICE_AUTH": "${SPACESKIT_REQUIRE_EXPLICIT_DEVICE_AUTH}"
+        },
+        "timeout_ms": 900000
+      }
+    }
+  ]
+}

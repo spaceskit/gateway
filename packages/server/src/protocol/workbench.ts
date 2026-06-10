@@ -20,6 +20,8 @@ export type WorkbenchVerificationModePayload = "machine_readable" | "review_only
 export type WorkbenchVerificationSuiteStatusPayload = "pending" | "running" | "passed" | "failed" | "skipped";
 export type WorkbenchVerificationResultStatusPayload = "pending" | "passed" | "failed";
 export type WorkbenchLandingStatusPayload = "not_started" | "blocked" | "landed";
+export type WorkbenchScenarioRunStatusPayload = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type WorkbenchScenarioOverallStatusPayload = "passed" | "failed" | "blocked" | "skipped";
 
 export interface WorkbenchExecutionModeEligibilityPayload {
   supervised: boolean;
@@ -154,7 +156,46 @@ export interface WorkbenchPolicyPayload {
   maxParallelRuns: number;
   requireExplicitAutonomousOptIn: boolean;
   requireAiShippableForAutonomous: boolean;
+  runnerAvailable?: boolean;
+  scenarioDiscoveryAvailable?: boolean;
+  supportedExecutionModes?: WorkbenchExecutionModePayload[];
+  supportedVerificationModes?: WorkbenchVerificationModePayload[];
   updatedAt: string;
+}
+
+export interface WorkbenchScenarioLayerPayload {
+  layerId: string;
+  name: string;
+  description?: string;
+  scenarioIds: string[];
+}
+
+export interface WorkbenchScenarioPayload {
+  scenarioId: string;
+  layerId: string;
+  name: string;
+  description?: string;
+  tags: string[];
+  requiredCapabilities: string[];
+  defaultEnabled: boolean;
+}
+
+export interface WorkbenchScenarioRunConfigPayload {
+  layerIds?: string[];
+  scenarioIds?: string[];
+  providerIds?: string[];
+}
+
+export interface WorkbenchScenarioRunPayload {
+  scenarioRunId: string;
+  status: WorkbenchScenarioRunStatusPayload;
+  config: WorkbenchScenarioRunConfigPayload;
+  overallStatus?: WorkbenchScenarioOverallStatusPayload;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  summary?: string;
+  reportArtifactId?: string;
 }
 
 export interface WorkbenchListQueuePayload {
@@ -327,4 +368,52 @@ export interface WorkbenchUpdatePolicyPayload {
 
 export interface WorkbenchUpdatePolicyResponsePayload {
   policy: WorkbenchPolicyPayload;
+}
+
+export interface WorkbenchListScenariosPayload {
+  apiVersion?: string;
+}
+
+export interface WorkbenchListScenariosResponsePayload {
+  layers: WorkbenchScenarioLayerPayload[];
+  scenarios: WorkbenchScenarioPayload[];
+}
+
+export interface WorkbenchStartScenarioRunPayload {
+  apiVersion?: string;
+  idempotencyKey?: string;
+  config: WorkbenchScenarioRunConfigPayload;
+}
+
+export interface WorkbenchStartScenarioRunResponsePayload {
+  scenarioRun: WorkbenchScenarioRunPayload;
+}
+
+export interface WorkbenchListScenarioRunsPayload {
+  apiVersion?: string;
+  status?: WorkbenchScenarioRunStatusPayload;
+  limit?: number;
+}
+
+export interface WorkbenchListScenarioRunsResponsePayload {
+  scenarioRuns: WorkbenchScenarioRunPayload[];
+}
+
+export interface WorkbenchGetScenarioRunPayload {
+  apiVersion?: string;
+  scenarioRunId: string;
+}
+
+export interface WorkbenchGetScenarioRunResponsePayload {
+  scenarioRun: WorkbenchScenarioRunPayload;
+}
+
+export interface WorkbenchCancelScenarioRunPayload {
+  apiVersion?: string;
+  idempotencyKey?: string;
+  scenarioRunId: string;
+}
+
+export interface WorkbenchCancelScenarioRunResponsePayload {
+  scenarioRun: WorkbenchScenarioRunPayload;
 }

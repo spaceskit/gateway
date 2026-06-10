@@ -42,6 +42,15 @@ import {
 import {
   resolveFruitMailExecutable,
 } from "../../../../scripts/fruitmail-cli-tools/spaces-fruitmail.mjs";
+import {
+  PEEKABOO_TOOL_DEFINITIONS,
+} from "../../../../scripts/peekaboo-cli-tools/catalog.mjs";
+import {
+  materializePeekabooCliTools,
+} from "../../../../scripts/peekaboo-cli-tools/materialize-peekaboo-cli-tools.mjs";
+import {
+  resolvePeekabooExecutable,
+} from "../../../../scripts/peekaboo-cli-tools/spaces-peekaboo.mjs";
 
 export type InterconnectorAvailabilityStatus = "active" | "degraded" | "inactive";
 
@@ -102,6 +111,10 @@ const FRUITMAIL_INSTALL_HINT = "Install fruitmail (`npm install -g apple-mail-se
 const FRUITMAIL_BUNDLE_ID = "fruitmail-cli";
 const FRUITMAIL_BUNDLE_DISPLAY_NAME = "Apple Mail (fruitmail)";
 const FRUITMAIL_BUNDLE_DESCRIPTION = "Gateway-managed fruitmail CLI bundle for Apple Mail search, message retrieval, and email sending via the local Mail.app database.";
+const PEEKABOO_INSTALL_HINT = "Install Peekaboo (`brew install steipete/tap/peekaboo`), grant Screen Recording and Accessibility, then rescan CLI Tools.";
+const PEEKABOO_BUNDLE_ID = "peekaboo-cli";
+const PEEKABOO_BUNDLE_DISPLAY_NAME = "Peekaboo CLI";
+const PEEKABOO_BUNDLE_DESCRIPTION = "Gateway-managed Peekaboo CLI bundle for macOS screen capture, UI maps, and approval-gated desktop automation.";
 
 export const INTERCONNECTOR_CATALOG_BUNDLE_DEFINITIONS: InterconnectorCatalogBundleDefinition[] = [
   {
@@ -135,6 +148,14 @@ export const INTERCONNECTOR_CATALOG_BUNDLE_DEFINITIONS: InterconnectorCatalogBun
     toolIds: FRUITMAIL_TOOL_DEFINITIONS.map((tool: { id: string }) => tool.id),
     installHint: FRUITMAIL_INSTALL_HINT,
     sync: async (context) => syncFruitMailCatalogBundle(context),
+  },
+  {
+    bundleId: PEEKABOO_BUNDLE_ID,
+    bundleDisplayName: PEEKABOO_BUNDLE_DISPLAY_NAME,
+    bundleDescription: PEEKABOO_BUNDLE_DESCRIPTION,
+    toolIds: PEEKABOO_TOOL_DEFINITIONS.map((tool) => tool.id),
+    installHint: PEEKABOO_INSTALL_HINT,
+    sync: async (context) => syncPeekabooCatalogBundle(context),
   },
 ];
 
@@ -217,12 +238,47 @@ async function syncFruitMailCatalogBundle(
   });
 }
 
+async function syncPeekabooCatalogBundle(
+  context: InterconnectorCatalogBundleSyncContext,
+): Promise<InterconnectorCatalogBundleSyncResult> {
+  return syncManagedCliBundle(context, {
+    bundleId: PEEKABOO_BUNDLE_ID,
+    bundleDisplayName: PEEKABOO_BUNDLE_DISPLAY_NAME,
+    bundleDescription: PEEKABOO_BUNDLE_DESCRIPTION,
+    toolIds: PEEKABOO_TOOL_DEFINITIONS.map((tool) => tool.id),
+    installHint: PEEKABOO_INSTALL_HINT,
+    detectExecutable: detectPeekabooExecutable,
+    materialize: async (manifestRoot) => {
+      await materializePeekabooCliTools({ targetDir: manifestRoot });
+    },
+    probeArgs: ["permissions", "status", "--json"],
+    probeTimeoutMs: 5_000,
+    probeFailureMessage: "Peekaboo detected, but `peekaboo permissions status --json` failed. Grant Screen Recording and Accessibility permissions.",
+  });
+}
+
 function detectFruitMailExecutable(): { detected: true; executablePath: string } | { detected: false; healthMessage: string } {
   const path = resolveFruitMailExecutable();
   if (path) {
     return { detected: true, executablePath: path };
   }
   return { detected: false, healthMessage: "fruitmail not found. Install with: npm install -g apple-mail-search-cli" };
+}
+
+function detectPeekabooExecutable():
+  | { detected: true; executablePath: string }
+  | { detected: false; healthMessage: string } {
+  try {
+    return {
+      detected: true,
+      executablePath: resolvePeekabooExecutable(process.env),
+    };
+  } catch (error) {
+    return {
+      detected: false,
+      healthMessage: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function syncManagedCliBundle(

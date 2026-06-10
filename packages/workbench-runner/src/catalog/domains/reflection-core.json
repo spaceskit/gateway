@@ -1,0 +1,40 @@
+{
+  "domain_id": "reflection-core",
+  "description": "Behavioral verification for the shared reflection substrate.",
+  "scenarios": [
+    {
+      "domain_id": "reflection-core",
+      "scenario_id": "reflection-core.gateway-unit",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-unit"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/core/test/reflection/reflection-service.test.ts packages/core/test/experiences/experience-generator.test.ts packages/core/test/spaces/space-manager-reflection-summary.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    },
+    {
+      "domain_id": "reflection-core",
+      "scenario_id": "reflection-core.gateway-integration",
+      "adapter": "bun",
+      "order": 20,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-integration"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/bootstrap/test/space-memory-policy-service.test.ts packages/bootstrap/test/task-orchestration-service.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "id": "peekaboo.see",
+  "displayName": "Peekaboo See",
+  "description": "Capture the current macOS UI, extract accessibility metadata, and optionally save annotated screenshots.",
+  "bundleId": "peekaboo-cli",
+  "bundleDisplayName": "Peekaboo CLI",
+  "bundleDescription": "Gateway-managed Peekaboo CLI bundle for macOS screen capture, UI maps, and approval-gated desktop automation.",
+  "toolGroupId": "capture",
+  "toolGroupDisplayName": "Capture",
+  "executable": "/Users/caruso/code/spaces/gateway/scripts/peekaboo-cli-tools/spaces-peekaboo.mjs",
+  "resolvedExecutable": "/Users/caruso/code/spaces/gateway/scripts/peekaboo-cli-tools/spaces-peekaboo.mjs",
+  "argsTemplate": [
+    "--op",
+    "see",
+    "--payload",
+    "{{payload}}"
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "array",
+            "description": "Optional extra positional arguments to append after the Peekaboo subcommand.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flags": {
+            "type": "object",
+            "description": "Optional Peekaboo flags. Use raw CLI flag keys such as `app`, `window-title`, `snapshot`, `coords`, `path`, or `mode`.",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "presentFlags": {
+            "type": "array",
+            "description": "Optional flag names rendered without values, for example `annotate`, `retina`, `foreground`, or `return`.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "stdin": {
+            "type": "string",
+            "description": "Optional stdin payload forwarded to the Peekaboo CLI command."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "instructions": "Use this tool before issuing Peekaboo click/type commands so element IDs and snapshot IDs are fresh. This discovery read is not query-bounded, so keep it targeted and operator-driven.",
+  "examples": [
+    {
+      "name": "Capture Safari UI metadata",
+      "arguments": {
+        "payload": {
+          "flags": {
+            "app": "Safari"
+          },
+          "presentFlags": [
+            "annotate"
+          ]
+        }
+      }
+    }
+  ],
+  "timeoutMs": 45000,
+  "maxOutputBytes": 524288,
+  "cwdMode": "fixed",
+  "fixedCwd": "/Users/caruso/code/spaces/gateway/scripts/peekaboo-cli-tools",
+  "outputMode": "json",
+  "dangerLevel": "standard",
+  "enabled": true,
+  "createdAt": "2026-06-06T06:03:10.830Z",
+  "updatedAt": "2026-06-06T06:03:10.830Z"
+}

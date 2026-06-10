@@ -1,0 +1,23 @@
+{
+  "domain_id": "connector-tools",
+  "description": "Verifies connector tools (Reminders, Calendar) are resolvable and invokable across provider runtimes.",
+  "scenarios": [
+    {
+      "domain_id": "connector-tools",
+      "scenario_id": "connector-tools.resolution-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["gateway-e2e", "connector-tools"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/bootstrap/test/e2e/connector-tool-resolution.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

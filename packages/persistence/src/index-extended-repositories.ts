@@ -321,6 +321,16 @@ export type {
   SetWorkbenchPolicyInput,
 } from "./repositories/workbench-policy.js";
 
+export { WorkbenchScenarioRunRepository } from "./repositories/workbench-scenario-runs.js";
+export type {
+  WorkbenchScenarioRunRow,
+  WorkbenchScenarioRunStatus,
+  WorkbenchScenarioOverallStatus,
+  CreateWorkbenchScenarioRunInput,
+  UpdateWorkbenchScenarioRunInput,
+  ListWorkbenchScenarioRunsQuery,
+} from "./repositories/workbench-scenario-runs.js";
+
 export { SchedulerJobRunRepository } from "./repositories/scheduler-job-runs.js";
 export type {
   SchedulerRunStatus,

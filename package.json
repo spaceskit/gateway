@@ -24,7 +24,8 @@
     "docs:generate": "bun run ../dev-services/scripts/generate-docs.ts",
     "docs:check": "bun run ../dev-services/scripts/generate-docs.ts --check",
     "models:refresh": "bun run ../dev-services/scripts/refresh-model-context-windows.ts",
-    "models:check": "bun run ../dev-services/scripts/refresh-model-context-windows.ts --check"
+    "models:check": "bun run ../dev-services/scripts/refresh-model-context-windows.ts --check",
+    "models:update": "bun run ../dev-services/scripts/refresh-model-context-windows.ts --update"
   },
   "devDependencies": {
     "@spaceskit/noise": "workspace:*",

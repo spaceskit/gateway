@@ -1,0 +1,23 @@
+{
+  "domain_id": "harness-smoke",
+  "description": "Deterministic runner scenarios that do not require external services.",
+  "scenarios": [
+    {
+      "domain_id": "harness-smoke",
+      "scenario_id": "harness.smoke.noop",
+      "adapter": "noop",
+      "order": 1,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["fast", "deterministic", "harness"],
+      "artifacts": [],
+      "config": {
+        "command": "noop",
+        "cwd": ".",
+        "timeout_ms": 1000
+      }
+    }
+  ]
+}

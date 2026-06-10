@@ -44,7 +44,7 @@ interface WorkbenchStartRunContext {
     verificationSuites: WorkbenchVerificationSuitePayload[],
     executionMode: WorkbenchExecutionMode,
   ): void;
-  executeRunIfReady(runId: string): Promise<WorkbenchRunRow>;
+  scheduleRun(runId: string): void;
   toRunPayload(row: WorkbenchRunRow): WorkbenchRunPayload;
 }
 
@@ -122,7 +122,7 @@ export async function startWorkbenchRun(
   }
 
   if (currentStage === "execute") {
-    return context.toRunPayload(await context.executeRunIfReady(row.run_id));
+    context.scheduleRun(row.run_id);
   }
 
   return context.toRunPayload(row);

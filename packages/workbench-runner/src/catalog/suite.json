@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "default_suite": "full",
+  "suites": [
+    {
+      "suite_id": "full",
+      "description": "Unified workbench covering infra, gateway/client baselines, app acceptance, and future smoke domains.",
+      "domain_order": [
+        "harness-smoke",
+        "infra",
+        "gateway-core",
+        "client-ts",
+        "client-swift",
+        "space-interactions",
+        "app-macos",
+        "app-ios",
+        "summarization",
+        "reflection-core",
+        "concierge-reflection",
+        "messaging",
+        "runtime-cli",
+        "prompt-escalation",
+        "notifications",
+        "callkit",
+        "cli-tools",
+        "native-connectors",
+        "connector-tools"
+      ],
+      "domain_manifests": {
+        "harness-smoke": "./harness-smoke.json",
+        "infra": "./domains/infra.json",
+        "gateway-core": "./domains/gateway-core.json",
+        "client-ts": "./domains/client-ts.json",
+        "client-swift": "./domains/client-swift.json",
+        "space-interactions": "./domains/space-interactions.json",
+        "app-macos": "./domains/app-macos.json",
+        "app-ios": "./domains/app-ios.json",
+        "summarization": "./domains/summarization.json",
+        "reflection-core": "./domains/reflection-core.json",
+        "concierge-reflection": "./domains/concierge-reflection.json",
+        "messaging": "./domains/messaging.json",
+        "runtime-cli": "./domains/runtime-cli.json",
+        "prompt-escalation": "./domains/prompt-escalation.json",
+        "notifications": "./domains/notifications.json",
+        "callkit": "./domains/callkit.json",
+        "cli-tools": "./domains/cli-tools.json",
+        "native-connectors": "./domains/native-connectors.json",
+        "connector-tools": "./domains/connector-tools.json"
+      },
+      "report_dir": ".spaceskit-workbench/workbench-runner/full",
+      "json_path": ".spaceskit-workbench/workbench-runner/full/workbench-report.json",
+      "junit_path": ".spaceskit-workbench/workbench-runner/full/workbench-report.xml"
+    },
+    {
+      "suite_id": "e2e-core",
+      "description": "Legacy baseline gateway/bootstrap and SDK runtime smoke suite.",
+      "domain_order": [
+        "harness-smoke",
+        "infra",
+        "gateway-core",
+        "client-ts",
+        "client-swift"
+      ],
+      "domain_manifests": {
+        "harness-smoke": "./harness-smoke.json",
+        "infra": "./domains/infra.json",
+        "gateway-core": "./domains/gateway-core.json",
+        "client-ts": "./domains/client-ts.json",
+        "client-swift": "./domains/client-swift.json"
+      },
+      "include_tags": ["baseline"],
+      "report_dir": ".spaceskit-workbench/workbench-runner/e2e-core",
+      "json_path": ".spaceskit-workbench/workbench-runner/e2e-core/workbench-report.json",
+      "junit_path": ".spaceskit-workbench/workbench-runner/e2e-core/workbench-report.xml"
+    },
+    {
+      "suite_id": "chat-closeout",
+      "description": "Legacy chat closeout acceptance suite built on the unified workbench runner.",
+      "domain_order": [
+        "harness-smoke",
+        "infra",
+        "gateway-core",
+        "client-ts",
+        "client-swift",
+        "app-macos",
+        "app-ios"
+      ],
+      "domain_manifests": {
+        "harness-smoke": "./harness-smoke.json",
+        "infra": "./domains/infra.json",
+        "gateway-core": "./domains/gateway-core.json",
+        "client-ts": "./domains/client-ts.json",
+        "client-swift": "./domains/client-swift.json",
+        "app-macos": "./domains/app-macos.json",
+        "app-ios": "./domains/app-ios.json"
+      },
+      "include_tags": ["baseline", "app-prereq", "chat-closeout"],
+      "report_dir": ".spaceskit-workbench/workbench-runner/chat-closeout",
+      "json_path": ".spaceskit-workbench/workbench-runner/chat-closeout/chat-closeout-report.json",
+      "junit_path": ".spaceskit-workbench/workbench-runner/chat-closeout/chat-closeout-report.xml"
+    }
+  ]
+}

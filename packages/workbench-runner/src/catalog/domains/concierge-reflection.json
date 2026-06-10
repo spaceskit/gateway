@@ -1,0 +1,23 @@
+{
+  "domain_id": "concierge-reflection",
+  "description": "Verification for concierge-facing reflection consumers and digests.",
+  "scenarios": [
+    {
+      "domain_id": "concierge-reflection",
+      "scenario_id": "concierge-reflection.gateway-digest-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-unit"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/core/test/agents/platform-tools.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

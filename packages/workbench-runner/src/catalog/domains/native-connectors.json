@@ -1,0 +1,23 @@
+{
+  "domain_id": "native-connectors",
+  "description": "Smoke coverage for native connector administration flows.",
+  "scenarios": [
+    {
+      "domain_id": "native-connectors",
+      "scenario_id": "native-connectors.gateway-smoke",
+      "adapter": "bun",
+      "order": 10,
+      "blocking": false,
+      "platform": "host",
+      "requires": [],
+      "tasks": [],
+      "tags": ["future-domain", "gateway-unit"],
+      "artifacts": [],
+      "config": {
+        "command": "bun test packages/bootstrap/test/connector-admin-service.test.ts",
+        "cwd": "gateway",
+        "timeout_ms": 300000
+      }
+    }
+  ]
+}

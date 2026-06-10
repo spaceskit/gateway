@@ -4,10 +4,14 @@ import {
   type GatewayMessage,
   type WorkbenchApproveStagePayload,
   type WorkbenchApproveStageResponsePayload,
+  type WorkbenchCancelScenarioRunPayload,
+  type WorkbenchCancelScenarioRunResponsePayload,
   type WorkbenchCancelRunPayload,
   type WorkbenchCancelRunResponsePayload,
   type WorkbenchCreateBatchPayload,
   type WorkbenchCreateBatchResponsePayload,
+  type WorkbenchGetScenarioRunPayload,
+  type WorkbenchGetScenarioRunResponsePayload,
   type WorkbenchGetPolicyPayload,
   type WorkbenchGetPolicyResponsePayload,
   type WorkbenchGetQueueItemPayload,
@@ -22,12 +26,18 @@ import {
   type WorkbenchListQueueResponsePayload,
   type WorkbenchListRunsPayload,
   type WorkbenchListRunsResponsePayload,
+  type WorkbenchListScenarioRunsPayload,
+  type WorkbenchListScenarioRunsResponsePayload,
+  type WorkbenchListScenariosPayload,
+  type WorkbenchListScenariosResponsePayload,
   type WorkbenchRejectStagePayload,
   type WorkbenchRejectStageResponsePayload,
   type WorkbenchRetryRunPayload,
   type WorkbenchRetryRunResponsePayload,
   type WorkbenchSetModePayload,
   type WorkbenchSetModeResponsePayload,
+  type WorkbenchStartScenarioRunPayload,
+  type WorkbenchStartScenarioRunResponsePayload,
   type WorkbenchStartRunPayload,
   type WorkbenchStartRunResponsePayload,
   type WorkbenchUpdateBatchPayload,
@@ -318,4 +328,80 @@ export async function handleWorkbenchUpdatePolicy(
   const payload = (msg.payload ?? {}) as WorkbenchUpdatePolicyPayload;
   const policy = await context.workbenchService!.updatePolicy({ ...payload, principalId });
   return context.response(msg.id, MessageTypes.WORKBENCH_UPDATE_POLICY, { policy } satisfies WorkbenchUpdatePolicyResponsePayload);
+}
+
+export async function handleWorkbenchListScenarios(
+  context: WorkbenchHandlerContext,
+  client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  const unavailable = missingServiceResponse(context, msg);
+  if (unavailable) return unavailable;
+  const payload = (msg.payload ?? {}) as WorkbenchListScenariosPayload;
+  const result = await context.workbenchService!.listScenarios({ ...payload, principalId: client.publicKey ?? undefined });
+  return context.response(msg.id, MessageTypes.WORKBENCH_LIST_SCENARIOS, result satisfies WorkbenchListScenariosResponsePayload);
+}
+
+export async function handleWorkbenchStartScenarioRun(
+  context: WorkbenchHandlerContext,
+  client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  const unavailable = missingServiceResponse(context, msg);
+  if (unavailable) return unavailable;
+  const { principalId, error } = requirePrincipal(context, client, msg);
+  if (error) return error;
+  const payload = msg.payload as WorkbenchStartScenarioRunPayload;
+  if (!payload?.config || (!payload.config.layerIds?.length && !payload.config.scenarioIds?.length)) {
+    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "config.layerIds or config.scenarioIds is required");
+  }
+  const scenarioRun = await context.workbenchService!.startScenarioRun({ ...payload, principalId });
+  return context.response(msg.id, MessageTypes.WORKBENCH_START_SCENARIO_RUN, { scenarioRun } satisfies WorkbenchStartScenarioRunResponsePayload);
+}
+
+export async function handleWorkbenchListScenarioRuns(
+  context: WorkbenchHandlerContext,
+  client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  const unavailable = missingServiceResponse(context, msg);
+  if (unavailable) return unavailable;
+  const payload = (msg.payload ?? {}) as WorkbenchListScenarioRunsPayload;
+  const scenarioRuns = await context.workbenchService!.listScenarioRuns({ ...payload, principalId: client.publicKey ?? undefined });
+  return context.response(msg.id, MessageTypes.WORKBENCH_LIST_SCENARIO_RUNS, { scenarioRuns } satisfies WorkbenchListScenarioRunsResponsePayload);
+}
+
+export async function handleWorkbenchGetScenarioRun(
+  context: WorkbenchHandlerContext,
+  client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  const unavailable = missingServiceResponse(context, msg);
+  if (unavailable) return unavailable;
+  const payload = msg.payload as WorkbenchGetScenarioRunPayload;
+  if (!payload?.scenarioRunId?.trim()) {
+    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "scenarioRunId is required");
+  }
+  const scenarioRun = await context.workbenchService!.getScenarioRun({ ...payload, principalId: client.publicKey ?? undefined });
+  if (!scenarioRun) {
+    return context.errorResponse(msg.id, "NOT_FOUND", `Workbench scenario run not found: ${payload.scenarioRunId}`);
+  }
+  return context.response(msg.id, MessageTypes.WORKBENCH_GET_SCENARIO_RUN, { scenarioRun } satisfies WorkbenchGetScenarioRunResponsePayload);
+}
+
+export async function handleWorkbenchCancelScenarioRun(
+  context: WorkbenchHandlerContext,
+  client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  const unavailable = missingServiceResponse(context, msg);
+  if (unavailable) return unavailable;
+  const { principalId, error } = requirePrincipal(context, client, msg);
+  if (error) return error;
+  const payload = msg.payload as WorkbenchCancelScenarioRunPayload;
+  if (!payload?.scenarioRunId?.trim()) {
+    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "scenarioRunId is required");
+  }
+  const scenarioRun = await context.workbenchService!.cancelScenarioRun({ ...payload, principalId });
+  return context.response(msg.id, MessageTypes.WORKBENCH_CANCEL_SCENARIO_RUN, { scenarioRun } satisfies WorkbenchCancelScenarioRunResponsePayload);
 }
