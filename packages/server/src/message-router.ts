@@ -30,6 +30,7 @@ import {
   type ConnectorAdminService,
   type ConciergeCallRuntimeService,
   type ConciergeEscalationService,
+  type ConciergeWorkbenchResolvedRequestService,
   type GatewayAdminService,
   type GatewayCapabilityAccessService,
   type GatewayExternalConnectivityService,
@@ -41,6 +42,7 @@ import {
   type GatewaySkillCatalogService,
   type GatewaySyncService,
   type GatewayWorkspaceDefaultsService,
+  type HarnessConciergePingResolvedRequestService,
   type OrchestratorCommandService,
   type SchedulerService,
   type WorkbenchService,
@@ -73,6 +75,7 @@ export type {
   ConnectorAdminService,
   ConciergeCallRuntimeService,
   ConciergeEscalationService,
+  ConciergeWorkbenchResolvedRequestService,
   DeviceIdentityService,
   GatewayAdminService,
   GatewayCapabilityAccessService,
@@ -85,6 +88,7 @@ export type {
   GatewaySkillCatalogService,
   GatewaySyncService,
   GatewayWorkspaceDefaultsService,
+  HarnessConciergePingResolvedRequestService,
   OrchestratorCommandService,
   SchedulerService,
   WorkbenchService,
@@ -157,6 +161,8 @@ export class MessageRouter {
   private get speechSessionService(): SpeechSessionService | null { return this.options.speechSessionService ?? null; }
   private get conciergeCallRuntimeService(): ConciergeCallRuntimeService | null { return this.options.conciergeCallRuntimeService ?? null; }
   private get conciergeEscalationService(): ConciergeEscalationService | null { return this.options.conciergeEscalationService ?? null; }
+  private get conciergeWorkbenchResolvedRequestService(): ConciergeWorkbenchResolvedRequestService | null { return this.options.conciergeWorkbenchResolvedRequestService ?? null; }
+  private get harnessConciergePingResolvedRequestService(): HarnessConciergePingResolvedRequestService | null { return this.options.harnessConciergePingResolvedRequestService ?? null; }
   private get toolAccessPolicyService(): ToolAccessPolicyService | null { return this.options.toolAccessPolicyService ?? null; }
   private get gatewayWorkspaceDefaultsService(): GatewayWorkspaceDefaultsService | null { return this.options.gatewayWorkspaceDefaultsService ?? null; }
   private get gatewayExternalConnectivityService(): GatewayExternalConnectivityService | null { return this.options.gatewayExternalConnectivityService ?? null; }
@@ -314,6 +320,8 @@ export class MessageRouter {
       sessionContinuityManager: this.sessionContinuityManager,
       spaceManager: this.spaceManager,
       conciergeEscalationService: this.conciergeEscalationService,
+      conciergeWorkbenchResolvedRequestService: this.conciergeWorkbenchResolvedRequestService,
+      harnessConciergePingResolvedRequestService: this.harnessConciergePingResolvedRequestService,
       rememberContinuityIdentity: this.rememberContinuityIdentity.bind(this),
       trackClientSpace: this.trackClientSpace.bind(this),
       resolveSpaceUid: this.resolveSpaceUid.bind(this),
@@ -385,7 +393,23 @@ export class MessageRouter {
     return { ...decorated, workspace: await this.spaceWorkspaceService.ensureWorkspace(space.id) };
   }
   private async decorateSpaceListSummaries(spaces: SpaceSummary[]): Promise<SpaceSummary[]> {
-    return Promise.all(spaces.map((space) => this.decorateSpaceSummary(space)));
+    // Decorate each space independently: a failure decorating one space (e.g. a workspace
+    // provisioning error) must not drop the entire list — that would blank the user's
+    // sidebar even though other spaces are fine. Fall back to the undecorated summary and
+    // log the failure so it is diagnosable.
+    return Promise.all(
+      spaces.map(async (space) => {
+        try {
+          return await this.decorateSpaceSummary(space);
+        } catch (error) {
+          this.logger.warn("Failed to decorate space summary; returning undecorated", {
+            spaceId: space.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return space;
+        }
+      }),
+    );
   }
   private cacheSpaceIdentity(spaceIdRaw: string, spaceUidRaw: string): void {
     const spaceId = normalizeString(spaceIdRaw);

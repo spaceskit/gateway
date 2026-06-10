@@ -83,6 +83,11 @@ describe("ConciergeEscalationService", () => {
         reason: "the agent is blocked on release approval",
         urgency: "important",
         allowedResponses: ["approve", "reject", "revise"],
+        context: {
+          source: "workbench",
+          signalKind: "safe_next_task",
+          queueItemId: "spaces/T-0001",
+        },
       });
 
       expect(result.status).toBe("notified");
@@ -98,8 +103,18 @@ describe("ConciergeEscalationService", () => {
           allowedResponses: ["approve", "reject", "revise"],
           fallbackPolicy: "none",
           deepLink: result.deepLink,
+          context: {
+            source: "workbench",
+            signalKind: "safe_next_task",
+            queueItemId: "spaces/T-0001",
+          },
         },
         actionUrl: result.deepLink,
+      });
+      expect(result.context).toEqual({
+        source: "workbench",
+        signalKind: "safe_next_task",
+        queueItemId: "spaces/T-0001",
       });
 
       const row = context.repository.getById(result.requestId);
@@ -107,6 +122,18 @@ describe("ConciergeEscalationService", () => {
       expect(row?.fallback_policy).toBe("none");
       expect(row?.delivery_channel).toBe("notification");
       expect(JSON.parse(row?.allowed_responses_json ?? "[]")).toEqual(["approve", "reject", "revise"]);
+      expect(JSON.parse(row?.context_json ?? "{}")).toEqual({
+        source: "workbench",
+        signalKind: "safe_next_task",
+        queueItemId: "spaces/T-0001",
+      });
+
+      const status = await context.service.getRequestStatus({
+        requestId: result.requestId,
+        spaceId: "space-main",
+        agentId: "main-agent",
+      });
+      expect(status.context).toEqual(result.context);
     } finally {
       context.db.close();
     }
@@ -205,6 +232,59 @@ describe("ConciergeEscalationService", () => {
 
       expect(status.status).toBe("expired");
       expect(context.calls).toHaveLength(0);
+    } finally {
+      context.db.close();
+    }
+  });
+
+  test("findRecentRequestByContext keeps Workbench prompt cooldown durable after expiry", async () => {
+    const context = createContext("2026-06-05T10:00:00.000Z");
+    try {
+      const created = await context.service.requestUserInput({
+        spaceId: "space-main",
+        requestingAgentId: "main-agent",
+        requestingTurnId: "turn-1",
+        question: "Review the Workbench run",
+        reason: "manual acceptance is required",
+        urgency: "important",
+        timeoutSeconds: 1,
+        context: {
+          source: "workbench",
+          signalKind: "run_awaiting_review",
+          runId: "run-review",
+          queueItemId: "spaces/T-0001",
+          stage: "review_gate",
+        },
+      });
+
+      context.setNow("2026-06-05T10:00:02.000Z");
+      await context.service.runMaintenance();
+
+      const recent = await context.service.findRecentRequestByContext({
+        spaceId: "space-main",
+        context: {
+          source: "workbench",
+          signalKind: "run_awaiting_review",
+          runId: "run-review",
+        },
+        now: new Date("2026-06-05T10:10:00.000Z"),
+        cooldownMs: 6 * 60 * 60 * 1000,
+      });
+
+      const stale = await context.service.findRecentRequestByContext({
+        spaceId: "space-main",
+        context: {
+          source: "workbench",
+          signalKind: "run_awaiting_review",
+          runId: "run-review",
+        },
+        now: new Date("2026-06-05T17:00:00.000Z"),
+        cooldownMs: 6 * 60 * 60 * 1000,
+      });
+
+      expect(recent?.requestId).toBe(created.requestId);
+      expect(recent?.status).toBe("expired");
+      expect(stale).toBeUndefined();
     } finally {
       context.db.close();
     }

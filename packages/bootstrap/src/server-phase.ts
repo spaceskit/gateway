@@ -38,6 +38,8 @@ export async function startGatewayServer(state: BootstrapState): Promise<void> {
         if (relayResponse) return relayResponse;
         const notificationResponse = await state.appleNotificationApiService.handleRequest(req, url);
         if (notificationResponse) return notificationResponse;
+        const conciergeResponse = await state.harnessConciergeApiService.handleRequest(req, url);
+        if (conciergeResponse) return conciergeResponse;
         return state.spacesRestApiService.handleRequest(req, url);
       },
       validateDeviceIdentity: state.deviceIdentityService

@@ -6,6 +6,7 @@ import type { PublicProviderRuntimeConfig } from "./gateway-admin-service.js";
 import type { GatewaySkillCatalogService } from "./services/gateway-skill-catalog-service.js";
 import { DEFAULT_PERSONA_ID } from "./services/gateway-identity-service.js";
 import {
+  CONCIERGE_AGENT_SYSTEM_SKILL_IDS,
   CONCIERGE_SKILLS,
   MAIN_SPACE_SYSTEM_SKILLS,
   MAIN_SPACE_SYSTEM_SKILL_IDS,
@@ -39,7 +40,23 @@ export interface MainProfileRuntimeSelection {
 export function resolveMainProfileRuntimeSelection(
   config: GatewayConfig,
   providerConfigs: Pick<PublicProviderRuntimeConfig, "providerId" | "model">[],
+  storedDefault?: { providerHint?: string; modelId?: string } | null,
 ): MainProfileRuntimeSelection {
+  // A model the user chose during onboarding (persisted in gateway_runtime_defaults)
+  // takes precedence over the heuristic priority order — but only if that provider is
+  // still actually configured, so we never pin the main/concierge agent to a provider
+  // that has since been removed.
+  const storedProviderHint = storedDefault?.providerHint?.trim() ?? "";
+  const storedModelId = storedDefault?.modelId?.trim() ?? "";
+  if (storedProviderHint && storedModelId) {
+    const storedProviderAvailable = providerConfigs.some((entry) =>
+      entry.providerId?.trim().toLowerCase() === storedProviderHint.toLowerCase()
+    );
+    if (storedProviderAvailable) {
+      return { providerHint: storedProviderHint, modelId: storedModelId };
+    }
+  }
+
   const priorityOrder = [
     "codex-app-server",
     "claude",
@@ -242,10 +259,10 @@ export async function ensureConciergeDefaults(
       profileId: config.conciergeProfileId,
       personaId: defaultPersonaId,
       name: `${profileLabel} Concierge`,
-      description: "General-purpose system concierge for workspace status, routing, and setup.",
+      description: "General-purpose system concierge for workspace status, routing, Workbench dispatch, and setup.",
       canModerate: true,
-      personalityPrompt: "You are the Spaces concierge. Be concise, route users to the right workspace or settings surface, and escalate runtime issues clearly.",
-      defaultSkillIds: [...TRUSTED_AGENT_SYSTEM_SKILL_IDS],
+      personalityPrompt: "You are the Spaces concierge. Be concise, route users to the right workspace or Workbench surface, recommend safe next work, and escalate runtime issues clearly.",
+      defaultSkillIds: [...CONCIERGE_AGENT_SYSTEM_SKILL_IDS],
       providerHint: runtimeSelection.providerHint,
       modelConfig: {
         preferredModels: runtimeSelection.modelId ? [runtimeSelection.modelId] : [],
@@ -258,7 +275,7 @@ export async function ensureConciergeDefaults(
     profileRepo.restore(config.conciergeProfileId);
     profileStatus = "restored";
   }
-  ensureRequiredProfileSkills(profileRepo, config.conciergeProfileId, TRUSTED_AGENT_SYSTEM_SKILL_IDS, "gateway_concierge_defaults");
+  ensureRequiredProfileSkills(profileRepo, config.conciergeProfileId, CONCIERGE_AGENT_SYSTEM_SKILL_IDS, "gateway_concierge_defaults");
 
   const existingSpace = await spaceAdminService.getSpace(config.conciergeSpaceId);
   if (!existingSpace) {

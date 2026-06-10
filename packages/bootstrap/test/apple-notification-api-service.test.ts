@@ -93,10 +93,16 @@ describe("AppleNotificationApiService", () => {
 
   test("marks deliveries opened and resolves background feedback", async () => {
     const auth = createHttpPrincipalTestContext();
-    const resolvedActions: string[] = [];
+    const resolvedInputs: Array<{
+      action: string;
+      payload?: Record<string, unknown>;
+    }> = [];
     const lifecycle = new AppleNotificationLifecycleService({
       feedbackResolver: (input) => {
-        resolvedActions.push(input.action);
+        resolvedInputs.push({
+          action: input.action,
+          payload: input.payload,
+        });
         return { ok: true };
       },
     });
@@ -129,6 +135,14 @@ describe("AppleNotificationApiService", () => {
         deliveryId: "delivery-1",
         action: "approve",
         message: "Approved from push",
+        payload: {
+          context: {
+            source: "workbench",
+            action: "open_workbench_run",
+            runId: "run-1",
+            queueItemId: "spaces/T-0001",
+          },
+        },
       }),
     });
     const resolveResponse = await service.handleRequest(resolveRequest, new URL(resolveRequest.url));
@@ -136,7 +150,17 @@ describe("AppleNotificationApiService", () => {
     const body = await resolveResponse!.json() as { result?: { status?: string } };
 
     expect(body.result?.status).toBe("resolved");
-    expect(resolvedActions).toEqual(["approve"]);
+    expect(resolvedInputs).toEqual([{
+      action: "approve",
+      payload: {
+        context: {
+          source: "workbench",
+          action: "open_workbench_run",
+          runId: "run-1",
+          queueItemId: "spaces/T-0001",
+        },
+      },
+    }]);
   });
 
   test("requires signed principal identity", async () => {

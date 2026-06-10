@@ -5,6 +5,7 @@ import type {
   ConnectorAdminService,
   ConciergeCallRuntimeService,
   ConciergeEscalationService,
+  ConciergeWorkbenchResolvedRequestService,
   DeviceIdentityService,
   GatewayAdminService,
   GatewayCapabilityAccessService,
@@ -17,6 +18,7 @@ import type {
   GatewaySkillCatalogService,
   GatewaySyncService,
   GatewayWorkspaceDefaultsService,
+  HarnessConciergePingResolvedRequestService,
   OrchestratorCommandService,
   SchedulerService,
   WorkbenchService,
@@ -76,6 +78,8 @@ export interface MessageRouterOptions {
   speechSessionService?: SpeechSessionService;
   conciergeCallRuntimeService?: ConciergeCallRuntimeService;
   conciergeEscalationService?: ConciergeEscalationService;
+  conciergeWorkbenchResolvedRequestService?: ConciergeWorkbenchResolvedRequestService;
+  harnessConciergePingResolvedRequestService?: HarnessConciergePingResolvedRequestService;
   toolAccessPolicyService?: ToolAccessPolicyService;
   gatewayWorkspaceDefaultsService?: GatewayWorkspaceDefaultsService;
   gatewayExternalConnectivityService?: GatewayExternalConnectivityService;

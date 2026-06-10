@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
+import { CONCIERGE_OPERATIONS_SKILL_ID, USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
 import { startGateway } from "../src/index.js";
 import { MAIN_SPACE_SYSTEM_SKILL_IDS } from "../src/seed/main-space-system-skills.js";
 import {
@@ -55,7 +55,9 @@ describe("bootstrap main defaults", () => {
       const embeddedConciergeRevision = embedded.db?.db.query(
         "SELECT default_skill_set_ids_json FROM agent_profile_revisions WHERE profile_id = ? AND revision = 1",
       ).get("concierge-profile") as { default_skill_set_ids_json: string } | undefined;
-      expect(JSON.parse(embeddedConciergeRevision?.default_skill_set_ids_json ?? "[]")).toContain(USER_ESCALATION_SKILL_ID);
+      const embeddedConciergeSkillIds = JSON.parse(embeddedConciergeRevision?.default_skill_set_ids_json ?? "[]");
+      expect(embeddedConciergeSkillIds).toContain(USER_ESCALATION_SKILL_ID);
+      expect(embeddedConciergeSkillIds).toContain(CONCIERGE_OPERATIONS_SKILL_ID);
 
       const embeddedSkillRows = embedded.db?.db.query(
         `SELECT skill_id, status
@@ -297,7 +299,7 @@ describe("bootstrap main defaults", () => {
       // and take priority over API-key providers. Codex app server is preferred
       // when available; otherwise the resolver falls through to the next
       // detected CLI or configured API-key provider.
-      const validProviders = ["codex-app-server", "claude", "codex", "gemini", "openrouter"];
+      const validProviders = ["codex-app-server", "antigravity", "claude", "codex", "gemini", "openrouter"];
       expect(validProviders).toContain(row?.provider_hint);
       expect(selectedModel).toStartWith(`${row!.provider_hint}/`);
     } finally {

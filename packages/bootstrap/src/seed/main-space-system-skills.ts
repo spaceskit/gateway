@@ -1,4 +1,4 @@
-import { USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
+import { CONCIERGE_OPERATIONS_SKILL_ID, USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
 
 export interface MainSpaceSystemSkillSeed {
   skillId: string;
@@ -149,9 +149,9 @@ export const CONCIERGE_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
     status: "active",
   },
   {
-    skillId: "role/concierge-operations",
+    skillId: CONCIERGE_OPERATIONS_SKILL_ID,
     name: "Concierge Operations",
-    description: "Operational procedures for the concierge agent: space navigation, management, cross-space awareness, and escalation.",
+    description: "Operational procedures for the concierge agent: space navigation, Workbench awareness, confirmation-gated dispatch, and escalation.",
     contentMarkdown: [
       "# Concierge Operations",
       "",
@@ -171,6 +171,21 @@ export const CONCIERGE_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
       "- Identify stale spaces (no activity in 24+ hours).",
       "- Surface spaces with failed or errored turns.",
       "",
+      "## Workbench Operations",
+      "- For requests like `what should I do next?`, inspect `workbench.get_policy`, `workbench.list_runs`, and `workbench.list_queue` before recommending work.",
+      "- Prefer safe supervised queue items with no execution blockers when suggesting the next task.",
+      "- Report blocked, failed, stale, and awaiting-review Workbench runs before recommending new work.",
+      "- Use `workbench.list_artifacts` when the user asks what evidence exists for a run.",
+      "- Use app navigation actions to open the Workbench board, queue item, run detail, or execution Space when useful.",
+      "",
+      "## Workbench Confirmation Rules",
+      "- Never call `workbench.start_run`, `workbench.retry_run`, `workbench.cancel_run`, `workbench.approve_stage`, or `workbench.reject_stage` without explicit user approval.",
+      "- First ask for approval through concierge escalation and wait for an approved request id.",
+      "- For Workbench mutation approvals, include escalation `context` with `source=workbench`, `requestedMutation`, and the relevant `queueItemId`, `runId`, `stage`, `executionMode`, or `reason`.",
+      "- Pass the approved `confirmationRequestId` to the Workbench mutation tool.",
+      "- Do not treat `open_app`, `defer`, silence, or conversational agreement as mutation approval.",
+      "- Automatic landing, commits, pushes, and merges are out of scope.",
+      "",
       "## Escalation Paths",
       "- Route complex analytical or creative tasks to the main agent or a team space.",
       "- When user input is required, prefer `concierge.request_user_input` with a short structured question.",
@@ -184,11 +199,15 @@ export const CONCIERGE_SKILLS: readonly MainSpaceSystemSkillSeed[] = [
       "- Ask ONE clarifying question when uncertain — never present a list of options.",
       "- Keep escalation copy short, operational, and easy to answer from a notification.",
     ].join("\n"),
-    sourceRef: "spaceskit:role/concierge-operations/v1",
-    tags: ["role", "concierge", "operations", "navigation"],
+    sourceRef: "spaceskit:role/concierge-operations/v2",
+    tags: ["role", "concierge", "operations", "navigation", "workbench"],
     status: "active",
   },
 ];
 
 export const MAIN_SPACE_SYSTEM_SKILL_IDS = MAIN_SPACE_SYSTEM_SKILLS.map((skill) => skill.skillId);
 export const TRUSTED_AGENT_SYSTEM_SKILL_IDS = [USER_ESCALATION_SKILL_ID] as const;
+export const CONCIERGE_AGENT_SYSTEM_SKILL_IDS = [
+  USER_ESCALATION_SKILL_ID,
+  CONCIERGE_OPERATIONS_SKILL_ID,
+] as const;

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   USER_ESCALATION_SKILL_ID,
   createConciergeEscalationToolDefinitions,
+  createConciergeEscalationToolExecutor,
   createConciergeEscalationToolFilter,
 } from "../../src/agents/concierge-escalation-tools.js";
 
@@ -36,5 +37,54 @@ describe("concierge escalation tools", () => {
 
     await expect(filter("space-main", "trusted-agent")).resolves.toBe(true);
     await expect(filter("space-main", "worker-agent")).resolves.toBe(false);
+  });
+
+  test("request_user_input forwards structured context", async () => {
+    const calls: unknown[] = [];
+    const executor = createConciergeEscalationToolExecutor({
+      service: {
+        requestUserInput: async (input) => {
+          calls.push(input);
+          return {
+            requestId: "request-1",
+            status: "notified",
+            deliveryChannel: "notification",
+          };
+        },
+        getRequestStatus: async () => {
+          throw new Error("not used");
+        },
+        cancelRequest: async () => {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    await executor(
+      "concierge.request_user_input",
+      {
+        question: "Start this Workbench task",
+        reason: "safe next task found",
+        context: {
+          source: "workbench",
+          signalKind: "safe_next_task",
+          queueItemId: "spaces/T-0001",
+        },
+      },
+      {
+        spaceId: "space-main",
+        agentId: "concierge-agent",
+        turnId: "turn-1",
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      context: {
+        source: "workbench",
+        signalKind: "safe_next_task",
+        queueItemId: "spaces/T-0001",
+      },
+    });
   });
 });

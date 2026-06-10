@@ -5,12 +5,15 @@ import { OrchestratorCommandService } from "./services/orchestrator-command-serv
 import { SchedulerService } from "./services/scheduler-service.js";
 import { SpeechSessionService } from "./services/speech-session-service.js";
 import { ConciergeCallRuntimeService } from "./services/concierge-call-runtime-service.js";
+import { ConciergeWorkbenchMonitorService } from "./services/concierge-workbench-monitor-service.js";
+import { HarnessConciergePingerService } from "./services/harness-concierge-pinger-service.js";
 import { WorkbenchService } from "./services/workbench-service.js";
 
 export async function initializeOrchestrationServices(state: BootstrapState): Promise<void> {
   const { config, logger, db } = state;
   const selfCheckTurnBySpace = new Map<string, string>();
   const workbenchAgentLoopEnabled = Bun.env.SPACESKIT_WORKBENCH_AGENT_LOOP !== "false";
+  const workbenchExecutorAutostart = Bun.env.SPACESKIT_WORKBENCH_EXECUTOR_AUTOSTART !== "false";
 
   const orchestratorCommandService = (
     state.orchestratorCommandRepo
@@ -70,21 +73,47 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
   }
 
   const workbenchService = (
-    config.gatewayProfile === "external"
-    && state.workbenchBatchRepo
+    state.workbenchBatchRepo
     && state.workbenchRunRepo
+    && state.workbenchScenarioRunRepo
     && state.workbenchArtifactRepo
     && state.workbenchPolicyRepo
   )
     ? new WorkbenchService({
       batches: state.workbenchBatchRepo,
       runs: state.workbenchRunRepo,
+      scenarioRuns: state.workbenchScenarioRunRepo,
       artifacts: state.workbenchArtifactRepo,
       policy: state.workbenchPolicyRepo,
       repoRoot: Bun.env.SPACESKIT_WORKBENCH_REPO_ROOT ?? process.cwd(),
       workProjectsRoot: Bun.env.SPACESKIT_WORKBENCH_PROJECTS_ROOT,
       workbenchProjectSlug: Bun.env.SPACESKIT_WORKBENCH_PROJECT_SLUG,
+      runnerApiEnabled: Bun.env.SPACESKIT_WORKBENCH_RUNNER_API_ENABLED === "true",
+      workbenchExecutorAutostart,
       logger: logger.child({ module: "workbench" }),
+      loadIdempotencyRecord: state.idempotencyRepo
+        ? async (principalId, endpoint, idempotencyKey) => {
+          const row = state.idempotencyRepo.get(principalId, endpoint, idempotencyKey);
+          if (!row) return null;
+          return {
+            requestHash: row.request_hash,
+            responseType: row.response_type,
+            responsePayload: row.response_payload,
+          };
+        }
+        : undefined,
+      saveIdempotencyRecord: state.idempotencyRepo
+        ? async (record) => {
+          state.idempotencyRepo.put({
+            principalId: record.principalId,
+            endpoint: record.endpoint,
+            idempotencyKey: record.idempotencyKey,
+            requestHash: record.requestHash,
+            responseType: record.responseType,
+            responsePayload: record.responsePayload,
+          });
+        }
+        : undefined,
       ...(workbenchAgentLoopEnabled
         ? {
           spaceAdminService: state.spaceAdminService,
@@ -93,6 +122,77 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
         }
         : {}),
     })
+    : null;
+
+  if (workbenchService) {
+    void workbenchService.recoverInterruptedRuns().catch((error) => {
+      logger.warn("Failed to recover Workbench executor state on startup", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  const conciergeWorkbenchMonitorService = (
+    workbenchService
+    && state.conciergeEscalationService
+    && Bun.env.SPACESKIT_ENABLE_CONCIERGE_PROACTIVE_WORKBENCH === "true"
+  )
+    ? new ConciergeWorkbenchMonitorService({
+      workbenchService,
+      escalationService: state.conciergeEscalationService,
+      logger: logger.child({ module: "concierge-workbench-monitor" }),
+    })
+    : null;
+  const conciergeWorkbenchMonitorIntervalMs = Number.parseInt(
+    Bun.env.SPACESKIT_CONCIERGE_WORKBENCH_MONITOR_INTERVAL_MS ?? "60000",
+    10,
+  );
+  const conciergeWorkbenchMonitorTimer = conciergeWorkbenchMonitorService
+    ? conciergeWorkbenchMonitorService.start({
+      spaceId: config.conciergeSpaceId,
+      requestingAgentId: config.conciergeAgentId,
+    }, Number.isFinite(conciergeWorkbenchMonitorIntervalMs) ? conciergeWorkbenchMonitorIntervalMs : 60000)
+    : null;
+
+  // Proactive harness pinger: read the harness concierge watchdog's ping queue
+  // (concierge-pings.json) and escalate voice-deliverable pings as real calls.
+  // The harness decides *what* needs attention; this delivers it by voice.
+  // Enabled by default when an escalation service is present; opt out with
+  // SPACESKIT_ENABLE_CONCIERGE_HARNESS_PINGER=false.
+  const harnessConciergePingerUrgentTimeoutSeconds = Number.parseInt(
+    Bun.env.SPACESKIT_HARNESS_PINGER_URGENT_TIMEOUT_SECONDS ?? "",
+    10,
+  );
+  const harnessConciergePingerMaxPerRun = Number.parseInt(
+    Bun.env.SPACESKIT_HARNESS_PINGER_MAX_PER_RUN ?? "",
+    10,
+  );
+  const harnessConciergePingerService = (
+    state.conciergeEscalationService
+    && Bun.env.SPACESKIT_ENABLE_CONCIERGE_HARNESS_PINGER !== "false"
+  )
+    ? new HarnessConciergePingerService({
+      escalationService: state.conciergeEscalationService,
+      pingsPath: Bun.env.SPACESKIT_HARNESS_CONCIERGE_PINGS_PATH || undefined,
+      conciergeBinPath: Bun.env.SPACESKIT_HARNESS_CONCIERGE_BIN || undefined,
+      urgentTimeoutSeconds: Number.isFinite(harnessConciergePingerUrgentTimeoutSeconds)
+        ? harnessConciergePingerUrgentTimeoutSeconds
+        : undefined,
+      maxEscalationsPerRun: Number.isFinite(harnessConciergePingerMaxPerRun)
+        ? harnessConciergePingerMaxPerRun
+        : undefined,
+      logger: logger.child({ module: "harness-concierge-pinger" }),
+    })
+    : null;
+  const harnessConciergePingerIntervalMs = Number.parseInt(
+    Bun.env.SPACESKIT_HARNESS_CONCIERGE_PINGER_INTERVAL_MS ?? "300000",
+    10,
+  );
+  const harnessConciergePingerTimer = harnessConciergePingerService
+    ? harnessConciergePingerService.start({
+      spaceId: config.conciergeSpaceId,
+      requestingAgentId: config.conciergeAgentId,
+    }, Number.isFinite(harnessConciergePingerIntervalMs) ? harnessConciergePingerIntervalMs : 300000)
     : null;
 
   const gatewayResetService = db
@@ -314,6 +414,10 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
     orchestratorCommandService,
     schedulerService,
     workbenchService,
+    conciergeWorkbenchMonitorService,
+    conciergeWorkbenchMonitorTimer,
+    harnessConciergePingerService,
+    harnessConciergePingerTimer,
     speechSessionService,
     conciergeCallRuntimeService,
   });

@@ -48,6 +48,7 @@ import {
   WorkbenchBatchRepository,
   WorkbenchPolicyRepository,
   WorkbenchRunRepository,
+  WorkbenchScenarioRunRepository,
   SpaceAgentAssignmentRepository,
   SpaceChangeSetFileRepository,
   SpaceChangeSetRepository,
@@ -120,6 +121,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     schedulerJobRunRepo = null,
     workbenchBatchRepo = null,
     workbenchRunRepo = null,
+    workbenchScenarioRunRepo = null,
     workbenchArtifactRepo = null,
     workbenchPolicyRepo = null,
     idempotencyRepo = null,
@@ -216,6 +218,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     schedulerJobRunRepo = new SchedulerJobRunRepository(db.db);
     workbenchBatchRepo = new WorkbenchBatchRepository(db.db);
     workbenchRunRepo = new WorkbenchRunRepository(db.db);
+    workbenchScenarioRunRepo = new WorkbenchScenarioRunRepository(db.db);
     workbenchArtifactRepo = new WorkbenchArtifactRepository(db.db);
     workbenchPolicyRepo = new WorkbenchPolicyRepository(db.db);
     idempotencyRepo = new IdempotencyRepository(db.db);
@@ -334,6 +337,7 @@ export async function initializePersistence(state: BootstrapState): Promise<void
     schedulerJobRunRepo,
     workbenchBatchRepo,
     workbenchRunRepo,
+    workbenchScenarioRunRepo,
     workbenchArtifactRepo,
     workbenchPolicyRepo,
     idempotencyRepo,

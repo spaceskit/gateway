@@ -234,7 +234,29 @@ export interface ConciergeEscalationService {
     requestId: string;
     status: string;
     deliveryChannel: string;
+    response?: Record<string, unknown>;
+    context?: Record<string, unknown>;
   }>;
+}
+
+export interface ConciergeWorkbenchResolvedRequestService {
+  handleResolvedRequest: (input: {
+    requestId: string;
+    status: string;
+    principalId?: string;
+    response?: Record<string, unknown>;
+    context?: Record<string, unknown>;
+  }) => Promise<unknown | null>;
+}
+
+/** Round-trips an answered harness-ping escalation back to the harness (ack/resolve). */
+export interface HarnessConciergePingResolvedRequestService {
+  handleResolvedRequest: (input: {
+    requestId: string;
+    status: string;
+    response?: Record<string, unknown>;
+    context?: Record<string, unknown>;
+  }) => Promise<boolean>;
 }
 
 export interface GatewayAdminService {

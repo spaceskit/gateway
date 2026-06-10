@@ -32,6 +32,7 @@ export interface ConciergeEscalationRequestRow {
   urgency: ConciergeEscalationUrgency;
   response_mode: ConciergeEscalationResponseMode;
   allowed_responses_json: string;
+  context_json: string;
   fallback_policy: ConciergeEscalationFallbackPolicy;
   timeout_seconds: number;
   status: ConciergeEscalationStatus;
@@ -61,6 +62,7 @@ export interface CreateConciergeEscalationRequestInput {
   urgency: ConciergeEscalationUrgency;
   responseMode: ConciergeEscalationResponseMode;
   allowedResponses: ConciergeEscalationAllowedResponse[];
+  contextJson?: string;
   fallbackPolicy: ConciergeEscalationFallbackPolicy;
   timeoutSeconds: number;
   status?: ConciergeEscalationStatus;
@@ -110,6 +112,7 @@ export class ConciergeEscalationRequestRepository {
         urgency,
         response_mode,
         allowed_responses_json,
+        context_json,
         fallback_policy,
         timeout_seconds,
         status,
@@ -123,7 +126,7 @@ export class ConciergeEscalationRequestRepository {
         actioned_at,
         cancelled_at,
         escalated_to_call_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.requestId,
       input.spaceId,
@@ -138,6 +141,7 @@ export class ConciergeEscalationRequestRepository {
       input.urgency,
       input.responseMode,
       JSON.stringify(normalizeAllowedResponses(input.allowedResponses)),
+      input.contextJson ?? "{}",
       input.fallbackPolicy,
       normalizeTimeoutSeconds(input.timeoutSeconds),
       input.status ?? "pending",
@@ -171,6 +175,17 @@ export class ConciergeEscalationRequestRepository {
       ORDER BY created_at ASC
       LIMIT ?
     `).all(...normalizedStatuses, normalizeLimit(limit)) as ConciergeEscalationRequestRow[];
+  }
+
+  listBySpace(spaceId: string, limit = 100): ConciergeEscalationRequestRow[] {
+    const normalizedSpaceId = spaceId.trim();
+    if (!normalizedSpaceId) return [];
+    return this.db.query(`
+      SELECT * FROM concierge_escalation_requests
+      WHERE space_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(normalizedSpaceId, normalizeLimit(limit)) as ConciergeEscalationRequestRow[];
   }
 
   update(input: UpdateConciergeEscalationRequestInput): ConciergeEscalationRequestRow | undefined {

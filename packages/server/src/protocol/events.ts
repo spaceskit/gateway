@@ -1,3 +1,5 @@
+import type { WorkItemEvent } from "@spaceskit/core";
+
 export interface AuthResultPayload {
   success: boolean;
   reason?: string;
@@ -47,6 +49,7 @@ export type TypedTurnEventPayload =
   | { kind: "turn.failed"; errorMessage: string; errorCode?: string }
   // Streaming
   | { kind: "reasoning.delta"; text: string }
+  | { kind: "work_item.event"; event: WorkItemEvent; agentId?: string }
   // Tool calls
   | { kind: "tool.started"; toolCallId: string; toolName: string; arguments?: Record<string, unknown>; agentId?: string }
   | { kind: "tool.completed"; toolCallId: string; toolName?: string; result: unknown; isError: boolean; agentId?: string }
@@ -127,7 +130,11 @@ export type ConciergeActionRequestType =
   | "add_agent"
   | "remove_agent"
   | "run_space_prompt"
-  | "draft_scheduler_job";
+  | "draft_scheduler_job"
+  | "open_workbench_board"
+  | "open_workbench_queue_item"
+  | "open_workbench_run"
+  | "open_execution_space";
 
 export interface AppConciergeActionRequestPayload {
   requestId: string;
@@ -148,6 +155,7 @@ export interface ConciergeActionResultPayload {
 export interface ConciergeActionResultAckPayload {
   acknowledged: boolean;
   requestId: string;
+  workbenchRun?: unknown;
 }
 
 export interface SpaceAgentUpdatedEventPayload {

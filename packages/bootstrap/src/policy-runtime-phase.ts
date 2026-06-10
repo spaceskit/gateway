@@ -324,6 +324,10 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
   });
 
   let mainAgentHealthStatus: "healthy" | "repaired" | "fallback" | "degraded" = "healthy";
+  // Honor the model the user picked during onboarding (persisted in gateway_runtime_defaults)
+  // when re-ensuring the main/concierge defaults across restarts, so a freshly reset gateway
+  // restores the chosen model instead of falling back to the heuristic priority order.
+  const storedRuntimeDefaults = state.gatewayRuntimeDefaultsRepo?.get();
   try {
     if (config.mainAgentAutoRepairEnabled) {
       const defaultsResult = await ensureMainDefaults(
@@ -331,7 +335,10 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
         logger,
         state.profileRepo,
         state.spaceAdminService,
-        resolveMainProfileRuntimeSelection(config, state.seededProviders),
+        resolveMainProfileRuntimeSelection(config, state.seededProviders, {
+          providerHint: storedRuntimeDefaults?.main_provider_id,
+          modelId: storedRuntimeDefaults?.main_model_id,
+        }),
         defaultPersonaId,
       );
       if (defaultsResult) {
@@ -362,7 +369,10 @@ export async function initializePolicyRuntimeServices(state: BootstrapState): Pr
           logger,
           state.profileRepo,
           state.spaceAdminService,
-          resolveMainProfileRuntimeSelection(config, state.seededProviders),
+          resolveMainProfileRuntimeSelection(config, state.seededProviders, {
+            providerHint: storedRuntimeDefaults?.concierge_provider_id,
+            modelId: storedRuntimeDefaults?.concierge_model_id,
+          }),
           defaultPersonaId,
         );
         if (conciergeDefaultsResult) {

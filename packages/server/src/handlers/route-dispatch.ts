@@ -12,7 +12,7 @@ import { handleConnectorSubmitInboundEvent, handleGatewayGetConnectorPolicy, han
 import { handleIdentityArchiveAgentDefinition, handleIdentityArchivePersona, handleIdentityCreateAgentDefinition, handleIdentityCreatePersona, handleIdentityGetAgentDefinition, handleIdentityGetPersona, handleIdentityListAgentDefinitions, handleIdentityListPersonas, handleIdentityPreviewCompiledInstructions, handleIdentityPreviewRuntimeSystemPrompt, handleIdentityPreviewSystemPromptMatrix, handleIdentityUpdateAgentDefinition, handleIdentityUpdatePersona, handleSpaceArchiveTemplate, handleSpaceCreateFromTemplate, handleSpaceGetTemplate, handleSpaceListTemplates, handleSpacePreviewTemplate, handleSpaceSaveTemplate } from "./identity-template-handlers.js";
 import { handleGatewayGetPolicy, handleGatewayGrantCapability, handleGatewayKnowledgeBaseDeleteEntry, handleGatewayKnowledgeBaseListEntries, handleGatewayKnowledgeBaseUpsertEntry, handleGatewayListCapabilityGrants, handleGatewayRevokeCapability, handleGatewaySkillDelete, handleGatewaySkillGet, handleGatewaySkillList, handleGatewaySkillUpsert, handleGatewayUpdatePolicy, handleUsageGetSnapshot } from "./gateway-governance-handlers.js";
 import { handleOrchestratorCommand, handleOrchestratorGetCommand, handleSchedulerCreateJob, handleSchedulerDeleteJob, handleSchedulerGetJob, handleSchedulerLinkSpace, handleSchedulerListEvalDefinitions, handleSchedulerListJobs, handleSchedulerListRuns, handleSchedulerRunNow, handleSchedulerUnlinkSpace, handleSchedulerUpdateJob } from "./scheduler-handlers.js";
-import { handleWorkbenchApproveStage, handleWorkbenchCancelRun, handleWorkbenchCreateBatch, handleWorkbenchGetPolicy, handleWorkbenchGetQueueItem, handleWorkbenchGetRun, handleWorkbenchListArtifacts, handleWorkbenchListBatches, handleWorkbenchListQueue, handleWorkbenchListRuns, handleWorkbenchRejectStage, handleWorkbenchRetryRun, handleWorkbenchSetMode, handleWorkbenchStartRun, handleWorkbenchUpdateBatch, handleWorkbenchUpdatePolicy } from "./workbench-handlers.js";
+import { handleWorkbenchApproveStage, handleWorkbenchCancelRun, handleWorkbenchCancelScenarioRun, handleWorkbenchCreateBatch, handleWorkbenchGetPolicy, handleWorkbenchGetQueueItem, handleWorkbenchGetRun, handleWorkbenchGetScenarioRun, handleWorkbenchListArtifacts, handleWorkbenchListBatches, handleWorkbenchListQueue, handleWorkbenchListRuns, handleWorkbenchListScenarioRuns, handleWorkbenchListScenarios, handleWorkbenchRejectStage, handleWorkbenchRetryRun, handleWorkbenchSetMode, handleWorkbenchStartRun, handleWorkbenchStartScenarioRun, handleWorkbenchUpdateBatch, handleWorkbenchUpdatePolicy } from "./workbench-handlers.js";
 import { handleSpaceLink, handleSpacePullSharedContext, handleSpaceShareContext, handleSpaceShareCreateInvite, handleSpaceShareJoin, handleSpaceShareListParticipants, handleSpaceShareRevoke, handleSpaceUnlink } from "./space-sharing-handlers.js";
 import {
   handleSpaceAcceptInsight,
@@ -326,6 +326,16 @@ export async function routeMessage(
       return handleWorkbenchGetPolicy(router.workbenchHandlerContext(), client, msg);
     case MessageTypes.WORKBENCH_UPDATE_POLICY:
       return handleWorkbenchUpdatePolicy(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_LIST_SCENARIOS:
+      return handleWorkbenchListScenarios(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_START_SCENARIO_RUN:
+      return handleWorkbenchStartScenarioRun(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_LIST_SCENARIO_RUNS:
+      return handleWorkbenchListScenarioRuns(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_GET_SCENARIO_RUN:
+      return handleWorkbenchGetScenarioRun(router.workbenchHandlerContext(), client, msg);
+    case MessageTypes.WORKBENCH_CANCEL_SCENARIO_RUN:
+      return handleWorkbenchCancelScenarioRun(router.workbenchHandlerContext(), client, msg);
     case MessageTypes.ORCHESTRATOR_COMMAND:
       return handleOrchestratorCommand(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.ORCHESTRATOR_GET_COMMAND:

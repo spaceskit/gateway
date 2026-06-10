@@ -12,13 +12,19 @@ import {
   type TaskDependencyPayload,
 } from "../protocol.js";
 import type { ClientSession } from "../gateway-server.js";
-import type { ConciergeEscalationService } from "../message-router-gateway-services.js";
+import type {
+  ConciergeEscalationService,
+  ConciergeWorkbenchResolvedRequestService,
+  HarnessConciergePingResolvedRequestService,
+} from "../message-router-gateway-services.js";
 
 export interface RealtimeCollaborationHandlerContext {
   logger: Logger;
   sessionContinuityManager: SessionContinuityManager | null;
   spaceManager: SpaceManager;
   conciergeEscalationService: ConciergeEscalationService | null;
+  conciergeWorkbenchResolvedRequestService: ConciergeWorkbenchResolvedRequestService | null;
+  harnessConciergePingResolvedRequestService: HarnessConciergePingResolvedRequestService | null;
   rememberContinuityIdentity: (client: ClientSession) => string;
   trackClientSpace: (client: ClientSession, spaceId: string) => void;
   resolveSpaceUid: (spaceIdRaw: string) => Promise<string>;
@@ -132,7 +138,7 @@ export async function handleTaskDependency(
 
 export async function handleConciergeActionResult(
   context: RealtimeCollaborationHandlerContext,
-  _client: ClientSession,
+  client: ClientSession,
   msg: GatewayMessage,
 ): Promise<GatewayMessage> {
   const payload = msg.payload as ConciergeActionResultPayload;
@@ -152,6 +158,27 @@ export async function handleConciergeActionResult(
     payload: payload.payload,
     error: payload.error,
   });
+  const workbenchRun = await context.conciergeWorkbenchResolvedRequestService?.handleResolvedRequest({
+    requestId: resolved.requestId,
+    status: resolved.status,
+    principalId: client.publicKey,
+    response: resolved.response,
+    context: resolved.context,
+  }) ?? null;
+  // Clear the underlying harness ping when the user answers a harness-ping
+  // escalation over the realtime path, so it stops re-firing. No-ops for
+  // non-harness escalations; a failed round-trip must not fail the ack.
+  await context.harnessConciergePingResolvedRequestService?.handleResolvedRequest({
+    requestId: resolved.requestId,
+    status: resolved.status,
+    response: resolved.response,
+    context: resolved.context,
+  }).catch((error: unknown) => {
+    context.logger.warn("Harness concierge ping round-trip failed", {
+      requestId: resolved.requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   context.logger.info("Concierge action result received", {
     requestId: payload.requestId,
@@ -159,11 +186,13 @@ export async function handleConciergeActionResult(
     resolvedStatus: resolved.status,
     hasPayload: payload.payload != null,
     error: payload.error,
+    workbenchRunDispatched: workbenchRun != null,
   });
 
   return context.response(msg.id, MessageTypes.CONCIERGE_ACTION_RESULT, {
     acknowledged: true,
     requestId: payload.requestId,
+    ...(workbenchRun ? { workbenchRun } : {}),
   } satisfies ConciergeActionResultAckPayload);
 }
 

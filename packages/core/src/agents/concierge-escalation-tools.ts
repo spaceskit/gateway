@@ -28,6 +28,7 @@ export interface ConciergeEscalationRequestInput {
   allowedResponses?: ConciergeEscalationAllowedResponse[];
   timeoutSeconds?: number;
   fallbackPolicy?: ConciergeEscalationFallbackPolicy;
+  context?: Record<string, unknown>;
   spaceId?: string;
   targetAgentId?: string;
 }
@@ -38,6 +39,7 @@ export interface ConciergeEscalationRequestResult {
   deliveryChannel: ConciergeEscalationDeliveryChannel;
   expiresAt?: string;
   deepLink?: string;
+  context?: Record<string, unknown>;
   response?: Record<string, unknown>;
 }
 
@@ -136,6 +138,12 @@ export function createConciergeEscalationToolDefinitions(): ToolDefinition[] {
             enum: ["none", "urgent_call_after_timeout"],
             description: "Optional fallback if the request is urgent and unanswered.",
           },
+          context: {
+            type: "object",
+            additionalProperties: true,
+            description:
+              "Optional structured metadata for the prompt, such as Workbench runId, queueItemId, intended navigation action, or requested mutation.",
+          },
           spaceId: {
             type: "string",
             description: "Target space ID. Defaults to the current space when omitted.",
@@ -202,6 +210,7 @@ export function createConciergeEscalationToolExecutor(
           allowedResponses: asAllowedResponses(args.allowedResponses),
           timeoutSeconds: asOptionalInteger(args.timeoutSeconds),
           fallbackPolicy: asFallbackPolicy(args.fallbackPolicy),
+          context: asOptionalRecord(args.context),
           spaceId: asOptionalString(args.spaceId) ?? context.spaceId,
           targetAgentId: asOptionalString(args.targetAgentId),
           requestingAgentId: context.agentId,
@@ -330,4 +339,10 @@ function asAllowedResponses(value: unknown): ConciergeEscalationAllowedResponse[
       || entry === "open_app",
   );
   return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
+}
+
+function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

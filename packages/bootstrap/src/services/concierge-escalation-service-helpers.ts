@@ -23,6 +23,7 @@ export function toRequestResult(row: ConciergeEscalationRequestRow): ConciergeEs
     deliveryChannel: row.delivery_channel,
     expiresAt: row.expires_at ?? undefined,
     deepLink: row.deep_link || undefined,
+    context: parseContext(row),
     response: parseResponse(row),
   };
 }
@@ -60,6 +61,16 @@ export function parseResponse(row: ConciergeEscalationRequestRow): Record<string
   try {
     const parsed = JSON.parse(row.response_json);
     return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseContext(row: ConciergeEscalationRequestRow): Record<string, unknown> | undefined {
+  if (!row.context_json?.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(row.context_json);
+    return isRecord(parsed) && Object.keys(parsed).length > 0 ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -138,6 +149,15 @@ export function normalizeFallbackPolicy(
   value: ConciergeEscalationRequestInput["fallbackPolicy"],
 ): ConciergeEscalationFallbackPolicy {
   return value === "urgent_call_after_timeout" ? value : "none";
+}
+
+export function normalizeContext(
+  value: ConciergeEscalationRequestInput["context"],
+): Record<string, unknown> | undefined {
+  if (!isRecord(value) || Array.isArray(value) || Object.keys(value).length === 0) {
+    return undefined;
+  }
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 export function normalizeTimeoutSeconds(

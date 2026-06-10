@@ -17,10 +17,14 @@ import {
   createConciergeEscalationToolDefinitions,
   createConciergeEscalationToolExecutor,
   createConciergeEscalationToolFilter,
+  createConciergeWorkbenchToolDefinitions,
+  createConciergeWorkbenchToolExecutor,
+  createConciergeWorkbenchToolFilter,
   createPlatformToolExecutor,
   createPlatformToolFilter,
   DEFAULT_AGENT_SCOPE,
   isConciergeEscalationTool,
+  isConciergeWorkbenchTool,
   isPlatformTool,
   type AgentSecurityScope,
   type ConfigChangeEvent,
@@ -92,11 +96,32 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
             ...(input.payload ?? {}),
           },
         });
+        const workbenchRun = await state.conciergeWorkbenchMonitorService?.handleResolvedRequest({
+          requestId: status.requestId,
+          status: status.status,
+          principalId: input.principalId,
+          response: status.response,
+          context: status.context,
+        });
+        // Clear the underlying harness ping when the user answers a harness-ping
+        // escalation, so it stops re-firing. No-ops for non-harness escalations.
+        await state.harnessConciergePingerService?.handleResolvedRequest({
+          requestId: status.requestId,
+          status: status.status,
+          response: status.response,
+          context: status.context,
+        }).catch((error: unknown) => {
+          logger.warn("Harness concierge ping round-trip failed", {
+            requestId: status.requestId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         return {
           requestId: status.requestId,
           status: status.status,
           deliveryChannel: status.deliveryChannel,
           response: status.response,
+          ...(workbenchRun ? { workbenchRun } : {}),
         };
       }
       : undefined,
@@ -121,6 +146,10 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
   const conciergeToolDefinitions = conciergeEscalationService
     ? createConciergeEscalationToolDefinitions()
     : [];
+  const conciergeWorkbenchToolsEnabled = Bun.env.SPACESKIT_ENABLE_CONCIERGE_WORKBENCH_TOOLS === "true";
+  const conciergeWorkbenchToolDefinitions = conciergeWorkbenchToolsEnabled
+    ? createConciergeWorkbenchToolDefinitions()
+    : [];
   const gatewayStartedAt = new Date();
   const conciergeToolExecutor = conciergeEscalationService
     ? createConciergeEscalationToolExecutor({
@@ -132,11 +161,19 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
     spaceAdminService: state.spaceAdminService,
     profileRepo: state.profileRepo ?? null,
   });
+  const conciergeWorkbenchToolFilter = createConciergeWorkbenchToolFilter({
+    spaceAdminService: state.spaceAdminService,
+    profileRepo: state.profileRepo ?? null,
+  });
   const toolExecutor = new DefaultToolExecutor({
     capabilityRegistry: capabilities,
     eventBus,
     middleware: state.middleware,
-    injectedToolDefinitions: [...platformToolDefinitions, ...conciergeToolDefinitions],
+    injectedToolDefinitions: [
+      ...platformToolDefinitions,
+      ...conciergeToolDefinitions,
+      ...conciergeWorkbenchToolDefinitions,
+    ],
     injectedToolExecutor: async (name, args, ctx) => {
       if (isPlatformTool(name)) {
         const executor = createPlatformToolExecutor({
@@ -154,6 +191,13 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
       if (isConciergeEscalationTool(name) && conciergeToolExecutor) {
         return conciergeToolExecutor(name, args, ctx);
       }
+      if (isConciergeWorkbenchTool(name)) {
+        const executor = createConciergeWorkbenchToolExecutor({
+          workbenchService: state.workbenchService ?? null,
+          confirmationService: conciergeEscalationService,
+        });
+        return executor(name, args, ctx);
+      }
       return {
         toolCallId: `${name}:${ctx.turnId}`,
         result: { error: `Unsupported injected tool: ${name}` },
@@ -167,11 +211,17 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
       if (toolName && isConciergeEscalationTool(toolName)) {
         return conciergeToolFilter(spaceId, agentId);
       }
-      const [platformAllowed, conciergeAllowed] = await Promise.all([
+      if (toolName && isConciergeWorkbenchTool(toolName)) {
+        return conciergeWorkbenchToolsEnabled && conciergeWorkbenchToolFilter(spaceId, agentId);
+      }
+      const [platformAllowed, conciergeAllowed, conciergeWorkbenchAllowed] = await Promise.all([
         platformToolFilter(spaceId, agentId),
         conciergeToolFilter(spaceId, agentId),
+        conciergeWorkbenchToolsEnabled
+          ? conciergeWorkbenchToolFilter(spaceId, agentId)
+          : Promise.resolve(false),
       ]);
-      return platformAllowed || conciergeAllowed;
+      return platformAllowed || conciergeAllowed || conciergeWorkbenchAllowed;
     },
     evaluateInjectedToolAccess: async (input) => {
       if (!state.toolAccessPolicyService) {

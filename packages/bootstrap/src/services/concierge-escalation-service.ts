@@ -26,6 +26,7 @@ import {
   buildUserMessage,
   isRecord,
   normalizeAllowedResponses,
+  normalizeContext,
   normalizeFallbackPolicy,
   normalizeOptional,
   normalizeRequired,
@@ -35,6 +36,7 @@ import {
   normalizeUnknownString,
   normalizeUrgency,
   parseAllowedResponses,
+  parseContext,
   parseDate,
   toRequestResult,
   toStatusResult,
@@ -49,6 +51,21 @@ const FINAL_STATUSES = new Set<ConciergeEscalationStatus>([
   "escalated_to_call",
   "cancelled",
 ]);
+const ACTIVE_PROMPT_STATUSES = new Set<ConciergeEscalationStatus>([
+  "pending",
+  "notified",
+]);
+const DEFAULT_CONTEXT_LOOKUP_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+type ComparableContextValue = string | number | boolean;
+
+export interface ConciergeEscalationContextLookupInput {
+  spaceId: string;
+  context: Record<string, unknown>;
+  now?: Date;
+  cooldownMs?: number;
+  limit?: number;
+}
 
 export interface ConciergeEscalationResolutionInput {
   requestId: string;
@@ -92,6 +109,7 @@ export class ConciergeEscalationService {
     const urgency = normalizeUrgency(input.urgency);
     const responseMode = normalizeResponseMode(input.responseMode, DEFAULT_RESPONSE_MODE);
     const allowedResponses = normalizeAllowedResponses(input.allowedResponses);
+    const context = normalizeContext(input.context);
     const fallbackPolicy = normalizeFallbackPolicy(input.fallbackPolicy);
     if (fallbackPolicy === "urgent_call_after_timeout" && urgency !== "urgent") {
       throw new Error("fallbackPolicy urgent_call_after_timeout requires urgency=urgent");
@@ -116,6 +134,7 @@ export class ConciergeEscalationService {
       urgency,
       responseMode,
       allowedResponses,
+      contextJson: JSON.stringify(context ?? {}),
       fallbackPolicy,
       timeoutSeconds,
       status: "pending",
@@ -137,6 +156,7 @@ export class ConciergeEscalationService {
           userMessage,
           deepLink,
           allowedResponses,
+          context,
           fallbackPolicy,
           expiresAt,
           createdAt: now,
@@ -283,6 +303,25 @@ export class ConciergeEscalationService {
     return toStatusResult(updated);
   }
 
+  async findRecentRequestByContext(
+    input: ConciergeEscalationContextLookupInput,
+  ): Promise<ConciergeEscalationStatusResult | undefined> {
+    const spaceId = normalizeOptional(input.spaceId);
+    if (!spaceId) return undefined;
+    const queryContext = normalizeComparableContext(input.context);
+    if (Object.keys(queryContext).length === 0) return undefined;
+
+    const now = input.now ?? this.now();
+    const cooldownMs = normalizeCooldownMs(input.cooldownMs);
+    const rows = this.options.repository.listBySpace(spaceId, input.limit ?? 250);
+    const matchingRow = rows.find((row) => (
+      isDuplicatePromptCandidate(row, now, cooldownMs)
+      && contextContainsSubset(parseContext(row), queryContext)
+    ));
+
+    return matchingRow ? toStatusResult(matchingRow) : undefined;
+  }
+
   async runMaintenance(limit = 100): Promise<void> {
     const now = this.now();
     const rows = this.options.repository.listByStatuses(["pending", "notified"], limit);
@@ -379,6 +418,7 @@ export class ConciergeEscalationService {
     userMessage: string;
     deepLink: string;
     allowedResponses: ConciergeEscalationAllowedResponse[];
+    context?: Record<string, unknown>;
     fallbackPolicy: ConciergeEscalationFallbackPolicy;
     expiresAt: Date;
     createdAt: Date;
@@ -393,6 +433,7 @@ export class ConciergeEscalationService {
         requestId: input.requestId,
         escalationType: "concierge_user_input",
         allowedResponses: input.allowedResponses,
+        context: input.context,
         deepLink: input.deepLink,
         fallbackPolicy: input.fallbackPolicy,
         expiresAt: input.expiresAt.toISOString(),
@@ -412,4 +453,64 @@ export class ConciergeEscalationService {
     }
     return row;
   }
+}
+
+function isDuplicatePromptCandidate(
+  row: ConciergeEscalationRequestRow,
+  now: Date,
+  cooldownMs: number,
+): boolean {
+  if (row.status === "cancelled") return false;
+  const expiresAt = parseDate(row.expires_at);
+  if (
+    ACTIVE_PROMPT_STATUSES.has(row.status)
+    && (!expiresAt || expiresAt.getTime() > now.getTime())
+  ) {
+    return true;
+  }
+
+  const promptedAt = parseDate(row.notified_at) ?? parseDate(row.created_at);
+  if (!promptedAt) return false;
+  return now.getTime() - promptedAt.getTime() < cooldownMs;
+}
+
+function normalizeComparableContext(
+  value: Record<string, unknown>,
+): Record<string, ComparableContextValue> {
+  const normalized: Record<string, ComparableContextValue> = {};
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    const comparable = normalizeComparableValue(rawValue);
+    if (comparable === undefined) continue;
+    normalized[key] = comparable;
+  }
+  return normalized;
+}
+
+function contextContainsSubset(
+  context: Record<string, unknown> | undefined,
+  subset: Record<string, ComparableContextValue>,
+): boolean {
+  if (!context) return false;
+  return Object.entries(subset).every(([key, expected]) => (
+    normalizeComparableValue(context[key]) === expected
+  ));
+}
+
+function normalizeComparableValue(value: unknown): ComparableContextValue | undefined {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "boolean") return value;
+  return undefined;
+}
+
+function normalizeCooldownMs(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_CONTEXT_LOOKUP_COOLDOWN_MS;
+  }
+  return Math.max(0, Math.floor(value));
 }

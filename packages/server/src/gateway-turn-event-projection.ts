@@ -1,3 +1,4 @@
+import type { WorkItemEvent } from "@spaceskit/core";
 import type {
   AgentActivityState,
   TurnMetadata,
@@ -109,6 +110,11 @@ export function buildTypedTurnPayload(input: BuildTypedTurnPayloadInput): TypedT
     case "reasoning_delta": {
       const text = typeof eventRecord.text === "string" ? eventRecord.text : "";
       return { kind: "reasoning.delta", text };
+    }
+
+    case "work_item_event": {
+      const event = normalizeWorkItemEvent(eventRecord.workItemEvent);
+      return event ? { kind: "work_item.event", event, agentId } : undefined;
     }
 
     case "tool_call_start": {
@@ -313,6 +319,28 @@ export function coerceBoolean(value: unknown, fallback: boolean): boolean {
     }
   }
   return fallback;
+}
+
+function normalizeWorkItemEvent(value: unknown): WorkItemEvent | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const event = typeof record.event === "string" ? record.event : "";
+  const workItem = record.workItem;
+  if (
+    (event !== "started" && event !== "updated" && event !== "delta" && event !== "completed" && event !== "failed")
+    || !workItem
+    || typeof workItem !== "object"
+    || Array.isArray(workItem)
+  ) {
+    return undefined;
+  }
+  const workItemRecord = workItem as Record<string, unknown>;
+  if (typeof workItemRecord.id !== "string" || typeof workItemRecord.kind !== "string") {
+    return undefined;
+  }
+  return record as unknown as WorkItemEvent;
 }
 
 export function sanitizeTurnLifecycleValue(value: unknown, keyPath: string[] = []): unknown {
