@@ -20,6 +20,9 @@ packages/contracts/src/generated/
 # Workbench reports (generated)
 workbench/reports/
 
+# Workbench runner runtime output (generated)
+.spaceskit-workbench/
+
 # Private / non-open-source files (do not commit)
 _private/
 

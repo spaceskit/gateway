@@ -30,6 +30,7 @@ export function makeRouter(
   spaceQuotaService?: Record<string, unknown>,
   broadcastToSpace?: (spaceUid: string, msg: GatewayMessage) => void,
   conciergeEscalationService?: Record<string, unknown>,
+  conciergeWorkbenchResolvedRequestService?: Record<string, unknown>,
 ): MessageRouter {
   const logger: any = {
     debug: () => {},
@@ -59,6 +60,7 @@ export function makeRouter(
     } as any,
     logger,
     conciergeEscalationService: conciergeEscalationService as any,
+    conciergeWorkbenchResolvedRequestService: conciergeWorkbenchResolvedRequestService as any,
     broadcastToSpace,
   });
 }
