@@ -11,6 +11,14 @@ export type {
   GenerateOptions,
   GenerateResult,
   StreamChunk,
+  WorkItem,
+  WorkItemArtifact,
+  WorkItemBody,
+  WorkItemEvent,
+  WorkItemKind,
+  WorkItemPlan,
+  WorkItemPlanStep,
+  WorkItemStatus,
   CliExecutionMode,
   CliExecutionObserver,
   CliExecutionObserverEvent,
@@ -50,8 +58,12 @@ export {
   isCapabilityTier,
   resolveTierProviderHints,
 } from "./agents/capability-tiers.js";
-export type { PromptBudgetClass } from "./agents/model-capability-registry.js";
-export { inferContextWindow } from "./agents/model-capability-registry.js";
+export type { KnownModelTier, PromptBudgetClass } from "./agents/model-capability-registry.js";
+export {
+  inferContextWindow,
+  inferKnownModelTier,
+  inferModelFreshnessScore,
+} from "./agents/model-capability-registry.js";
 export type { CliLaunchSnapshot, CliLaunchSnapshotSource } from "./agents/cli-launch-snapshot.js";
 export { resolveCliLaunchSnapshot } from "./agents/cli-launch-snapshot.js";
 export type { TurnAccessMode as TurnRequestAccessMode } from "./agents/model-provider.js";
@@ -300,6 +312,19 @@ export type { ExternalMcpAgentRuntimeOptions } from "./agents/external-mcp-agent
 
 export { DefaultToolExecutor } from "./agents/default-tool-executor.js";
 export type { DefaultToolExecutorOptions, CapabilityError } from "./agents/default-tool-executor.js";
+export {
+  CONCIERGE_OPERATIONS_SKILL_ID,
+  createConciergeWorkbenchToolDefinitions,
+  createConciergeWorkbenchToolExecutor,
+  createConciergeWorkbenchToolFilter,
+  isConciergeWorkbenchTool,
+} from "./agents/concierge-workbench-tools.js";
+export type {
+  ConciergeWorkbenchConfirmationStatus,
+  ConciergeWorkbenchToolConfig,
+  ConciergeWorkbenchToolExecutionContext,
+  ConciergeWorkbenchToolName,
+} from "./agents/concierge-workbench-tools.js";
 
 // Space manager
 export { SpaceManager } from "./spaces/space-manager.js";

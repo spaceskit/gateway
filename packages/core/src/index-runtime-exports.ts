@@ -134,6 +134,19 @@ export type {
   ConciergeEscalationToolExecutionContext,
   ConciergeEscalationUrgency,
 } from "./agents/concierge-escalation-tools.js";
+export {
+  CONCIERGE_OPERATIONS_SKILL_ID,
+  createConciergeWorkbenchToolDefinitions,
+  createConciergeWorkbenchToolExecutor,
+  createConciergeWorkbenchToolFilter,
+  isConciergeWorkbenchTool,
+} from "./agents/concierge-workbench-tools.js";
+export type {
+  ConciergeWorkbenchConfirmationStatus,
+  ConciergeWorkbenchToolConfig,
+  ConciergeWorkbenchToolExecutionContext,
+  ConciergeWorkbenchToolName,
+} from "./agents/concierge-workbench-tools.js";
 
 // Model Router
 export { ModelRouter } from "./agents/model-router.js";
@@ -167,10 +180,6 @@ export type {
   PluginSystemOptions,
   PluginRegistryEntry,
 } from "./plugins/index.js";
-
-// Multi-Gateway Sync
-export { GatewaySync } from "./sync/index.js";
-export type { SyncPeer, SyncMessage, GatewaySyncOptions } from "./sync/index.js";
 
 // Onboarding
 export type {
