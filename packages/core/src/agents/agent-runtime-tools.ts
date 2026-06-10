@@ -85,7 +85,7 @@ function buildShellToolGuidance(toolNames: string[]): string {
 }
 
 export function buildToolUsageGuidance(toolDefs: ToolDefinition[]): string {
-  const toolList = toolDefs
+  const toolList = prioritizeToolDefsForPrompt(toolDefs)
     .map((tool) => tool.name.trim())
     .filter((toolName) => toolName.length > 0)
     .slice(0, 40);
@@ -119,7 +119,7 @@ export function hasInjectedToolGuidance(messages: ModelMessage[]): boolean {
  * tool calls from the response in this stopgap — full mediated loop is US-57.
  */
 export function buildMediatedToolPrompt(toolDefs: ToolDefinition[]): string {
-  const toolDescriptions = toolDefs
+  const toolDescriptions = prioritizeToolDefsForPrompt(toolDefs)
     .slice(0, 40)
     .map((tool) => {
       const name = tool.name.trim();
@@ -149,6 +149,23 @@ ${toolDescriptions}
 ${buildShellToolGuidance(toolDefs.map((t) => t.name.trim()))}- Do not claim you lack access to these tools.
 - Emit the fenced blocks only when you are actually requesting tool execution.
 - The gateway will handle tool execution and surface results or approval prompts as needed.`;
+}
+
+function prioritizeToolDefsForPrompt(toolDefs: ToolDefinition[]): ToolDefinition[] {
+  return toolDefs
+    .map((tool, index) => ({ tool, index }))
+    .sort((lhs, rhs) => {
+      const priorityDelta = toolPromptPriority(lhs.tool.name) - toolPromptPriority(rhs.tool.name);
+      return priorityDelta === 0 ? lhs.index - rhs.index : priorityDelta;
+    })
+    .map((entry) => entry.tool);
+}
+
+function toolPromptPriority(toolName: string): number {
+  if (toolName.startsWith("workbench.")) return 0;
+  if (toolName.startsWith("concierge.")) return 1;
+  if (toolName.startsWith("platform.")) return 2;
+  return 3;
 }
 
 export function shouldSuppressInjectedToolsForPrompt(messages: ModelMessage[]): boolean {

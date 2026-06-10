@@ -195,6 +195,13 @@ async function tryStreamLlmCall(
         continue;
       }
 
+      if (chunk.type === "work_item_event") {
+        if (chunk.workItemEvent) {
+          emitEvent({ type: "work_item_event", workItemEvent: chunk.workItemEvent });
+        }
+        continue;
+      }
+
       if (chunk.type === "state_changed") {
         const state = normalizeStreamedAgentState(chunk.state);
         if (!state) continue;

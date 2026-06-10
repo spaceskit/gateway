@@ -18,9 +18,14 @@ export function parseProviderSessionHandle(value: string | null | undefined): Pr
       };
     }
     if (record.type === "codex_app_server_thread" && typeof record.threadId === "string" && record.threadId.trim()) {
+      const gatewayToolBridgeFingerprint = typeof record.gatewayToolBridgeFingerprint === "string"
+        && record.gatewayToolBridgeFingerprint.trim()
+        ? record.gatewayToolBridgeFingerprint.trim()
+        : undefined;
       return {
         type: "codex_app_server_thread",
         threadId: record.threadId,
+        ...(gatewayToolBridgeFingerprint ? { gatewayToolBridgeFingerprint } : {}),
       };
     }
   } catch {

@@ -35,6 +35,15 @@ describe("resolveModelCapabilities", () => {
       supportsPublicReasoning: false,
       accessModeStrategy: "executor_cli",
     });
+    expect(resolveModelCapabilities("antigravity")).toMatchObject({
+      executionClass: "executor",
+      toolSupportMode: "mediated",
+      supportsStreaming: true,
+      supportsActivityStreaming: false,
+      supportsPublicReasoning: false,
+      accessModeStrategy: "executor_cli",
+      isCliExecutor: true,
+    });
   });
 
   test("reports thinking and reasoning capability flags per provider", () => {
@@ -72,6 +81,11 @@ describe("resolveModelCapabilities", () => {
     expect(resolveModelCapabilities("codex")).toMatchObject({
       supportsThinking: false,
       supportsReasoningEffort: true,
+    });
+    // Antigravity CLI model selection/thinking controls live inside the CLI session.
+    expect(resolveModelCapabilities("antigravity")).toMatchObject({
+      supportsThinking: false,
+      supportsReasoningEffort: false,
     });
     // Local runtimes don't support either
     expect(resolveModelCapabilities("ollama")).toMatchObject({
@@ -116,10 +130,14 @@ describe("inferContextWindow", () => {
     expect(inferContextWindow("codex-app-server")).toBe(200_000);
     expect(inferContextWindow("codex")).toBe(200_000);
     expect(inferContextWindow("gemini")).toBe(200_000);
+    expect(inferContextWindow("antigravity")).toBe(200_000);
     expect(inferContextWindow("apple")).toBe(4_096);
   });
 
   test("returns per-model context window for bare model IDs", () => {
+    expect(inferContextWindow("codex-app-server", "gpt-5.5")).toBe(1_050_000);
+    expect(inferContextWindow("codex-app-server", "gpt-5.4")).toBe(1_050_000);
+    expect(inferContextWindow("codex-app-server", "gpt-5.4-mini")).toBe(400_000);
     expect(inferContextWindow("codex", "gpt-5.1-codex")).toBe(1_048_576);
     expect(inferContextWindow("codex", "gpt-5.2-codex-mini")).toBe(1_048_576);
     expect(inferContextWindow("gemini", "gemini-2.5-flash")).toBe(1_000_000);

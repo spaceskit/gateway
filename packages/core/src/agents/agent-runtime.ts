@@ -23,6 +23,7 @@ import type {
   ProviderSessionHandle,
   TranscriptVisibility,
   StreamKind,
+  WorkItemEvent,
 } from "./model-provider.js";
 import type { CapabilityExecutionOrigin } from "../capabilities/registry.js";
 import type { CliLaunchSnapshot } from "./cli-launch-snapshot.js";
@@ -166,6 +167,7 @@ export type TurnEvent =
     streamKind?: StreamKind;
   }
   | { type: "reasoning_delta"; text: string; summarized?: boolean }
+  | { type: "work_item_event"; workItemEvent: WorkItemEvent }
   | { type: "tool_call_start"; toolCall: ToolCall }
   | { type: "tool_result"; result: ToolResult }
   | {

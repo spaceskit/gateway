@@ -71,7 +71,12 @@ export function normalizeProviderSessionHandle(value?: ProviderSessionHandle): P
     return value;
   }
   if (value.type === "codex_app_server_thread" && normalizeOptionalString(value.threadId)) {
-    return value;
+    const gatewayToolBridgeFingerprint = normalizeOptionalString(value.gatewayToolBridgeFingerprint);
+    return {
+      type: "codex_app_server_thread",
+      threadId: value.threadId,
+      ...(gatewayToolBridgeFingerprint ? { gatewayToolBridgeFingerprint } : {}),
+    };
   }
   return undefined;
 }

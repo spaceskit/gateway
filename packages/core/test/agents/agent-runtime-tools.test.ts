@@ -53,6 +53,41 @@ describe("agent runtime tool guidance", () => {
     expect(prompt).toContain("call 'calendar.listCalendars' first when calendarId is unknown");
   });
 
+  test("prioritizes concierge Workbench tools when guidance is truncated", () => {
+    const crowdedToolDefs: ToolDefinition[] = [
+      ...Array.from({ length: 45 }, (_, index) => ({
+        name: `connector.tool${index.toString().padStart(2, "0")}`,
+        description: "Connector tool used to crowd the prompt.",
+        inputSchema: { type: "object", properties: {} },
+      })),
+      {
+        name: "workbench.list_queue",
+        description: "List active Workbench queue items.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "workbench.start_run",
+        description: "Start a Workbench run after confirmation.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "concierge.request_user_input",
+        description: "Ask the user for structured confirmation.",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ];
+
+    const nativeGuidance = buildToolUsageGuidance(crowdedToolDefs);
+    const mediatedPrompt = buildMediatedToolPrompt(crowdedToolDefs);
+
+    expect(nativeGuidance).toContain("workbench.list_queue");
+    expect(nativeGuidance).toContain("workbench.start_run");
+    expect(nativeGuidance).toContain("concierge.request_user_input");
+    expect(mediatedPrompt).toContain("workbench.list_queue");
+    expect(mediatedPrompt).toContain("workbench.start_run");
+    expect(mediatedPrompt).toContain("concierge.request_user_input");
+  });
+
   test("parses fenced mediated tool calls and filters unknown tools", () => {
     const toolCalls = parseFencedToolCalls(`
 Thinking.

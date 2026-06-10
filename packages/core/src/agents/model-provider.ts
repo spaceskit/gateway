@@ -73,7 +73,7 @@ export type StreamKind = "assistant_output" | "provider_client";
  */
 export type ProviderSessionHandle =
   | { type: "openai_response"; previousResponseId: string }
-  | { type: "codex_app_server_thread"; threadId: string }
+  | { type: "codex_app_server_thread"; threadId: string; gatewayToolBridgeFingerprint?: string }
   | { type: "none" };
 
 export interface GatewayToolBridgeConfig {
@@ -136,10 +136,75 @@ export interface GenerateResult {
   feedbackRequest?: ProviderFeedbackRequest;
 }
 
+export type WorkItemKind =
+  | "plan"
+  | "command"
+  | "fileChange"
+  | "toolCall"
+  | "collabAgent"
+  | "webSearch"
+  | "image"
+  | "reasoning"
+  | "message"
+  | "artifact"
+  | "status";
+
+export type WorkItemStatus =
+  | "pending"
+  | "inProgress"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface WorkItemBody {
+  mimeType: string;
+  text?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface WorkItemPlanStep {
+  step: string;
+  status: "pending" | "inProgress" | "completed";
+}
+
+export interface WorkItemPlan {
+  explanation?: string;
+  steps: WorkItemPlanStep[];
+}
+
+export interface WorkItemArtifact {
+  id?: string;
+  title?: string;
+  path?: string;
+  uri?: string;
+  mimeType?: string;
+  previewText?: string;
+  body?: WorkItemBody;
+}
+
+export interface WorkItem {
+  id: string;
+  kind: WorkItemKind;
+  status?: WorkItemStatus;
+  title?: string;
+  summary?: string;
+  body?: WorkItemBody;
+  plan?: WorkItemPlan;
+  artifact?: WorkItemArtifact;
+  payload?: Record<string, unknown>;
+}
+
+export interface WorkItemEvent {
+  event: "started" | "updated" | "delta" | "completed" | "failed";
+  workItem: WorkItem;
+  delta?: WorkItemBody;
+}
+
 export interface StreamChunk {
   type:
     | "text_delta"
     | "reasoning_delta"
+    | "work_item_event"
     | "state_changed"
     | "tool_call_start"
     | "tool_call_delta"
@@ -162,6 +227,7 @@ export interface StreamChunk {
   retryAt?: string;
   providerSessionHandle?: ProviderSessionHandle;
   feedbackRequest?: ProviderFeedbackRequest;
+  workItemEvent?: WorkItemEvent;
   usage?: TokenUsage;
   finishReason?: FinishReason;
 }

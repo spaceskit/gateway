@@ -11,6 +11,7 @@
 export type PromptBudgetClass = "full" | "compact" | "minimal";
 export type RuntimeExecutionClass = "cloud" | "executor" | "local_runtime";
 export type RuntimeAccessModeStrategy = "gateway_owned" | "executor_cli";
+export type KnownModelTier = "fast" | "balanced" | "smartest";
 
 export interface ModelCapabilities {
   /** Estimated context window in tokens. */
@@ -33,7 +34,7 @@ export interface ModelCapabilities {
   accessModeStrategy: RuntimeAccessModeStrategy;
   /** Determines how much prompt content to include. */
   promptBudgetClass: PromptBudgetClass;
-  /** True for CLI-based execution providers (claude, codex, gemini). */
+  /** True for CLI-based execution providers (antigravity, claude, codex, gemini). */
   isCliExecutor: boolean;
 }
 
@@ -41,7 +42,7 @@ export interface ModelCapabilities {
 // Provider defaults
 // ---------------------------------------------------------------------------
 
-const CLI_EXECUTOR_PROVIDERS = new Set(["claude", "codex", "gemini"]);
+const CLI_EXECUTOR_PROVIDERS = new Set(["antigravity", "claude", "codex", "gemini"]);
 
 interface ProviderDefaults {
   contextWindow: number;
@@ -71,6 +72,7 @@ const PROVIDER_DEFAULTS: Record<string, ProviderDefaults> = {
   claude: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
   codex: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: false, supportsReasoningEffort: true, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
   gemini: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: false, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
+  antigravity: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: false, supportsPublicReasoning: false, supportsThinking: false, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -91,7 +93,10 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-3-5-haiku-20241022": 200_000,
   "claude-3-opus-20240229": 200_000,
   "claude-3-haiku-20240307": 200_000,
-  // OpenAI / Codex — GPT-5 family (1M context)
+  // OpenAI / Codex — GPT-5 family
+  "gpt-5.5": 1_050_000,
+  "gpt-5.4": 1_050_000,
+  "gpt-5.4-mini": 400_000,
   "gpt-5.2-codex": 1_048_576,
   "gpt-5.2-codex-max": 1_048_576,
   "gpt-5.2-codex-mini": 1_048_576,
@@ -108,6 +113,13 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-2.5-pro": 1_000_000,
   "gemini-2.5-flash": 1_000_000,
 };
+
+const FAST_MODEL_SUFFIXES = ["mini", "nano"] as const;
+
+interface GptVersion {
+  major: number;
+  minor: number;
+}
 
 const FALLBACK_DEFAULTS: ProviderDefaults = {
   contextWindow: 128_000,
@@ -159,7 +171,7 @@ export function resolveModelCapabilities(
   const contextWindow =
     contextWindowOverride !== undefined && Number.isFinite(contextWindowOverride) && contextWindowOverride > 0
       ? contextWindowOverride
-      : (modelId ? MODEL_CONTEXT_WINDOWS[modelId.trim().toLowerCase()] : undefined)
+      : (modelId ? lookupModelContextWindow(modelId) : undefined)
         ?? defaults.contextWindow;
 
   return {
@@ -192,6 +204,7 @@ const STATIC_CONTEXT_WINDOW_PROVIDERS: Record<string, number> = {
   claude: 200_000,
   codex: 200_000,
   gemini: 200_000,
+  antigravity: 200_000,
 };
 
 export function inferContextWindow(providerId: string, modelId?: string): number | undefined {
@@ -199,10 +212,80 @@ export function inferContextWindow(providerId: string, modelId?: string): number
   if (!normalized) return undefined;
   // Model-specific override takes precedence — strip provider prefix if present
   if (modelId) {
-    const trimmed = modelId.trim().toLowerCase();
-    const modelContext = MODEL_CONTEXT_WINDOWS[trimmed]
-      ?? MODEL_CONTEXT_WINDOWS[trimmed.replace(/^[^/]+\//, "")];
+    const modelContext = lookupModelContextWindow(modelId);
     if (modelContext !== undefined) return modelContext;
   }
   return STATIC_CONTEXT_WINDOW_PROVIDERS[normalized];
+}
+
+export function inferKnownModelTier(modelId: string): KnownModelTier | undefined {
+  const normalized = normalizeModelIdForMetadata(modelId);
+  const gptVersion = parseGptVersion(normalized);
+  if (!gptVersion) {
+    return undefined;
+  }
+
+  if (hasFastModelSuffix(normalized)) {
+    return "fast";
+  }
+  if (gptVersion.major === 5 && gptVersion.minor >= 5) {
+    return "smartest";
+  }
+  if (gptVersion.major === 5 && gptVersion.minor === 4) {
+    return "balanced";
+  }
+  return undefined;
+}
+
+export function inferModelFreshnessScore(modelId: string): number | undefined {
+  const gptVersion = parseGptVersion(normalizeModelIdForMetadata(modelId));
+  if (!gptVersion) {
+    return undefined;
+  }
+  return (gptVersion.major * 1_000) + gptVersion.minor;
+}
+
+function lookupModelContextWindow(modelId: string): number | undefined {
+  for (const candidate of modelIdMetadataCandidates(modelId)) {
+    const contextWindow = MODEL_CONTEXT_WINDOWS[candidate];
+    if (contextWindow !== undefined) {
+      return contextWindow;
+    }
+  }
+  return undefined;
+}
+
+function modelIdMetadataCandidates(modelId: string): string[] {
+  const trimmed = modelId.trim().toLowerCase();
+  if (!trimmed) {
+    return [];
+  }
+  const candidates = [trimmed];
+  if (trimmed.includes("/")) {
+    candidates.push(trimmed.replace(/^[^/]+\//, ""));
+    candidates.push(trimmed.split("/").at(-1) ?? trimmed);
+  }
+  return [...new Set(candidates)];
+}
+
+function normalizeModelIdForMetadata(modelId: string): string {
+  return modelIdMetadataCandidates(modelId).at(-1) ?? "";
+}
+
+function parseGptVersion(modelId: string): GptVersion | undefined {
+  const match = modelId.match(/^gpt-(\d+)(?:\.(\d+))?(?:$|[-.])/);
+  if (!match) {
+    return undefined;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? "0");
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) {
+    return undefined;
+  }
+  return { major, minor };
+}
+
+function hasFastModelSuffix(modelId: string): boolean {
+  const suffixes = modelId.split("-").slice(2);
+  return suffixes.some((suffix) => FAST_MODEL_SUFFIXES.includes(suffix as (typeof FAST_MODEL_SUFFIXES)[number]));
 }
