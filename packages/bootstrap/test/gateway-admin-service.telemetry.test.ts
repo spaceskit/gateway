@@ -138,7 +138,11 @@ describe("DefaultGatewayAdminService telemetry", () => {
 
       expect(telemetry).toEqual([]);
       expect(received.providerIds).toEqual(["openrouter", "openai"]);
-      expect(received.fallbackTelemetry.map((entry: any) => entry.providerId)).toEqual(["openrouter", "openai"]);
+      // Fallback is now passed as a lazy thunk so warm-cache reads can skip the
+      // expensive live probes entirely.
+      expect(typeof received.fallbackTelemetryProvider).toBe("function");
+      const resolvedFallback = await received.fallbackTelemetryProvider();
+      expect(resolvedFallback.map((entry: any) => entry.providerId)).toEqual(["openrouter", "openai"]);
     } finally {
       ctx.db.close();
       ctx.restoreEnv();
@@ -340,6 +344,29 @@ describe("DefaultGatewayAdminService telemetry", () => {
       expect(telemetry[0].windows[0].window).toBe("primary");
       expect(telemetry[0].windows[1].window).toBe("secondary");
       expect(telemetry[0].accountLabel).toContain("pro");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("resolves Apple Foundation as available with no windows and no probe", async () => {
+    const ctx = createContext({
+      enableAppleFoundationProvider: true,
+      appleFoundationAvailability: { available: true, reason: "available" },
+    });
+    try {
+      ctx.admin.setProviderConfig({
+        providerId: "apple",
+        model: "apple/apple-on-device",
+      });
+
+      const telemetry = await ctx.admin.getProviderTelemetry({ providerId: "apple" });
+      expect(telemetry.length).toBe(1);
+      expect(telemetry[0].providerId).toBe("apple");
+      expect(telemetry[0].status).toBe("available");
+      expect(telemetry[0].windows).toEqual([]);
+      expect(telemetry[0].message).toContain("no usage limits");
     } finally {
       ctx.db.close();
       ctx.restoreEnv();

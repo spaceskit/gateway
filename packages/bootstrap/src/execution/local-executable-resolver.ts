@@ -36,17 +36,18 @@ export interface ResolvedExecutable {
 type SpawnSyncFn = typeof spawnSync;
 
 const COMMON_EXECUTABLE_DIRS = [
+  "~/bin",
+  "~/.local/bin",
+  "~/.bun/bin",
+  "~/.cargo/bin",
+  "~/.local/share/mise/shims",
+  "~/.lmstudio/bin",
+  "~/Library/pnpm",
   "/opt/homebrew/bin",
   "/opt/homebrew/sbin",
   "/usr/local/bin",
   "/usr/local/sbin",
   "/usr/bin",
-  "~/bin",
-  "~/.local/bin",
-  "~/.bun/bin",
-  "~/.cargo/bin",
-  "~/.lmstudio/bin",
-  "~/Library/pnpm",
 ];
 
 export class LocalExecutableResolver {
@@ -336,14 +337,18 @@ export class LocalExecutableResolver {
   private verifyExecutable(
     executablePath: string,
     versionProbe: VersionProbeSpec,
-  ): { ok: boolean; version?: string; error?: string } {
+  ): { ok: boolean; version?: string; error?: string; recoverable?: boolean } {
     const result = this.spawnSyncFn(executablePath, versionProbe.args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: versionProbe.timeoutMs ?? 500,
     });
     if (result.error) {
-      return { ok: false, error: result.error.message || String(result.error) };
+      return {
+        ok: false,
+        error: result.error.message || String(result.error),
+        recoverable: isRecoverableVersionProbeError(result.error),
+      };
     }
     if (result.status !== 0) {
       return {
@@ -374,6 +379,13 @@ export class LocalExecutableResolver {
     }
 
     const verified = this.verifyExecutable(input.candidatePath, input.versionProbe);
+    if (!verified.ok && !verified.recoverable) {
+      return {
+        resolutionSource: input.resolutionSource,
+        manualPathConfigured: input.manualPathConfigured,
+        error: verified.error,
+      };
+    }
     this.cache.set(input.cacheKey, input.candidatePath);
     return {
       path: input.candidatePath,
@@ -399,6 +411,13 @@ export class LocalExecutableResolver {
     }
 
     const verified = await this.verifyExecutableAsync(input.candidatePath, input.versionProbe);
+    if (!verified.ok && !verified.recoverable) {
+      return {
+        resolutionSource: input.resolutionSource,
+        manualPathConfigured: input.manualPathConfigured,
+        error: verified.error,
+      };
+    }
     this.cache.set(input.cacheKey, input.candidatePath);
     return {
       path: input.candidatePath,
@@ -439,7 +458,7 @@ export class LocalExecutableResolver {
   private async verifyExecutableAsync(
     executablePath: string,
     versionProbe: VersionProbeSpec,
-  ): Promise<{ ok: boolean; version?: string; error?: string }> {
+  ): Promise<{ ok: boolean; version?: string; error?: string; recoverable?: boolean }> {
     return await new Promise((resolve) => {
       const child = spawn(executablePath, versionProbe.args, {
         stdio: ["ignore", "pipe", "pipe"],
@@ -454,7 +473,7 @@ export class LocalExecutableResolver {
         }
         settled = true;
         child.kill("SIGTERM");
-        resolve({ ok: false, error: "version probe timed out" });
+        resolve({ ok: false, error: "version probe timed out", recoverable: true });
       }, versionProbe.timeoutMs ?? 500);
 
       child.stdout.on("data", (chunk) => {
@@ -469,7 +488,11 @@ export class LocalExecutableResolver {
         }
         settled = true;
         clearTimeout(timeout);
-        resolve({ ok: false, error: error.message || String(error) });
+        resolve({
+          ok: false,
+          error: error.message || String(error),
+          recoverable: isRecoverableVersionProbeError(error),
+        });
       });
       child.on("close", (code) => {
         if (settled) {
@@ -492,4 +515,13 @@ export class LocalExecutableResolver {
       });
     });
   }
+}
+
+function isRecoverableVersionProbeError(error: Error): boolean {
+  const errorWithCode = error as unknown as { code?: unknown };
+  const code = typeof errorWithCode.code === "string"
+    ? errorWithCode.code.toUpperCase()
+    : "";
+  const message = error.message.toUpperCase();
+  return code === "ETIMEDOUT" || message.includes("ETIMEDOUT") || message.includes("TIMED OUT");
 }

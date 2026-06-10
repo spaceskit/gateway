@@ -32,7 +32,17 @@ export interface LocalUsageTelemetryServiceOptions {
 
 export interface GetLocalUsageTelemetryInput {
   providerIds: string[];
+  /**
+   * Pre-computed fallback telemetry. Eager: provided by callers/tests that
+   * already resolved live provider probes.
+   */
   fallbackTelemetry?: ProviderTelemetryPayload[];
+  /**
+   * Lazy fallback telemetry producer. Preferred over `fallbackTelemetry` for
+   * the hot path: the expensive live probes behind this thunk are only invoked
+   * on a cold or stale cache, never when a fresh cached result can be served.
+   */
+  fallbackTelemetryProvider?: () => Promise<ProviderTelemetryPayload[]>;
 }
 
 interface LocalUsageTelemetryCache {
@@ -53,6 +63,12 @@ export class LocalUsageTelemetryService {
   private readonly codexBarAdapter: CodexBarUsageAdapter;
   private readonly scanners: Map<string, LocalUsageSessionScanner>;
   private cache: LocalUsageTelemetryCache | null = null;
+  /**
+   * Coalesces concurrent stale-while-revalidate refreshes. Keyed by the sorted
+   * provider-id set so two overlapping requests for the same providers share a
+   * single in-flight background refresh instead of spawning duplicate probes.
+   */
+  private inFlightRefresh = new Map<string, Promise<LocalProviderUsageTelemetry[]>>();
 
   constructor(options: LocalUsageTelemetryServiceOptions) {
     this.logger = options.logger;
@@ -90,28 +106,65 @@ export class LocalUsageTelemetryService {
     }
 
     const now = this.now();
-    if (this.canReuseCache(providerIds, now)) {
-      return providerIds
-        .map((providerId) => this.cache?.byProviderId.get(providerId))
-        .filter((entry): entry is LocalProviderUsageTelemetry => Boolean(entry))
-        .map((entry) => ({ ...entry }));
+
+    // Hot path: a fresh cache covering every requested provider is served
+    // immediately WITHOUT resolving the (expensive) fallback telemetry probes.
+    if (this.isCacheFresh(providerIds, now)) {
+      return this.readFromCache(providerIds);
     }
 
+    // Warm-but-stale path: serve last-known values right away and refresh in the
+    // background. This keeps the UI responsive after the first load even once
+    // the 60s window has lapsed.
+    if (this.hasCachedEntries(providerIds)) {
+      this.triggerBackgroundRefresh(providerIds, input);
+      return this.readFromCache(providerIds);
+    }
+
+    // Cold path: no cached data for these providers — must block on a refresh.
+    return this.refreshTelemetry(providerIds, input);
+  }
+
+  private async resolveFallbackByProvider(
+    input: GetLocalUsageTelemetryInput,
+  ): Promise<Map<string, ProviderTelemetryPayload>> {
     const fallbackByProvider = new Map<string, ProviderTelemetryPayload>();
-    for (const fallback of input.fallbackTelemetry ?? []) {
+    const eager = input.fallbackTelemetry;
+    const fallbackTelemetry = eager
+      ?? (input.fallbackTelemetryProvider
+        ? await input.fallbackTelemetryProvider()
+        : []);
+    for (const fallback of fallbackTelemetry) {
       const providerId = fallback.providerId.trim().toLowerCase();
       if (!providerId) continue;
       fallbackByProvider.set(providerId, fallback);
     }
+    return fallbackByProvider;
+  }
 
+  private async computeTelemetry(
+    providerIds: string[],
+    input: GetLocalUsageTelemetryInput,
+  ): Promise<LocalProviderUsageTelemetry[]> {
+    const fallbackByProvider = await this.resolveFallbackByProvider(input);
+    const now = this.now();
     const windowStartMs = now.getTime() - (this.windowDays * 24 * 60 * 60 * 1_000);
     const fetchedAtIso = now.toISOString();
     const telemetry = await Promise.all(providerIds.map(async (providerId) => {
       const fallback = fallbackByProvider.get(providerId);
       const scanner = this.scanners.get(providerId);
-      const sessionRecords = scanner
-        ? await scanner.scan(windowStartMs)
-        : [];
+      let sessionRecords: LocalUsageSessionRecord[] = [];
+      try {
+        sessionRecords = scanner ? await scanner.scan(windowStartMs) : [];
+      } catch (err) {
+        // Isolate per-provider scan failures so one bad provider cannot fail
+        // the whole batch — degrade to fallback/empty for this provider only.
+        this.logger.warn("Local usage session scan failed", {
+          providerId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        sessionRecords = [];
+      }
       const summary = resolveUsageSummary(
         summarizeSessions(sessionRecords, this.windowDays),
         fallback,
@@ -135,24 +188,78 @@ export class LocalUsageTelemetryService {
       } satisfies LocalProviderUsageTelemetry;
     }));
 
-    this.cache = {
-      generatedAtMs: now.getTime(),
-      byProviderId: new Map<string, LocalProviderUsageTelemetry>(
-        telemetry.map((entry: LocalProviderUsageTelemetry) => [entry.providerId, entry]),
-      ),
-    };
-
+    this.storeCache(telemetry, now);
     return telemetry;
   }
 
-  private canReuseCache(providerIds: string[], now: Date): boolean {
+  private async refreshTelemetry(
+    providerIds: string[],
+    input: GetLocalUsageTelemetryInput,
+  ): Promise<LocalProviderUsageTelemetry[]> {
+    const key = cacheKey(providerIds);
+    const existing = this.inFlightRefresh.get(key);
+    if (existing) {
+      return existing;
+    }
+    const refresh = this.computeTelemetry(providerIds, input)
+      .finally(() => {
+        this.inFlightRefresh.delete(key);
+      });
+    this.inFlightRefresh.set(key, refresh);
+    return refresh;
+  }
+
+  private triggerBackgroundRefresh(
+    providerIds: string[],
+    input: GetLocalUsageTelemetryInput,
+  ): void {
+    const key = cacheKey(providerIds);
+    if (this.inFlightRefresh.has(key)) {
+      return;
+    }
+    // Fire-and-forget; errors are swallowed (logged) so a failed refresh never
+    // rejects the synchronous stale read that already returned to the caller.
+    void this.refreshTelemetry(providerIds, input).catch((err) => {
+      this.logger.warn("Background usage telemetry refresh failed", {
+        providerIds,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  private storeCache(telemetry: LocalProviderUsageTelemetry[], now: Date): void {
+    const byProviderId = new Map<string, LocalProviderUsageTelemetry>(
+      this.cache?.byProviderId ?? [],
+    );
+    for (const entry of telemetry) {
+      byProviderId.set(entry.providerId, entry);
+    }
+    this.cache = {
+      generatedAtMs: now.getTime(),
+      byProviderId,
+    };
+  }
+
+  private readFromCache(providerIds: string[]): LocalProviderUsageTelemetry[] {
+    return providerIds
+      .map((providerId) => this.cache?.byProviderId.get(providerId))
+      .filter((entry): entry is LocalProviderUsageTelemetry => Boolean(entry))
+      .map((entry) => ({ ...entry }));
+  }
+
+  private hasCachedEntries(providerIds: string[]): boolean {
+    if (!this.cache) return false;
+    return providerIds.every((providerId) => this.cache?.byProviderId.has(providerId));
+  }
+
+  private isCacheFresh(providerIds: string[], now: Date): boolean {
     if (!this.cache) return false;
     if (this.refreshMinSecs <= 0) return false;
     const ageMs = now.getTime() - this.cache.generatedAtMs;
     if (ageMs > this.refreshMinSecs * 1_000) {
       return false;
     }
-    return providerIds.every((providerId) => this.cache?.byProviderId.has(providerId));
+    return this.hasCachedEntries(providerIds);
   }
 
   private resolveQuota(
@@ -219,6 +326,10 @@ export class LocalUsageTelemetryService {
       installHint: codexBarQuota.installHint,
     };
   }
+}
+
+function cacheKey(providerIds: string[]): string {
+  return [...providerIds].sort().join(",");
 }
 
 function resolveProviderStatus(

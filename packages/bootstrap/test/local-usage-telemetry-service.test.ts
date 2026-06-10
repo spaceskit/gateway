@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Logger } from "@spaceskit/observability";
+import type { ProviderTelemetryPayload } from "@spaceskit/server";
 import { CodexBarUsageAdapter } from "../src/services/codexbar-usage-adapter.js";
 import { LocalUsageTelemetryService } from "../src/services/local-usage-telemetry-service.js";
 
@@ -445,5 +446,128 @@ describe("LocalUsageTelemetryService", () => {
     expect(telemetry[0]?.summary.totalTokens).toBe(160);
     expect(telemetry[0]?.summary.tokenAccuracy).toBe("reported");
     expect(telemetry[0]?.summary.usageSource).toBe("ledger");
+  });
+
+  function passiveAdapter(): CodexBarUsageAdapter {
+    return new CodexBarUsageAdapter({
+      logger: TEST_LOGGER,
+      enableWidgetSnapshot: false,
+      runCommand: () => ({ status: 0, stdout: "[]", stderr: "" }) as any,
+    });
+  }
+
+  function codexFallback(): ProviderTelemetryPayload[] {
+    return [
+      {
+        providerId: "codex",
+        status: "available",
+        source: "codex_app_server",
+        fetchedAt: "2026-02-28T10:00:00.000Z",
+        windows: [
+          {
+            scopeId: "codex",
+            scopeName: "Codex",
+            window: "primary",
+            usedPercent: 25,
+            remainingPercent: 75,
+            windowDurationMins: 300,
+            resetsAt: "2026-02-28T18:00:00.000Z",
+          },
+        ],
+      },
+    ];
+  }
+
+  test("cache-first: fresh cache serves without resolving the fallback thunk", async () => {
+    let clock = new Date("2026-02-28T12:00:00.000Z").getTime();
+    let providerCalls = 0;
+    const service = new LocalUsageTelemetryService({
+      logger: TEST_LOGGER,
+      codexBarAdapter: passiveAdapter(),
+      codexBarMode: "auto",
+      refreshMinSecs: 60,
+      now: () => new Date(clock),
+      scanners: { codex: { providerId: "codex", scan: async () => [] } },
+    });
+    const fallbackTelemetryProvider = async () => {
+      providerCalls += 1;
+      return codexFallback();
+    };
+
+    // Cold: must resolve fallback once.
+    const first = await service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider });
+    expect(providerCalls).toBe(1);
+    expect(first[0]?.quota.windows[0]?.usedPercent).toBe(25);
+
+    // Warm within window: served from cache, thunk NOT called again.
+    clock += 30_000;
+    const second = await service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider });
+    expect(providerCalls).toBe(1);
+    expect(second[0]?.quota.windows[0]?.usedPercent).toBe(25);
+  });
+
+  test("stale-while-revalidate: expired cache returns stale immediately and refreshes once", async () => {
+    let clock = new Date("2026-02-28T12:00:00.000Z").getTime();
+    let providerCalls = 0;
+    let usedPercent = 25;
+    const service = new LocalUsageTelemetryService({
+      logger: TEST_LOGGER,
+      codexBarAdapter: passiveAdapter(),
+      codexBarMode: "auto",
+      refreshMinSecs: 60,
+      now: () => new Date(clock),
+      scanners: { codex: { providerId: "codex", scan: async () => [] } },
+    });
+    const fallbackTelemetryProvider = async () => {
+      providerCalls += 1;
+      const windows = codexFallback();
+      windows[0]!.windows[0]!.usedPercent = usedPercent;
+      return windows;
+    };
+
+    const first = await service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider });
+    expect(providerCalls).toBe(1);
+    expect(first[0]?.quota.windows[0]?.usedPercent).toBe(25);
+
+    // Move past the refresh window and change upstream value.
+    clock += 61_000;
+    usedPercent = 80;
+    const stale = await service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider });
+    // Returned value is the STALE one (immediate), background refresh kicked off.
+    expect(stale[0]?.quota.windows[0]?.usedPercent).toBe(25);
+
+    // Let the coalesced background refresh settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(providerCalls).toBe(2);
+
+    // Next read (still within new window) serves the refreshed value.
+    clock += 1_000;
+    const refreshed = await service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider });
+    expect(refreshed[0]?.quota.windows[0]?.usedPercent).toBe(80);
+    expect(providerCalls).toBe(2);
+  });
+
+  test("concurrent cold requests coalesce into a single fallback resolution", async () => {
+    let providerCalls = 0;
+    const service = new LocalUsageTelemetryService({
+      logger: TEST_LOGGER,
+      codexBarAdapter: passiveAdapter(),
+      codexBarMode: "auto",
+      refreshMinSecs: 60,
+      scanners: { codex: { providerId: "codex", scan: async () => [] } },
+    });
+    const fallbackTelemetryProvider = async () => {
+      providerCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return codexFallback();
+    };
+
+    const [a, b] = await Promise.all([
+      service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider }),
+      service.getTelemetry({ providerIds: ["codex"], fallbackTelemetryProvider }),
+    ]);
+    expect(providerCalls).toBe(1);
+    expect(a[0]?.quota.windows[0]?.usedPercent).toBe(25);
+    expect(b[0]?.quota.windows[0]?.usedPercent).toBe(25);
   });
 });

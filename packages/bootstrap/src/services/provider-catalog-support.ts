@@ -8,16 +8,17 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   anthropic: "anthropic/claude-sonnet-4-5",
   "claude-agent-sdk": "claude-agent-sdk/claude-sonnet-4-5",
   claude: "claude/sonnet",
-  "codex-app-server": "codex-app-server/gpt-5.4",
-  codex: "codex/gpt-5.1-codex",
+  "codex-app-server": "codex-app-server/gpt-5.5",
+  codex: "codex/gpt-5.5",
   gemini: "gemini/gemini-2.5-flash",
+  antigravity: "antigravity/selected",
   lmstudio: "lmstudio/qwen2.5-coder",
   ollama: "ollama/qwen2.5-coder",
   openrouter: "openrouter/openai/gpt-4.1-mini",
   groq: "groq/llama-3.3-70b-versatile",
   together: "together/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
   mistral: "mistral/mistral-large-latest",
-  openai: "openai/gpt-4.1",
+  openai: "openai/gpt-5.5",
 };
 
 export const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
@@ -36,6 +37,7 @@ export const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
     "claude-agent-sdk/claude-sonnet-4-5",
   ],
   "codex-app-server": [
+    "codex-app-server/gpt-5.5",
     "codex-app-server/gpt-5.4",
     "codex-app-server/gpt-5.4-mini",
     "codex-app-server/gpt-5.3-codex",
@@ -48,6 +50,9 @@ export const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
     "claude/haiku",
   ],
   codex: [
+    "codex/gpt-5.5",
+    "codex/gpt-5.4",
+    "codex/gpt-5.4-mini",
     "codex/gpt-5.2-codex",
     "codex/gpt-5.2-codex-max",
     "codex/gpt-5.2-codex-mini",
@@ -64,6 +69,9 @@ export const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
     "gemini/gemini-3-flash-preview",
     "gemini/gemini-2.5-pro",
     "gemini/gemini-2.5-flash",
+  ],
+  antigravity: [
+    "antigravity/selected",
   ],
   lmstudio: [],
   ollama: [],
@@ -84,7 +92,7 @@ export const OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL";
 export const LMSTUDIO_BASE_URL_ENV = "LMSTUDIO_BASE_URL";
 export const OLLAMA_BASE_URL_ENV = "OLLAMA_BASE_URL";
 
-export const LOCAL_PROVIDER_IDS = new Set(["apple", "claude", "codex", "gemini", "lmstudio", "ollama"]);
+export const LOCAL_PROVIDER_IDS = new Set(["apple", "antigravity", "claude", "codex", "gemini", "lmstudio", "ollama"]);
 const OPENAI_COMPATIBLE_PROVIDER_IDS = new Set([
   "openai",
   "lmstudio",
@@ -132,6 +140,8 @@ export function providerDisplayName(providerId: string): string {
       return "Codex CLI";
     case "gemini":
       return "Gemini CLI";
+    case "antigravity":
+      return "Antigravity CLI";
     case "lmstudio":
       return "LM Studio";
     case "ollama":
@@ -177,6 +187,8 @@ export function providerInstallHint(providerId: string): string | undefined {
       return "Install Codex CLI and sign in locally.";
     case "gemini":
       return "Install Gemini CLI and sign in locally.";
+    case "antigravity":
+      return "Install Antigravity CLI with `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then sign in locally.";
     case "lmstudio":
       return "Install LM Studio, start the local server, and load at least one model.";
     case "ollama":
@@ -270,7 +282,7 @@ export function providerRecommended(providerId: string): boolean {
 }
 
 export function isCliExecutorProvider(providerId: string): boolean {
-  return providerId === "claude" || providerId === "codex" || providerId === "gemini";
+  return providerId === "antigravity" || providerId === "claude" || providerId === "codex" || providerId === "gemini";
 }
 
 export function isLocalProvider(providerId: string): boolean {

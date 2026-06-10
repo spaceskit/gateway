@@ -137,15 +137,17 @@ export class GatewayAdminProviderTelemetryService {
     const targetProviderIds = targetConfigs
       .map((entry) => entry.providerId.trim().toLowerCase())
       .filter((providerId) => providerId.length > 0);
-    const fallbackTelemetry = await this.buildProviderTelemetryEntries(targetConfigs);
     if (!this.localUsageTelemetryService) {
+      const fallbackTelemetry = await this.buildProviderTelemetryEntries(targetConfigs);
       const fetchedAt = new Date().toISOString();
       return buildLocalUsageTelemetryFallback(fallbackTelemetry, fetchedAt);
     }
 
+    // Pass the live-probe work as a lazy thunk so it only runs on a cold/stale
+    // cache. A fresh cache short-circuits before any probe spawns/fetches.
     return this.localUsageTelemetryService.getTelemetry({
       providerIds: targetProviderIds,
-      fallbackTelemetry,
+      fallbackTelemetryProvider: () => this.buildProviderTelemetryEntries(targetConfigs),
     });
   }
 
@@ -225,9 +227,26 @@ export class GatewayAdminProviderTelemetryService {
       case "lmstudio":
         return this.probeLmStudioRuntime(config);
 
+      case "apple":
+        return this.appleFoundationStatus();
+
       default:
         return null;
     }
+  }
+
+  /**
+   * Apple Foundation runs fully on-device with no quota or rate limits, so there
+   * is nothing to probe. Resolve it instantly as available with no windows —
+   * this removes the perpetual "Loading"/empty card without any I/O.
+   */
+  private appleFoundationStatus(): LocalProviderTelemetryProbeResult {
+    return {
+      source: "usage_snapshot",
+      status: "available",
+      message: "Apple Foundation runs on-device with no usage limits.",
+      windows: [],
+    };
   }
 
   private async probeCodexRateLimits(

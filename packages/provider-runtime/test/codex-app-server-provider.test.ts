@@ -42,7 +42,10 @@ class FakeAppServerProcess extends EventEmitter {
   readonly requests: Array<{ method: string; params?: unknown }> = [];
   private turnCounter = 1;
 
-  constructor(private readonly options: { emitAgentMessageDeltaBeforeCompleted?: boolean } = {}) {
+  constructor(private readonly options: {
+    emitAgentMessageDeltaBeforeCompleted?: boolean;
+    emitStructuredWorkItems?: boolean;
+  } = {}) {
     super();
     this.stdin = new FakeWritableStdin((message) => this.handleMessage(message));
   }
@@ -96,6 +99,103 @@ class FakeAppServerProcess extends EventEmitter {
         method: "turn/started",
         params: { threadId, turn: { id: turnId } },
       })}\n`);
+      if (this.options.emitStructuredWorkItems) {
+        this.stdout.write(`${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "turn/plan/updated",
+          params: {
+            threadId,
+            turnId,
+            explanation: "Use a two step plan.",
+            plan: [
+              { step: "Inspect workspace", status: "completed" },
+              { step: "Apply focused changes", status: "inProgress" },
+            ],
+          },
+        })}\n`);
+        this.stdout.write(`${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "item/plan/delta",
+          params: {
+            threadId,
+            turnId,
+            itemId: "plan-item-1",
+            delta: "experimental partial plan text",
+          },
+        })}\n`);
+        for (const item of [
+          {
+            id: "command-1",
+            type: "commandExecution",
+            command: "bun test packages/provider-runtime/test/codex-app-server-provider.test.ts",
+            aggregatedOutput: "1 pass",
+            exitCode: 0,
+          },
+          {
+            id: "file-1",
+            type: "fileChange",
+            summary: "Updated chat renderer.",
+            changes: [{ path: "Sources/Shared/Chat/WorkItemCard.swift", changeType: "modified" }],
+          },
+          {
+            id: "tool-1",
+            type: "mcpToolCall",
+            toolName: "workspace.search",
+            serverName: "gateway",
+            arguments: { query: "workItem" },
+            result: { matches: 2 },
+          },
+          {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            agentId: "reviewer",
+            task: "Review the work-item contract.",
+          },
+          {
+            id: "web-1",
+            type: "webSearch",
+            query: "Codex app-server item types",
+          },
+          {
+            id: "image-1",
+            type: "imageGeneration",
+            prompt: "diagram of work item cards",
+          },
+          {
+            id: "reasoning-1",
+            type: "reasoning",
+            summary: ["Need a neutral contract."],
+            content: ["Codex item names stay inside adapter metadata."],
+          },
+          {
+            id: "plan-item-1",
+            type: "plan",
+            explanation: "Final plan snapshot wins.",
+            plan: [
+              { step: "Inspect workspace", status: "completed" },
+              { step: "Apply focused changes", status: "completed" },
+            ],
+          },
+          {
+            id: "artifact-1",
+            type: "artifact",
+            title: "Rendered preview",
+            path: "artifacts/preview.md",
+            mimeType: "text/markdown",
+            previewText: "Artifact body preview.",
+          },
+        ]) {
+          this.stdout.write(`${JSON.stringify({
+            jsonrpc: "2.0",
+            method: "item/completed",
+            params: {
+              threadId,
+              turnId,
+              item,
+            },
+          })}\n`);
+        }
+      }
       if (this.options.emitAgentMessageDeltaBeforeCompleted) {
         this.stdout.write(`${JSON.stringify({
           jsonrpc: "2.0",
@@ -237,6 +337,122 @@ describe("CodexAppServerModelProvider", () => {
     expect(fakeProcess.requests.filter((request) => request.method === "thread/name/set")).toHaveLength(1);
   });
 
+  test("starts a fresh Codex app-server thread when gateway tools lack a matching fingerprint", async () => {
+    const fakeProcess = new FakeAppServerProcess();
+    const provider = new CodexAppServerModelProvider({
+      id: "codex-app-server",
+      name: "Codex App Server",
+      model: "codex-app-server/gpt-5.4",
+      apiKey: "sk-test",
+      authMode: "api_key",
+      spawnImpl: (() => fakeProcess) as never,
+    });
+
+    await collectChunks(provider.stream("codex-app-server/gpt-5.4", {
+      messages: [
+        { role: "user", content: "First prompt." },
+        { role: "assistant", content: "Prior answer." },
+        { role: "user", content: "What should I do next?" },
+      ],
+      providerSessionHandle: {
+        type: "codex_app_server_thread",
+        threadId: "thread-existing",
+      },
+      gatewayToolBridgeConfig: {
+        bridgeScriptPath: "/tmp/gateway-mcp-bridge.ts",
+        toolDefsJson: JSON.stringify([
+          {
+            name: "workbench.list_queue",
+            description: "List Workbench queue",
+            inputSchema: { type: "object" },
+          },
+        ]),
+        socketPath: "/tmp/spaceskit.sock",
+      },
+    }));
+
+    const resumeRequest = fakeProcess.requests.find((request) => request.method === "thread/resume");
+    expect(resumeRequest).toBeUndefined();
+    const startRequest = fakeProcess.requests.find((request) => request.method === "thread/start");
+    expect(startRequest).toBeDefined();
+    expect(startRequest?.params).toMatchObject({
+      dynamicTools: [
+        {
+          name: encodeDynamicToolName("workbench.list_queue"),
+          description: "List Workbench queue",
+          inputSchema: { type: "object" },
+        },
+      ],
+    });
+    const turnStartRequest = fakeProcess.requests.find((request) => request.method === "turn/start");
+    const renderedInput = JSON.stringify(asTestRecord(turnStartRequest?.params).input ?? "");
+    expect(renderedInput).toContain("First prompt.");
+    expect(renderedInput).toContain("What should I do next?");
+  });
+
+  test("resumes Codex app-server threads when gateway tool fingerprints match", async () => {
+    const fakeProcess = new FakeAppServerProcess();
+    const provider = new CodexAppServerModelProvider({
+      id: "codex-app-server",
+      name: "Codex App Server",
+      model: "codex-app-server/gpt-5.4",
+      apiKey: "sk-test",
+      authMode: "api_key",
+      spawnImpl: (() => fakeProcess) as never,
+    });
+    const gatewayToolBridgeConfig = {
+      bridgeScriptPath: "/tmp/gateway-mcp-bridge.ts",
+      toolDefsJson: JSON.stringify([
+        {
+          name: "workbench.list_queue",
+          description: "List Workbench queue",
+          inputSchema: { type: "object" },
+        },
+      ]),
+      socketPath: "/tmp/spaceskit.sock",
+    };
+
+    const firstChunks = await collectChunks(provider.stream("codex-app-server/gpt-5.4", {
+      messages: [
+        { role: "user", content: "First prompt." },
+      ],
+      gatewayToolBridgeConfig,
+    }));
+    const firstHandle = firstChunks.find((chunk) => chunk.type === "finish")?.providerSessionHandle;
+    expect(firstHandle?.type).toBe("codex_app_server_thread");
+    expect(firstHandle?.threadId).toBe("thread-new");
+    expect(typeof firstHandle?.gatewayToolBridgeFingerprint).toBe("string");
+
+    await collectChunks(provider.stream("codex-app-server/gpt-5.4", {
+      messages: [
+        { role: "user", content: "First prompt." },
+        { role: "assistant", content: "Prior answer." },
+        { role: "user", content: "Second prompt only." },
+      ],
+      providerSessionHandle: firstHandle,
+      gatewayToolBridgeConfig,
+    }));
+
+    const resumeRequest = fakeProcess.requests.find((request) => request.method === "thread/resume");
+    expect(resumeRequest).toBeDefined();
+    expect(resumeRequest?.params).toMatchObject({
+      threadId: "thread-new",
+      dynamicTools: [
+        {
+          name: encodeDynamicToolName("workbench.list_queue"),
+          description: "List Workbench queue",
+          inputSchema: { type: "object" },
+        },
+      ],
+    });
+    const turnStartRequests = fakeProcess.requests
+      .filter((request) => request.method === "turn/start")
+      .map((request) => asTestRecord(request.params));
+    const resumedInput = JSON.stringify(turnStartRequests[1]?.input ?? "");
+    expect(resumedInput).toContain("Second prompt only.");
+    expect(resumedInput).not.toContain("First prompt.");
+  });
+
   test("synthesizes visible assistant output from completed agentMessage after activity delta", async () => {
     const fakeProcess = new FakeAppServerProcess({ emitAgentMessageDeltaBeforeCompleted: true });
     const provider = new CodexAppServerModelProvider({
@@ -280,6 +496,113 @@ describe("CodexAppServerModelProvider", () => {
     });
 
     expect(result.message.content).toBe("answer from turn-1");
+  });
+
+  test("normalizes Codex app-server structured items into provider-neutral work item events", async () => {
+    const fakeProcess = new FakeAppServerProcess({
+      emitAgentMessageDeltaBeforeCompleted: true,
+      emitStructuredWorkItems: true,
+    });
+    const provider = new CodexAppServerModelProvider({
+      id: "codex-app-server",
+      name: "Codex App Server",
+      model: "codex-app-server/gpt-5.4",
+      apiKey: "sk-test",
+      authMode: "api_key",
+      spawnImpl: (() => fakeProcess) as never,
+    });
+
+    const chunks = await collectChunks(provider.stream("codex-app-server/gpt-5.4", {
+      messages: [{ role: "user", content: "Use structured app-server items." }],
+    }));
+    const workItemEvents = chunks
+      .filter((chunk) => chunk.type === "work_item_event")
+      .map((chunk) => chunk.workItemEvent);
+
+    expect(workItemEvents.map((event) => event?.workItem.kind)).toEqual([
+      "plan",
+      "command",
+      "fileChange",
+      "toolCall",
+      "collabAgent",
+      "webSearch",
+      "image",
+      "reasoning",
+      "plan",
+      "artifact",
+      "message",
+    ]);
+
+    const planEvents = workItemEvents.filter((event) => event?.workItem.kind === "plan");
+    expect(planEvents[0]).toMatchObject({
+      event: "updated",
+      workItem: {
+        id: "plan:turn-1",
+        kind: "plan",
+        status: "inProgress",
+        plan: {
+          explanation: "Use a two step plan.",
+          steps: [
+            { step: "Inspect workspace", status: "completed" },
+            { step: "Apply focused changes", status: "inProgress" },
+          ],
+        },
+      },
+    });
+    expect(planEvents.at(-1)).toMatchObject({
+      event: "completed",
+      workItem: {
+        id: "plan-item-1",
+        kind: "plan",
+        status: "completed",
+        plan: {
+          explanation: "Final plan snapshot wins.",
+          steps: [
+            { step: "Inspect workspace", status: "completed" },
+            { step: "Apply focused changes", status: "completed" },
+          ],
+        },
+      },
+    });
+    expect(JSON.stringify(planEvents.at(-1))).not.toContain("experimental partial plan text");
+
+    expect(workItemEvents.find((event) => event?.workItem.kind === "artifact")).toMatchObject({
+      event: "completed",
+      workItem: {
+        id: "artifact-1",
+        kind: "artifact",
+        status: "completed",
+        title: "Rendered preview",
+        artifact: {
+          id: "artifact-1",
+          title: "Rendered preview",
+          path: "artifacts/preview.md",
+          mimeType: "text/markdown",
+          previewText: "Artifact body preview.",
+        },
+      },
+    });
+
+    expect(workItemEvents.at(-1)).toMatchObject({
+      event: "completed",
+      workItem: {
+        id: "item-turn-1",
+        kind: "message",
+        status: "completed",
+        body: {
+          mimeType: "text/plain",
+          text: "answer from turn-1",
+        },
+      },
+    });
+    const publicFieldNames = workItemEvents.flatMap((event) => Object.keys(event?.workItem ?? {}));
+    expect(publicFieldNames.some((key) => key.toLowerCase().includes("codex"))).toBe(false);
+    expect(chunks).toContainEqual({
+      type: "text_delta",
+      text: "answer from turn-1",
+      transcriptVisibility: "visible",
+      streamKind: "assistant_output",
+    });
   });
 
   test("probes ChatGPT host-login metadata and surfaces discovered models", async () => {

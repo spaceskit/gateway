@@ -19,6 +19,8 @@ import {
 import {
   CodexTurnStreamContext,
   mapCompletedItemToChunks,
+  mapStartedItemToWorkItemChunk,
+  mapTurnPlanUpdatedToChunk,
   normalizeTokenUsage,
   type AppServerInboundMessage,
 } from "./codex-app-server-stream-mapping.js";
@@ -123,6 +125,9 @@ export class StdioCodexAppServerClient implements CodexAppServerClientLike {
     const providerSessionHandle: ProviderSessionHandle = {
       type: "codex_app_server_thread",
       threadId,
+      ...(thread.gatewayToolBridgeFingerprint
+        ? { gatewayToolBridgeFingerprint: thread.gatewayToolBridgeFingerprint }
+        : {}),
     };
     const streamContext = new CodexTurnStreamContext();
     const unsubscribe = this.subscribe((message) => {
@@ -136,7 +141,7 @@ export class StdioCodexAppServerClient implements CodexAppServerClientLike {
     try {
       const startTurnResponse = await this.sendRequest("turn/start", {
         threadId,
-        input: toUserInputs(input.options.messages, Boolean(input.options.providerSessionHandle)),
+        input: toUserInputs(input.options.messages, thread.resumed),
         ...(input.options.workingDirectory ? { cwd: input.options.workingDirectory } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(mapReasoningEffort(input.options.effort) ? { effort: mapReasoningEffort(input.options.effort) } : {}),
@@ -238,6 +243,14 @@ export class StdioCodexAppServerClient implements CodexAppServerClientLike {
             break;
           }
 
+          case "turn/plan/updated": {
+            const chunk = mapTurnPlanUpdatedToChunk(inbound.params);
+            if (chunk) {
+              yield chunk;
+            }
+            break;
+          }
+
           case "item/reasoning/textDelta":
           case "item/reasoning/summaryTextDelta":
           case "item/plan/delta":
@@ -258,6 +271,10 @@ export class StdioCodexAppServerClient implements CodexAppServerClientLike {
           }
 
           case "item/started": {
+            const chunk = mapStartedItemToWorkItemChunk(inbound.params);
+            if (chunk) {
+              yield chunk;
+            }
             const item = asRecord((inbound.params as JsonRecord | undefined)?.item);
             const itemType = asString(item?.type);
             if (itemType === "commandExecution" || itemType === "fileChange") {

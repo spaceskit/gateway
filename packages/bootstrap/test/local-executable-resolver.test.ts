@@ -100,6 +100,66 @@ describe("LocalExecutableResolver", () => {
     expect(resolved.manualPathConfigured).toBe(false);
   });
 
+  test("skips candidates whose version probe exits nonzero", () => {
+    const root = makeTempDir();
+    const badBinDir = join(root, "bad-bin");
+    const shimDir = join(root, ".local", "share", "mise", "shims");
+    mkdirSync(badBinDir, { recursive: true });
+    mkdirSync(shimDir, { recursive: true });
+    const badCodexPath = join(badBinDir, "codex");
+    const goodCodexPath = join(shimDir, "codex");
+    makeExecutable(badCodexPath);
+    makeExecutable(goodCodexPath);
+
+    const resolver = new LocalExecutableResolver({
+      spawnSyncFn(command, args) {
+        if (command === "/bin/zsh") {
+          return {
+            pid: 9,
+            output: [],
+            stdout: `${badCodexPath}\n`,
+            stderr: "",
+            status: 0,
+            signal: null,
+          } as any;
+        }
+        if (command === badCodexPath && args[0] === "--version") {
+          return {
+            pid: 10,
+            output: [],
+            stdout: "",
+            stderr: "native binary missing\n",
+            status: 1,
+            signal: null,
+          } as any;
+        }
+        if (command === goodCodexPath && args[0] === "--version") {
+          return {
+            pid: 11,
+            output: [],
+            stdout: "codex-cli 0.131.0\n",
+            stderr: "",
+            status: 0,
+            signal: null,
+          } as any;
+        }
+        throw new Error(`Unexpected spawn: ${command} ${args.join(" ")}`);
+      },
+      env: { SHELL: "/bin/zsh", PATH: badBinDir },
+      homeDir: root,
+    });
+
+    const resolved = resolver.resolve({
+      cacheKey: "codex",
+      commands: ["codex"],
+      versionProbe: { args: ["--version"] },
+    });
+
+    expect(resolved.path).toBe(goodCodexPath);
+    expect(resolved.version).toBe("codex-cli 0.131.0");
+    expect(resolved.resolutionSource).toBe("common_path");
+  });
+
   test("falls back to login-shell lookup when PATH is narrow", () => {
     const root = makeTempDir();
     const geminiPath = join(root, "gemini");

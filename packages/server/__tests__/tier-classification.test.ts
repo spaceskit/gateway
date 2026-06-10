@@ -38,6 +38,10 @@ describe("classifyTier", () => {
       expect(classifyTier("codex-app-server", "codex-app-server/gpt-5.4-mini")).toBe("fast");
     });
 
+    test("gpt-5.5 → smartest (codex-app-server)", () => {
+      expect(classifyTier("codex-app-server", "codex-app-server/gpt-5.5")).toBe("smartest");
+    });
+
     test("gpt-5.2-codex-max → local (codex CLI is local-runtime)", () => {
       // codex CLI runs on the host -> local tier per spec
       expect(classifyTier("codex", "codex/gpt-5.2-codex-max")).toBe("local");
@@ -97,6 +101,10 @@ describe("classifyTier", () => {
 
     test("codex (CLI) → local even for mini model name", () => {
       expect(classifyTier("codex", "codex/gpt-5.1-codex-mini")).toBe("local");
+    });
+
+    test("antigravity (CLI) → local for selected model", () => {
+      expect(classifyTier("antigravity", "antigravity/selected")).toBe("local");
     });
   });
 

@@ -20,24 +20,47 @@ describe("CliExecutorModelProvider", () => {
     expect(models.every((model) => model.supportsTools)).toBe(true);
   });
 
-  test("reports executor health from the native CLI probe", async () => {
+  test("exposes the selected Antigravity CLI model", async () => {
     const provider = new CliExecutorModelProvider({
-      id: "claude",
-      name: "Claude Code",
-      model: "claude/sonnet",
-      runCommandSync: () => ({
+      id: "antigravity",
+      name: "Antigravity CLI",
+      model: "antigravity/selected",
+    });
+
+    const models = await provider.listModels();
+
+    expect(models).toEqual([{
+      id: "antigravity/selected",
+      name: "selected",
+      provider: "antigravity",
+      supportsTools: true,
+      isLocal: true,
+    }]);
+  });
+
+  test("reports executor health from the native CLI probe", async () => {
+    const probes: Array<{ command: string; args: string[] }> = [];
+    const provider = new CliExecutorModelProvider({
+      id: "antigravity",
+      name: "Antigravity CLI",
+      model: "antigravity/selected",
+      runCommandSync: (command, args) => {
+        probes.push({ command, args });
+        return {
         pid: 1,
         output: [],
-        stdout: "claude 1.0.0",
+        stdout: "agy 1.0.1",
         stderr: "",
         status: 0,
         signal: null,
-      }),
+        };
+      },
     });
 
     await expect(provider.checkHealth()).resolves.toMatchObject({
       available: true,
     });
+    expect(probes).toEqual([{ command: "agy", args: ["--version"] }]);
   });
 
   test("surfaces stdout-only generate failures instead of a generic exit message", async () => {

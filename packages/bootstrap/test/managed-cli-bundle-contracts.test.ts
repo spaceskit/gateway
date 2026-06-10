@@ -12,6 +12,9 @@ import {
 import {
   FRUITMAIL_TOOL_DEFINITIONS,
 } from "../../../scripts/fruitmail-cli-tools/catalog.mjs";
+import {
+  PEEKABOO_TOOL_DEFINITIONS,
+} from "../../../scripts/peekaboo-cli-tools/catalog.mjs";
 
 function listLikeToolIds() {
   return [
@@ -42,6 +45,15 @@ function listLikeToolIds() {
       schema: tool.inputSchema,
       instructions: tool.instructions,
       listLike: tool.id.endsWith(".recent") || tool.id.endsWith(".search") || tool.id.endsWith(".unread"),
+    })),
+    ...PEEKABOO_TOOL_DEFINITIONS.map((tool) => ({
+      bundleId: tool.bundleId,
+      toolId: tool.id,
+      schema: tool.payloadSchema,
+      instructions: tool.instructions,
+      listLike: tool.operation.startsWith("list.")
+        || tool.operation.endsWith(".list")
+        || tool.id === "peekaboo.see",
     })),
   ].filter((tool) => tool.listLike);
 }
@@ -79,6 +91,7 @@ describe("managed cli bundle contract audit", () => {
     expect(bundleClassification("fruitmail-cli")).toBe("typed and bounded");
     expect(bundleClassification("hrvst-cli")).toBe("raw passthrough");
     expect(bundleClassification("onepassword-cli")).toBe("raw passthrough");
+    expect(bundleClassification("peekaboo-cli")).toBe("raw passthrough");
   });
 
   test("ensures each repo-shipped list/search tool is either bounded or explicitly passthrough", () => {
@@ -117,6 +130,28 @@ describe("managed cli bundle contract audit", () => {
 
     for (const manifestRoot of manifestRoots) {
       for (const tool of FRUITMAIL_TOOL_DEFINITIONS) {
+        const manifest = JSON.parse(
+          readFileSync(new URL(`${manifestRoot}/${tool.id}/manifest.json`, import.meta.url), "utf8"),
+        ) as Record<string, unknown>;
+
+        expect(manifest.outputMode, `${manifestRoot}/${tool.id} should declare an outputMode`).toBe("json");
+        expect(typeof manifest.executable, `${manifestRoot}/${tool.id} should declare an executable`).toBe("string");
+        expect(typeof manifest.resolvedExecutable, `${manifestRoot}/${tool.id} should declare a resolvedExecutable`)
+          .toBe("string");
+        expect(Array.isArray(manifest.argsTemplate), `${manifestRoot}/${tool.id} should declare argsTemplate`).toBe(true);
+        expect(manifest.cwdMode, `${manifestRoot}/${tool.id} should run from a fixed cwd`).toBe("fixed");
+        expect(typeof manifest.fixedCwd, `${manifestRoot}/${tool.id} should declare fixedCwd`).toBe("string");
+      }
+    }
+  });
+
+  test("keeps checked-in Peekaboo manifests loadable by the CLI tool service", () => {
+    const manifestRoots = [
+      "../../../workbench/cli-tools",
+    ];
+
+    for (const manifestRoot of manifestRoots) {
+      for (const tool of PEEKABOO_TOOL_DEFINITIONS) {
         const manifest = JSON.parse(
           readFileSync(new URL(`${manifestRoot}/${tool.id}/manifest.json`, import.meta.url), "utf8"),
         ) as Record<string, unknown>;

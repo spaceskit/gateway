@@ -25,6 +25,18 @@ export function buildCommand(
   const cwd = normalizeWorkingDirectory(options.workingDirectory);
 
   switch (reference.providerId) {
+    case "antigravity":
+      return {
+        executable: "agy",
+        args: [
+          "--print",
+          ...(accessMode === "default" ? ["--sandbox"] : []),
+          ...(accessMode === "full_access" && approvalBypass ? ["--dangerously-skip-permissions"] : []),
+          ...(cwd ? ["--add-dir", cwd] : []),
+          prompt,
+        ],
+        ...(cwd ? { cwd } : {}),
+      };
     case "claude": {
       const permissionMode = resolveClaudePermissionMode(accessMode, approvalBypass);
       const bridgeArgs = buildMcpBridgeArgs(options);

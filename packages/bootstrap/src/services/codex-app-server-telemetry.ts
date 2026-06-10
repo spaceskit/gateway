@@ -211,7 +211,7 @@ export async function queryCodexAppServerTelemetry(
         account,
         error: errorMessage || "Timed out waiting for Codex app-server telemetry.",
       });
-    }, 4_500);
+    }, 2_500);
 
     send({
       jsonrpc: "2.0",

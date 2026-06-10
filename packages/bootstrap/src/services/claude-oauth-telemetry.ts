@@ -8,7 +8,9 @@ import {
 const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 const CLAUDE_OAUTH_KEYCHAIN_SERVICE = "Claude Code-credentials";
-const CLAUDE_OAUTH_TIMEOUT_MS = 10_000;
+// Bounded so a slow/unreachable OAuth endpoint cannot stall a usage refresh.
+// Only hit on a cold/background refresh (the warm cache serves instantly).
+const CLAUDE_OAUTH_TIMEOUT_MS = 2_500;
 
 export interface ClaudeOAuthAccessTokenResult {
   accessToken?: string;

@@ -1,4 +1,4 @@
-import { USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
+import { CONCIERGE_OPERATIONS_SKILL_ID, USER_ESCALATION_SKILL_ID } from "@spaceskit/core";
 import type { ProfileModelConfig, ProfileRepository } from "@spaceskit/persistence";
 import type {
   GatewayConciergeAgentStatePayload,
@@ -12,6 +12,11 @@ import {
   throwGatewayError,
 } from "./gateway-admin-model-normalizers.js";
 import type { ResolvedProviderModelId } from "./gateway-admin-managed-agent-provider-model.js";
+
+const CONCIERGE_REQUIRED_SKILL_IDS = [
+  USER_ESCALATION_SKILL_ID,
+  CONCIERGE_OPERATIONS_SKILL_ID,
+] as const;
 
 export interface GatewayAdminManagedAgentSpaceState {
   spaceUid: string;
@@ -135,10 +140,10 @@ export async function ensureGatewayAdminConciergeProfileActive(
       profileId: context.conciergeProfileId,
       personaId: "",
       name: `${profileLabel} Concierge`,
-      description: "General-purpose system concierge for workspace status, routing, and setup.",
+      description: "General-purpose system concierge for workspace status, routing, Workbench dispatch, and setup.",
       canModerate: true,
-      personalityPrompt: "You are the Spaces concierge. Be concise, route users to the right workspace or settings surface, and escalate runtime issues clearly.",
-      defaultSkillIds: [USER_ESCALATION_SKILL_ID],
+      personalityPrompt: "You are the Spaces concierge. Be concise, route users to the right workspace or Workbench surface, recommend safe next work, and escalate runtime issues clearly.",
+      defaultSkillIds: [...CONCIERGE_REQUIRED_SKILL_IDS],
       source: "gateway_concierge_defaults",
     });
     const created = profileRepo.getById(context.conciergeProfileId);
@@ -158,7 +163,7 @@ export async function ensureGatewayAdminConciergeProfileActive(
     ensureGatewayAdminProfileDefaultSkills(
       profileRepo,
       context.conciergeProfileId,
-      [USER_ESCALATION_SKILL_ID],
+      CONCIERGE_REQUIRED_SKILL_IDS,
       "gateway_concierge_defaults",
     );
     return {
@@ -184,7 +189,7 @@ export async function ensureGatewayAdminConciergeProfileActive(
   ensureGatewayAdminProfileDefaultSkills(
     profileRepo,
     context.conciergeProfileId,
-    [USER_ESCALATION_SKILL_ID],
+    CONCIERGE_REQUIRED_SKILL_IDS,
     "gateway_concierge_defaults",
   );
   return {

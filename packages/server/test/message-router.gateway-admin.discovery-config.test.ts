@@ -88,6 +88,7 @@ describe("MessageRouter gateway admin handlers", () => {
 
   test("acknowledges concierge.action_result", async () => {
     const resolved: any[] = [];
+    const workbenchResolved: any[] = [];
     const router = makeRouter(
       undefined,
       undefined,
@@ -103,6 +104,22 @@ describe("MessageRouter gateway admin handlers", () => {
             requestId: input.requestId,
             status: "actioned",
             deliveryChannel: "notification",
+            response: { action: "approve" },
+            context: {
+              source: "workbench",
+              signalKind: "safe_next_task",
+              requestedMutation: "workbench.start_run",
+              queueItemId: "spaces/T-0001",
+            },
+          };
+        },
+      },
+      {
+        handleResolvedRequest: async (input: any) => {
+          workbenchResolved.push(input);
+          return {
+            runId: "wb-run-1",
+            queueItemId: "spaces/T-0001",
           };
         },
       },
@@ -111,22 +128,38 @@ describe("MessageRouter gateway admin handlers", () => {
       requestId: "request-1",
       status: "ok",
       payload: {
-        opened: true,
+        action: "approve",
       },
     });
 
-    const response = await router.handle(makeClient(), msg);
+    const response = await router.handle(makeClient({ publicKey: "principal-1" }), msg);
 
     expect(response?.type).toBe(MessageTypes.CONCIERGE_ACTION_RESULT);
     expect((response?.payload as any).acknowledged).toBe(true);
     expect((response?.payload as any).requestId).toBe("request-1");
+    expect((response?.payload as any).workbenchRun).toEqual({
+      runId: "wb-run-1",
+      queueItemId: "spaces/T-0001",
+    });
     expect(resolved).toEqual([{
       requestId: "request-1",
       status: "ok",
       payload: {
-        opened: true,
+        action: "approve",
       },
       error: undefined,
+    }]);
+    expect(workbenchResolved).toEqual([{
+      requestId: "request-1",
+      status: "actioned",
+      principalId: "principal-1",
+      response: { action: "approve" },
+      context: {
+        source: "workbench",
+        signalKind: "safe_next_task",
+        requestedMutation: "workbench.start_run",
+        queueItemId: "spaces/T-0001",
+      },
     }]);
   });
 });

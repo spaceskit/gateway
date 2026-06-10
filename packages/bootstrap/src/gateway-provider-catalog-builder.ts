@@ -1,4 +1,4 @@
-import { inferContextWindow } from "@spaceskit/core";
+import { inferContextWindow, inferModelFreshnessScore } from "@spaceskit/core";
 import {
   classifyTier,
   type GatewayModelCatalogEntryPayload,
@@ -271,6 +271,9 @@ function sortCatalogModels(providerId: string, models: GatewayModelCatalogEntryP
     const aPriority = catalogModelSourcePriority(providerId, a.source);
     const bPriority = catalogModelSourcePriority(providerId, b.source);
     if (aPriority !== bPriority) return aPriority - bPriority;
+    const aFreshness = inferModelFreshnessScore(a.id) ?? 0;
+    const bFreshness = inferModelFreshnessScore(b.id) ?? 0;
+    if (aFreshness !== bFreshness) return bFreshness - aFreshness;
     const aCtx = a.contextWindow ?? 0;
     const bCtx = b.contextWindow ?? 0;
     if (aCtx !== bCtx) return bCtx - aCtx;

@@ -30,6 +30,17 @@ import {
   materializeOpCliTools,
   resolveDefaultSpacesOpWrapperPath,
 } from "../../../scripts/op-cli-tools/materialize-op-cli-tools.mjs";
+import {
+  PEEKABOO_TOOL_DEFINITIONS,
+} from "../../../scripts/peekaboo-cli-tools/catalog.mjs";
+import {
+  buildPeekabooCommandArgs,
+  runPeekabooOperation,
+} from "../../../scripts/peekaboo-cli-tools/spaces-peekaboo.mjs";
+import {
+  materializePeekabooCliTools,
+  resolveDefaultSpacesPeekabooWrapperPath,
+} from "../../../scripts/peekaboo-cli-tools/materialize-peekaboo-cli-tools.mjs";
 
 const tempDirs: string[] = [];
 
@@ -349,8 +360,165 @@ describe("1password cli bundle integration with CliToolService", () => {
   });
 });
 
+describe("peekaboo cli bundle wrapper", () => {
+  test("builds see argv with raw flags and forced json output", () => {
+    expect(buildPeekabooCommandArgs("see", {
+      flags: {
+        app: "Safari",
+        mode: "window",
+      },
+      presentFlags: ["annotate"],
+    })).toEqual([
+      "see",
+      "--app",
+      "Safari",
+      "--mode",
+      "window",
+      "--annotate",
+      "--json",
+    ]);
+  });
+
+  test("passes Peekaboo host env through to the runner", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaces-peekaboo-env-"));
+    tempDirs.push(root);
+    const fakeBin = join(root, "bin");
+    mkdirSync(fakeBin, { recursive: true });
+    const fakePeekaboo = join(fakeBin, "peekaboo");
+    writeFileSync(fakePeekaboo, "#!/usr/bin/env bash\nexit 0\n", "utf8");
+    chmodSync(fakePeekaboo, 0o755);
+
+    let captured: { executable: string; args: string[]; env: NodeJS.ProcessEnv } | null = null;
+
+    await runPeekabooOperation({
+      operation: "permissions.status",
+      payload: {},
+      env: {
+        PATH: fakeBin,
+        PEEKABOO_AI_PROVIDERS: "ollama",
+      },
+    }, {
+      runCommand: async (input) => {
+        captured = input;
+        return {
+          exitCode: 0,
+          stdout: "{\"permissions\":{\"screenRecording\":true}}",
+          stderr: "",
+        };
+      },
+    });
+
+    expect(captured?.executable).toBe(fakePeekaboo);
+    expect(captured?.args).toEqual(["permissions", "status", "--json"]);
+    expect(captured?.env.PATH).toBe(fakeBin);
+    expect(captured?.env.PEEKABOO_AI_PROVIDERS).toBe("ollama");
+  });
+});
+
+describe("peekaboo cli bundle materializer", () => {
+  test("writes ready-to-load manifest bundles with absolute wrapper paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaces-peekaboo-bundle-"));
+    tempDirs.push(root);
+
+    const result = await materializePeekabooCliTools({
+      targetDir: join(root, "cli-tools"),
+    });
+
+    expect(result.toolCount).toBe(PEEKABOO_TOOL_DEFINITIONS.length);
+    const wrapperPath = resolveDefaultSpacesPeekabooWrapperPath();
+    const seeManifest = JSON.parse(
+      readFileSync(join(result.targetDir, "peekaboo.see", "manifest.json"), "utf8"),
+    ) as Record<string, unknown>;
+    const clickManifest = JSON.parse(
+      readFileSync(join(result.targetDir, "peekaboo.click", "manifest.json"), "utf8"),
+    ) as Record<string, unknown>;
+
+    expect(seeManifest.executable).toBe(wrapperPath);
+    expect(seeManifest.argsTemplate).toEqual(["--op", "see", "--payload", "{{payload}}"]);
+    expect(seeManifest.bundleId).toBe("peekaboo-cli");
+    expect(seeManifest.bundleDisplayName).toBe("Peekaboo CLI");
+    expect(seeManifest.toolGroupId).toBe("capture");
+    expect(clickManifest.dangerLevel).toBe("destructive");
+    expect(readFileSync(join(result.targetDir, "peekaboo.see", "README.md"), "utf8")).toContain(
+      "Host Peekaboo Configuration",
+    );
+  });
+});
+
+describe("peekaboo cli bundle integration with CliToolService", () => {
+  test("loads materialized manifests and invokes the wrapper through a fake peekaboo binary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaces-peekaboo-runtime-"));
+    tempDirs.push(root);
+
+    const fakeBin = join(root, "bin");
+    mkdirSync(fakeBin, { recursive: true });
+    const fakePeekaboo = join(fakeBin, "peekaboo");
+    writeFileSync(fakePeekaboo, [
+      "#!/usr/bin/env bash",
+      "set -eu",
+      "if [ \"$1\" = \"permissions\" ] && [ \"$2\" = \"status\" ] && [ \"$3\" = \"--json\" ]; then",
+      "  printf '{\"permissions\":{\"screenRecording\":true,\"accessibility\":true}}'",
+      "  exit 0",
+      "fi",
+      "printf 'unsupported command: %s\\n' \"$*\" >&2",
+      "exit 1",
+      "",
+    ].join("\n"), "utf8");
+    chmodSync(fakePeekaboo, 0o755);
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${previousPath ?? ""}`;
+
+    try {
+      const manifestRoot = join(root, "cli-tools");
+      await materializePeekabooCliTools({
+        targetDir: manifestRoot,
+      });
+
+      const registry = new CapabilityRegistry(new EventBus());
+      const service = new CliToolService({
+        capabilities: registry,
+        logger: new Logger({ service: "peekaboo-cli-tool-test" }),
+        gatewayProfile: "external",
+        manifestRoot,
+        executableResolver: new LocalExecutableResolver(),
+        workspaceService: {
+          getWorkspace: async () => {
+            throw new Error("fixed cwd tools should not request a workspace");
+          },
+        } as any,
+      });
+
+      await service.initialize();
+
+      const tool = service.getTool("peekaboo.permissions.status");
+      expect(tool?.requiresApproval).toBe(true);
+      expect(tool?.available).toBe(true);
+      expect(tool?.bundleId).toBe("peekaboo-cli");
+
+      const result = await registry.invoke(
+        {
+          capability: "shell",
+          operation: "peekaboo.permissions.status",
+          args: {
+            payload: {},
+          },
+        },
+      );
+
+      expect("data" in result && result.data).toBeTruthy();
+      const envelope = "data" in result ? result.data as Record<string, unknown> : {};
+      expect(envelope.ok).toBe(true);
+      expect(envelope.operation).toBe("permissions.status");
+      expect((envelope.data as { permissions?: { screenRecording?: boolean } }).permissions?.screenRecording).toBe(true);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});
+
 describe("interconnector catalog service", () => {
-  test("materializes jira, harvest, and 1password tools from the registry and reports active health", async () => {
+  test("materializes jira, harvest, 1password, and peekaboo tools from the registry and reports active health", async () => {
     const root = mkdtempSync(join(tmpdir(), "spaces-interconnector-registry-all-"));
     tempDirs.push(root);
 
@@ -359,6 +527,7 @@ describe("interconnector catalog service", () => {
     const fakeJira = join(fakeBin, "jira");
     const fakeHrvst = join(fakeBin, "hrvst");
     const fakeOp = join(fakeBin, "op");
+    const fakePeekaboo = join(fakeBin, "peekaboo");
 
     writeFileSync(fakeJira, [
       "#!/usr/bin/env bash",
@@ -393,16 +562,30 @@ describe("interconnector catalog service", () => {
       "exit 1",
       "",
     ].join("\n"), "utf8");
+    writeFileSync(fakePeekaboo, [
+      "#!/usr/bin/env bash",
+      "set -eu",
+      "if [ \"$1\" = \"permissions\" ] && [ \"$2\" = \"status\" ] && [ \"$3\" = \"--json\" ]; then",
+      "  printf '{\"permissions\":{\"screenRecording\":true,\"accessibility\":true}}'",
+      "  exit 0",
+      "fi",
+      "printf 'unsupported command: %s\\n' \"$*\" >&2",
+      "exit 1",
+      "",
+    ].join("\n"), "utf8");
     chmodSync(fakeJira, 0o755);
     chmodSync(fakeHrvst, 0o755);
     chmodSync(fakeOp, 0o755);
+    chmodSync(fakePeekaboo, 0o755);
 
     const previousJira = process.env.SPACES_JIRA_EXECUTABLE;
     const previousHrvst = process.env.SPACES_HRVST_EXECUTABLE;
     const previousOp = process.env.SPACES_OP_EXECUTABLE;
+    const previousPeekaboo = process.env.SPACES_PEEKABOO_EXECUTABLE;
     process.env.SPACES_JIRA_EXECUTABLE = fakeJira;
     process.env.SPACES_HRVST_EXECUTABLE = fakeHrvst;
     process.env.SPACES_OP_EXECUTABLE = fakeOp;
+    process.env.SPACES_PEEKABOO_EXECUTABLE = fakePeekaboo;
 
     try {
       const manifestRoot = join(root, "cli-tools");
@@ -433,8 +616,9 @@ describe("interconnector catalog service", () => {
       expect(startup.bundleIds).toContain("hrvst-cli");
       expect(startup.bundleIds).toContain("onepassword-cli");
       expect(startup.bundleIds).toContain("fruitmail-cli");
+      expect(startup.bundleIds).toContain("peekaboo-cli");
       expect(startup.toolCount).toBe(
-        22 + HRVST_TOOL_DEFINITIONS.length + OP_TOOL_DEFINITIONS.length + 6,
+        22 + HRVST_TOOL_DEFINITIONS.length + OP_TOOL_DEFINITIONS.length + 6 + PEEKABOO_TOOL_DEFINITIONS.length,
       );
 
       await cliToolService.initialize();
@@ -443,15 +627,19 @@ describe("interconnector catalog service", () => {
       expect(cliToolService.getTool("jira.issue.view")?.healthStatus).toBe("ok");
       expect(cliToolService.getTool("hrvst.users.me")?.healthStatus).toBe("ok");
       expect(cliToolService.getTool("op.whoami")?.healthStatus).toBe("ok");
+      expect(cliToolService.getTool("peekaboo.permissions.status")?.healthStatus).toBe("ok");
 
       const bundles = interconnectorCatalogService.listBundles();
       expect(bundles.find((bundle) => bundle.bundleId === "jira-cli")?.availabilityStatus).toBe("active");
       expect(bundles.find((bundle) => bundle.bundleId === "hrvst-cli")?.availabilityStatus).toBe("active");
       expect(bundles.find((bundle) => bundle.bundleId === "onepassword-cli")?.availabilityStatus).toBe("active");
+      expect(bundles.find((bundle) => bundle.bundleId === "peekaboo-cli")?.availabilityStatus).toBe("active");
       expect(bundles.find((bundle) => bundle.bundleId === "hrvst-cli")?.installHint)
         .toContain("hrvst-cli");
       expect(bundles.find((bundle) => bundle.bundleId === "onepassword-cli")?.installHint)
         .toContain("1Password CLI");
+      expect(bundles.find((bundle) => bundle.bundleId === "peekaboo-cli")?.installHint)
+        .toContain("Peekaboo");
     } finally {
       if (previousJira === undefined) {
         delete process.env.SPACES_JIRA_EXECUTABLE;
@@ -467,6 +655,11 @@ describe("interconnector catalog service", () => {
         delete process.env.SPACES_OP_EXECUTABLE;
       } else {
         process.env.SPACES_OP_EXECUTABLE = previousOp;
+      }
+      if (previousPeekaboo === undefined) {
+        delete process.env.SPACES_PEEKABOO_EXECUTABLE;
+      } else {
+        process.env.SPACES_PEEKABOO_EXECUTABLE = previousPeekaboo;
       }
     }
   });

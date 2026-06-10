@@ -323,6 +323,86 @@ describe("CliExecutorModelProvider command building", () => {
     expect(seenSpec?.args).not.toContain("--thinking-level");
   });
 
+  test("builds the Antigravity print command without unsupported model or output flags", async () => {
+    let seenSpec:
+      | {
+        executable: string;
+        args: string[];
+        stdin?: string;
+        cwd?: string;
+      }
+      | undefined;
+
+    const provider = new CliExecutorModelProvider({
+      id: "antigravity",
+      name: "Antigravity CLI",
+      model: "antigravity/selected",
+      runCommand: async (spec) => {
+        seenSpec = spec;
+        return { exitCode: 0, stdout: "done\n", stderr: "" };
+      },
+    });
+
+    const result = await provider.generate("antigravity/selected", {
+      messages: [{ role: "user", content: "Say done." }],
+      workingDirectory: "/tmp/antigravity-space",
+    });
+
+    expect(seenSpec).toEqual({
+      executable: "agy",
+      args: [
+        "--print",
+        "--sandbox",
+        "--add-dir",
+        "/tmp/antigravity-space",
+        "USER:\nSay done.",
+      ],
+      cwd: "/tmp/antigravity-space",
+    });
+    expect(seenSpec?.stdin).toBeUndefined();
+    expect(seenSpec?.args).not.toContain("--model");
+    expect(seenSpec?.args).not.toContain("--json");
+    expect(seenSpec?.args).not.toContain("--output-format");
+    expect(result.message.content).toBe("done");
+  });
+
+  test("maps Antigravity full-access approval bypass to dangerously skip permissions", async () => {
+    let seenSpec:
+      | {
+        executable: string;
+        args: string[];
+        stdin?: string;
+        cwd?: string;
+      }
+      | undefined;
+
+    const provider = new CliExecutorModelProvider({
+      id: "antigravity",
+      name: "Antigravity CLI",
+      model: "antigravity/selected",
+      runCommand: async (spec) => {
+        seenSpec = spec;
+        return { exitCode: 0, stdout: "done\n", stderr: "" };
+      },
+    });
+
+    await provider.generate("antigravity/selected", {
+      messages: [{ role: "user", content: "Modify files." }],
+      accessMode: "full_access",
+      approvalBypassEnabled: true,
+      workingDirectory: "/tmp/antigravity-space",
+    });
+
+    expect(seenSpec?.args).toEqual([
+      "--print",
+      "--dangerously-skip-permissions",
+      "--add-dir",
+      "/tmp/antigravity-space",
+      "USER:\nModify files.",
+    ]);
+    expect(seenSpec?.args).not.toContain("--sandbox");
+  });
+
   test("adds strict MCP bridge config and explicit allowed bridge tools for Claude", async () => {
     let seenSpec:
       | {

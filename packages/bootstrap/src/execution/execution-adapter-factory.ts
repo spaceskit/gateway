@@ -15,6 +15,7 @@ import {
   OpenAIResponsesModelProvider,
   UnsupportedModelProvider,
 } from "@spaceskit/provider-runtime";
+import { LocalExecutableResolver } from "./local-executable-resolver.js";
 
 export type ExecutionAdapterClass = "cloud" | "executor" | "local_runtime";
 
@@ -30,9 +31,11 @@ export interface ExecutionAdapterFactoryInput {
 interface ExecutionAdapterFactoryOptions {
   appleHelperExecutablePath?: string;
   appleHelperRunCommand?: AppleFoundationProviderConfig["runCommand"];
+  executableResolver?: LocalExecutableResolver;
+  findExecutable?: (commands: string[]) => string | null;
 }
 
-const EXECUTOR_PROVIDER_IDS = new Set(["claude", "claude-agent-sdk", "codex", "codex-app-server", "gemini"]);
+const EXECUTOR_PROVIDER_IDS = new Set(["antigravity", "claude", "claude-agent-sdk", "codex", "codex-app-server", "gemini"]);
 const LOCAL_RUNTIME_PROVIDER_IDS = new Set(["apple", "lmstudio", "ollama"]);
 
 export function classifyExecutionAdapter(providerIdRaw?: string): ExecutionAdapterClass {
@@ -60,7 +63,11 @@ export function mapExecutionClassToCatalogGroup(
 }
 
 export class ExecutionAdapterFactory {
-  constructor(private readonly options: ExecutionAdapterFactoryOptions = {}) {}
+  private readonly executableResolver: LocalExecutableResolver;
+
+  constructor(private readonly options: ExecutionAdapterFactoryOptions = {}) {
+    this.executableResolver = options.executableResolver ?? new LocalExecutableResolver();
+  }
 
   createModelProvider(input: ExecutionAdapterFactoryInput): ModelProvider {
     const executionClass = classifyExecutionAdapter(input.providerId);
@@ -96,10 +103,11 @@ export class ExecutionAdapterFactory {
         apiKey: input.apiKey,
         authMode: input.authMode as "api_key" | "host_login" | undefined,
         isLocal: false,
+        executablePath: this.findExecutable(["codex"]) ?? undefined,
       });
     }
 
-    if (providerId === "claude" || providerId === "codex" || providerId === "gemini") {
+    if (providerId === "antigravity" || providerId === "claude" || providerId === "codex" || providerId === "gemini") {
       return new CliExecutorModelProvider({
         id: providerId,
         name: providerId,
@@ -174,6 +182,19 @@ export class ExecutionAdapterFactory {
 
   classify(providerId: string): ExecutionAdapterClass {
     return classifyExecutionAdapter(providerId);
+  }
+
+  private findExecutable(commands: string[]): string | null {
+    const configured = this.options.findExecutable?.(commands);
+    if (configured) {
+      return configured;
+    }
+    const resolved = this.executableResolver.resolve({
+      cacheKey: commands.join("|"),
+      commands,
+      versionProbe: { args: ["--version"], timeoutMs: 750 },
+    });
+    return resolved.path ?? null;
   }
 }
 

@@ -73,7 +73,7 @@ function showHelp(): void {
   Environment variables:
     SPACESKIT_PORT             WebSocket port (default: 9320)
     SPACESKIT_HOST             Bind address (default: 127.0.0.1)
-    SPACESKIT_MODEL_PROVIDER   Provider/executor (openrouter, openai, groq, together, mistral, claude, codex, gemini, lmstudio, ollama)
+    SPACESKIT_MODEL_PROVIDER   Provider/executor (openrouter, openai, groq, together, mistral, antigravity, claude, codex, gemini, lmstudio, ollama)
     SPACESKIT_MODEL            Model ID
     SPACESKIT_API_KEY          Provider API key
     SPACESKIT_HEALTH_DEBUG     Include debug diagnostics in /health

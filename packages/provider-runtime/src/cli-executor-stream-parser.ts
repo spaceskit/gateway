@@ -19,12 +19,41 @@ import type {
 
 export function createCliStreamParser(providerId: SupportedProviderId, messages: ModelMessage[]): CliStreamParser {
   switch (providerId) {
+    case "antigravity":
+      return new PlainTextCliStreamParser(messages);
     case "claude":
       return new JsonLineCliStreamParser((record, state) => parseClaudeStreamRecord(record, state), messages);
     case "codex":
       return new JsonLineCliStreamParser((record, state) => parseCodexStreamRecord(record, state), messages);
     case "gemini":
       return new JsonLineCliStreamParser((record, state) => parseGeminiStreamRecord(record, state), messages);
+  }
+}
+
+class PlainTextCliStreamParser implements CliStreamParser {
+  private assistantText = "";
+  private sawFinish = false;
+
+  constructor(private readonly messages: ModelMessage[]) {}
+
+  push(chunk: string): StreamChunk[] {
+    if (chunk.length === 0) {
+      return [];
+    }
+    this.assistantText += chunk;
+    return [{ type: "text_delta", text: chunk }];
+  }
+
+  finish(): StreamChunk[] {
+    if (this.sawFinish) {
+      return [];
+    }
+    this.sawFinish = true;
+    return [{
+      type: "finish",
+      finishReason: "stop",
+      usage: estimateUsage(this.messages, this.assistantText),
+    }];
   }
 }
 

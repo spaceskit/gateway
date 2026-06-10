@@ -1,14 +1,19 @@
 import type { SupportedProviderId } from "./cli-executor-command-types.js";
 
 const PROVIDER_ALIASES: Record<string, SupportedProviderId> = {
+  antigravity: "antigravity",
   claude: "claude",
   codex: "codex",
   gemini: "gemini",
 };
 
 export const MODEL_MANIFEST: Record<SupportedProviderId, string[]> = {
+  antigravity: ["antigravity/selected"],
   claude: ["claude/sonnet", "claude/opus", "claude/haiku"],
   codex: [
+    "codex/gpt-5.5",
+    "codex/gpt-5.4",
+    "codex/gpt-5.4-mini",
     "codex/gpt-5.2-codex",
     "codex/gpt-5.2-codex-max",
     "codex/gpt-5.2-codex-mini",
@@ -29,6 +34,8 @@ export function normalizeProviderId(value?: string): SupportedProviderId | undef
 
 export function executableForProvider(providerId?: SupportedProviderId): string | undefined {
   switch (providerId) {
+    case "antigravity":
+      return "agy";
     case "claude":
       return "claude";
     case "codex":

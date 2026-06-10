@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createContext } from "./gateway-admin-service-test-helpers.js";
 import { LocalExecutableResolver } from "../src/execution/local-executable-resolver.js";
@@ -110,6 +113,97 @@ describe("DefaultGatewayAdminService local runtime detection", () => {
     }
   });
 
+  test("recommends current Codex cache model for Codex App Server catalogs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaceskit-codex-models-"));
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    mkdirSync(join(root, ".codex"), { recursive: true });
+    writeFileSync(join(root, ".codex", "config.toml"), 'model = "gpt-5.5"\n');
+    writeFileSync(
+      join(root, ".codex", "models_cache.json"),
+      JSON.stringify({
+        models: [
+          { slug: "gpt-5.5" },
+          { slug: "gpt-5.4" },
+          { slug: "gpt-5.4-mini" },
+        ],
+      }),
+    );
+
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "codex" ? "/opt/homebrew/bin/codex" : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+
+    try {
+      const agents = await ctx.admin.discoverLocalAgents();
+      const codexAppServer = agents.find((agent) => agent.id === "codex-app-server");
+      expect(codexAppServer?.recommendedModel).toBe("codex-app-server/gpt-5.5");
+      expect(codexAppServer?.availableModels?.slice(0, 3)).toEqual([
+        "codex-app-server/gpt-5.5",
+        "codex-app-server/gpt-5.4",
+        "codex-app-server/gpt-5.4-mini",
+      ]);
+
+      const catalogs = await ctx.admin.listAvailableModels({
+        providerId: "codex-app-server",
+        refresh: true,
+      });
+      expect(catalogs[0]?.models.slice(0, 3).map((entry) => entry.id)).toEqual([
+        "codex-app-server/gpt-5.5",
+        "codex-app-server/gpt-5.4",
+        "codex-app-server/gpt-5.4-mini",
+      ]);
+      const model = catalogs[0]?.models.find((entry) => entry.id === "codex-app-server/gpt-5.5");
+      expect(model?.contextWindow).toBe(1_050_000);
+      expect(model?.tier).toBe("smartest");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("lists the selected Antigravity model for the local CLI provider", async () => {
+    const ctx = createContext();
+    try {
+      const catalogs = await ctx.admin.listProviderCatalogs({ providerId: "antigravity" });
+      expect(catalogs.length).toBe(1);
+      expect(catalogs[0].providerId).toBe("antigravity");
+      expect(catalogs[0].models.map((entry) => entry.id)).toEqual(["antigravity/selected"]);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("auto-seeds Antigravity provider config when agy is installed", () => {
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "agy|antigravity" ? "/Users/test/.local/bin/agy" : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+    try {
+      const antigravity = ctx.admin.getProviderSettings("antigravity");
+
+      expect(antigravity.providerId).toBe("antigravity");
+      expect(antigravity.model).toBe("antigravity/selected");
+      expect(antigravity.allowedModels).toEqual(["antigravity/selected"]);
+      expect(antigravity.nativeCliToolsEnabled).toBe(false);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
   test("auto-seeds a separate codex-app-server provider config when codex is installed", () => {
     const executableResolver = {
       resolve: ({ cacheKey }: { cacheKey: string }) => ({
@@ -123,7 +217,7 @@ describe("DefaultGatewayAdminService local runtime detection", () => {
 
       expect(codex.providerId).toBe("codex");
       expect(codexAppServer.providerId).toBe("codex-app-server");
-      expect(codexAppServer.model).toBe("codex-app-server/gpt-5.4");
+      expect(codexAppServer.model).toBe("codex-app-server/gpt-5.5");
       expect(codexAppServer.authMode).toBe("host_login");
     } finally {
       ctx.db.close();
@@ -148,6 +242,28 @@ describe("DefaultGatewayAdminService local runtime detection", () => {
       const claude = agents.find((agent) => agent.id === "claude");
       expect(claude?.detected).toBe(true);
       expect(claude?.executablePath).toBe("/opt/homebrew/bin/claude");
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+    }
+  });
+
+  test("discoverLocalAgents detects Antigravity through agy with antigravity fallback", async () => {
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "agy|antigravity" ? "/Users/test/.local/bin/agy" : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+    try {
+      const agents = await ctx.admin.discoverLocalAgents();
+      const antigravity = agents.find((agent) => agent.id === "antigravity");
+
+      expect(antigravity?.detected).toBe(true);
+      expect(antigravity?.executablePath).toBe("/Users/test/.local/bin/agy");
+      expect(antigravity?.recommendedProviderId).toBe("antigravity");
+      expect(antigravity?.recommendedModel).toBe("antigravity/selected");
+      expect(antigravity?.availableModels).toEqual(["antigravity/selected"]);
     } finally {
       ctx.db.close();
       ctx.restoreEnv();

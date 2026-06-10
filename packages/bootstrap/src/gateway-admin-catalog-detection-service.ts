@@ -41,6 +41,7 @@ export type CodexAppServerMetadataProbe = (input: {
 export interface GatewayAdminCatalogDetectionServiceOptions {
   claudeAgentSdkMetadataProbe?: ClaudeAgentSdkMetadataProbe;
   codexAppServerMetadataProbe?: CodexAppServerMetadataProbe;
+  findExecutable?: (commands: string[]) => string | null;
   resolveConfiguredProviderApiKey: (
     providerId: string,
     config?: ProviderRuntimeConfig,
@@ -54,6 +55,7 @@ export class GatewayAdminCatalogDetectionService {
     providerId: string,
     config?: ProviderRuntimeConfig,
   ) => string | undefined;
+  private readonly findExecutable?: (commands: string[]) => string | null;
   private readonly claudeAgentSdkDetectionCache = new Map<string, {
     expiresAt: number;
     value: ClaudeAgentSdkCatalogProbe;
@@ -68,6 +70,7 @@ export class GatewayAdminCatalogDetectionService {
   constructor(options: GatewayAdminCatalogDetectionServiceOptions) {
     this.claudeAgentSdkMetadataProbe = options.claudeAgentSdkMetadataProbe;
     this.codexAppServerMetadataProbe = options.codexAppServerMetadataProbe;
+    this.findExecutable = options.findExecutable;
     this.resolveConfiguredProviderApiKey = options.resolveConfiguredProviderApiKey;
   }
 
@@ -144,6 +147,7 @@ export class GatewayAdminCatalogDetectionService {
           model,
           apiKey: authMode === "api_key" ? this.resolveConfiguredProviderApiKey(providerId, config) : undefined,
           authMode: authMode as "api_key" | "host_login",
+          executablePath: this.findExecutable?.(["codex"]) ?? undefined,
         });
         const probe = await provider.probeMetadata();
         return mapCodexAppServerProbeResult(probe);

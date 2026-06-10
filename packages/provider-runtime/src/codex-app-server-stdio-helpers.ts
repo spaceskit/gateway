@@ -12,6 +12,7 @@ import {
 } from "./codex-app-server-request-mapping.js";
 import {
   buildDynamicTools,
+  fingerprintGatewayToolBridgeConfig,
   resolveGatewayToolBridgeConfig,
 } from "./codex-app-server-tool-protocol.js";
 import type {
@@ -45,10 +46,18 @@ type AppServerPublisher = (message: {
 export async function prepareCodexAppServerThread(
   input: CodexAppServerTurnInput,
   sendRequest: SendCodexRequest,
-): Promise<{ threadId: string }> {
+): Promise<{ threadId: string; gatewayToolBridgeFingerprint?: string; resumed: boolean }> {
   const providerSessionHandle = input.options.providerSessionHandle;
   const developerInstructions = extractDeveloperInstructions(input.options.messages);
-  if (providerSessionHandle?.type === "codex_app_server_thread") {
+  const gatewayToolBridgeConfig = resolveGatewayToolBridgeConfig(input.options);
+  const gatewayToolBridgeFingerprint = fingerprintGatewayToolBridgeConfig(gatewayToolBridgeConfig);
+  const dynamicTools = buildDynamicTools(gatewayToolBridgeConfig);
+  const canResumeExistingThread = providerSessionHandle?.type === "codex_app_server_thread"
+    && (
+      !gatewayToolBridgeFingerprint
+      || providerSessionHandle.gatewayToolBridgeFingerprint === gatewayToolBridgeFingerprint
+    );
+  if (canResumeExistingThread) {
     const resumed = await sendRequest("thread/resume", {
       threadId: providerSessionHandle.threadId,
       ...(input.model ? { model: input.model } : {}),
@@ -58,9 +67,14 @@ export async function prepareCodexAppServerThread(
         : {}),
       ...(mapSandboxMode(input.options.accessMode) ? { sandbox: mapSandboxMode(input.options.accessMode) } : {}),
       ...(developerInstructions ? { developerInstructions } : {}),
+      dynamicTools,
       persistExtendedHistory: false,
     }) as { thread?: unknown };
-    return { threadId: extractThreadId(resumed?.thread) ?? providerSessionHandle.threadId };
+    return {
+      threadId: extractThreadId(resumed?.thread) ?? providerSessionHandle.threadId,
+      ...(gatewayToolBridgeFingerprint ? { gatewayToolBridgeFingerprint } : {}),
+      resumed: true,
+    };
   }
 
   const started = await sendRequest("thread/start", {
@@ -71,7 +85,7 @@ export async function prepareCodexAppServerThread(
       : {}),
     ...(mapSandboxMode(input.options.accessMode) ? { sandbox: mapSandboxMode(input.options.accessMode) } : {}),
     ...(developerInstructions ? { developerInstructions } : {}),
-    dynamicTools: buildDynamicTools(resolveGatewayToolBridgeConfig(input.options)),
+    dynamicTools,
     experimentalRawEvents: false,
     persistExtendedHistory: false,
   }) as { thread?: unknown };
@@ -86,7 +100,11 @@ export async function prepareCodexAppServerThread(
       name: sessionTitle,
     }).catch(() => {});
   }
-  return { threadId };
+  return {
+    threadId,
+    ...(gatewayToolBridgeFingerprint ? { gatewayToolBridgeFingerprint } : {}),
+    resumed: false,
+  };
 }
 
 export async function readAllCodexAppServerModels(

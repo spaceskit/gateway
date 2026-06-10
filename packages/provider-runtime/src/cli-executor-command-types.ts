@@ -1,4 +1,4 @@
-export type SupportedProviderId = "claude" | "codex" | "gemini";
+export type SupportedProviderId = "antigravity" | "claude" | "codex" | "gemini";
 export type CommandMode = "generate" | "stream";
 
 export interface ModelReference {

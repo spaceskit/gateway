@@ -21,7 +21,9 @@ describe("ExecutionAdapterFactory", () => {
   });
 
   test("classifies Codex App Server as an executor-backed provider", () => {
-    const factory = new ExecutionAdapterFactory();
+    const factory = new ExecutionAdapterFactory({
+      findExecutable: (commands) => commands.includes("codex") ? "/tmp/spaces-good-codex" : null,
+    });
 
     expect(factory.classify("codex-app-server")).toBe("executor");
 
@@ -36,6 +38,22 @@ describe("ExecutionAdapterFactory", () => {
     expect(provider.id).toBe("codex-app-server");
     expect(provider.isLocal).toBe(false);
     expect((provider as any).config.authMode).toBe("api_key");
+    expect((provider as any).config.executablePath).toBe("/tmp/spaces-good-codex");
+  });
+
+  test("classifies Antigravity CLI as an executor-backed provider", () => {
+    const factory = new ExecutionAdapterFactory();
+
+    expect(factory.classify("antigravity")).toBe("executor");
+
+    const provider = factory.createModelProvider({
+      providerId: "antigravity",
+      model: "antigravity/selected",
+    });
+
+    expect(provider.constructor.name).toBe("CliExecutorModelProvider");
+    expect(provider.id).toBe("antigravity");
+    expect(provider.isLocal).toBe(true);
   });
 
   test("wires the Apple Foundation helper into apple providers when available", async () => {

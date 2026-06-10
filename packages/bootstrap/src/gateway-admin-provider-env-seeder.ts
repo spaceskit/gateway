@@ -141,10 +141,17 @@ function seedCliExecutorProviders(
   options: GatewayAdminProviderEnvSeederOptions,
   now: string,
 ): void {
-  for (const providerId of ["claude", "codex", "gemini"] as const) {
+  const cliExecutorCommands = {
+    claude: ["claude"],
+    codex: ["codex"],
+    gemini: ["gemini"],
+    antigravity: ["agy", "antigravity"],
+  } as const;
+
+  for (const [providerId, commands] of Object.entries(cliExecutorCommands)) {
     if (options.providerConfigs.has(providerId)) continue;
     if (!options.providerVisibleInCatalog(providerId)) continue;
-    if (!options.findExecutable([providerId])) continue;
+    if (!options.findExecutable([...commands])) continue;
     const defaultModel = DEFAULT_MODEL_BY_PROVIDER[providerId];
     if (!defaultModel) continue;
     const model = withProviderPrefix(providerId, defaultModel);

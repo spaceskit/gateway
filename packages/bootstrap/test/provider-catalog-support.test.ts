@@ -26,9 +26,11 @@ describe("provider-catalog-support", () => {
   test("exposes stable provider display names and install hints", () => {
     expect(providerDisplayName("claude-agent-sdk")).toBe("Claude Agent SDK");
     expect(providerDisplayName("codex-app-server")).toBe("Codex App Server");
+    expect(providerDisplayName("antigravity")).toBe("Antigravity CLI");
     expect(providerDisplayName("lmstudio")).toBe("LM Studio");
     expect(providerInstallHint("openrouter")).toContain("OPENROUTER_API_KEY");
     expect(providerInstallHint("codex-app-server")).toContain("OPENAI_API_KEY");
+    expect(providerInstallHint("antigravity")).toContain("antigravity.google/cli/install.sh");
     expect(providerInstallHint("unknown-provider")).toBeUndefined();
   });
 
@@ -50,12 +52,15 @@ describe("provider-catalog-support", () => {
 
   test("distinguishes local, executor, and openai-compatible providers", () => {
     expect(isLocalProvider("lmstudio")).toBe(true);
+    expect(isLocalProvider("antigravity")).toBe(true);
     expect(isLocalProvider("openai")).toBe(false);
     expect(isCliExecutorProvider("codex")).toBe(true);
+    expect(isCliExecutorProvider("antigravity")).toBe(true);
     expect(isCliExecutorProvider("openai")).toBe(false);
     expect(isOpenAICompatibleProvider("openrouter")).toBe(true);
     expect(isOpenAICompatibleProvider("claude")).toBe(false);
     expect(providerRecommended("apple")).toBe(true);
+    expect(providerRecommended("antigravity")).toBe(false);
     expect(providerRecommended("anthropic")).toBe(false);
   });
 

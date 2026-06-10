@@ -1,3 +1,5 @@
+import { inferKnownModelTier } from "@spaceskit/core";
+
 /**
  * Tier classification for the gateway model catalog.
  *
@@ -10,17 +12,21 @@
  *  1. Apple, LM Studio, and Ollama always classify as `local` (on-device or
  *     local-runtime providers — see `LOCAL_PROVIDER_IDS` in
  *     provider-catalog-support.ts).
- *  2. CLI executors (`claude`, `codex`, `gemini`) are also treated as `local`
+ *  2. CLI executors (`antigravity`, `claude`, `codex`, `gemini`) are also treated as `local`
  *     when the gateway runs on the user's host. Their inner model id still
  *     gets re-classified by name keywords, but the *runtime* sits on the host.
  *     Per spec we surface them as `local`.
- *  3. Name keywords (case-insensitive) on the trimmed model identifier:
+ *  3. Known model metadata for current frontier families:
+ *       - `gpt-5.5`                    → `smartest`
+ *       - `gpt-5.4`                    → `balanced`
+ *       - `gpt-5.4-mini` / `nano`      → `fast`
+ *  4. Name keywords (case-insensitive) on the trimmed model identifier:
  *       - `haiku`, `mini`, `flash`, `nano`  → `fast`
  *       - `opus`, `pro`, `max`              → `smartest`
  *       (Note: `flash` wins for Gemini Flash; `pro` wins for Gemini Pro; we
  *       check `fast` keywords first so e.g. `gemini-3-flash-preview` is fast
  *       and `gemini-3-pro-preview` is smartest.)
- *  4. Anything else falls through to `balanced`.
+ *  5. Anything else falls through to `balanced`.
  *
  * The optional `contextWindow` parameter does not currently move the
  * classification — every name-based match is accepted as-is. The parameter is
@@ -35,6 +41,7 @@ export type ModelTier = "fast" | "balanced" | "smartest" | "local";
  */
 const LOCAL_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "apple",
+  "antigravity",
   "claude",
   "codex",
   "gemini",
@@ -104,6 +111,11 @@ export function classifyTier(
 
   if (LOCAL_RUNTIME_PROVIDER_IDS.has(provider)) {
     return "local";
+  }
+
+  const knownTier = inferKnownModelTier(bareModel);
+  if (knownTier) {
+    return knownTier;
   }
 
   if (containsKeyword(bareModel, FAST_KEYWORDS)) {

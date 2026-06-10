@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   GatewayToolBridgeConfig,
   GenerateOptions,
@@ -17,6 +18,17 @@ export type CodexDynamicTool = {
 
 export function resolveGatewayToolBridgeConfig(options: GenerateOptions): GatewayToolBridgeConfig | undefined {
   return options.gatewayToolBridgeConfig;
+}
+
+export function fingerprintGatewayToolBridgeConfig(config?: GatewayToolBridgeConfig): string | undefined {
+  if (!config?.toolDefsJson.trim()) {
+    return undefined;
+  }
+  const digest = createHash("sha256")
+    .update(config.toolDefsJson)
+    .digest("hex");
+  return (typeof digest === "string" ? digest : Buffer.from(digest).toString("hex"))
+    .slice(0, 16);
 }
 
 export function buildDynamicTools(config?: GatewayToolBridgeConfig): CodexDynamicTool[] {
