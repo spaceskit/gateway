@@ -25,7 +25,7 @@ import type { WorkbenchServiceOptions } from "./workbench-service-types.js";
 interface WorkbenchStartRunContext {
   options: WorkbenchServiceOptions;
   now: () => Date;
-  resolveGitRoot(): string;
+  resolveGitRoot(queueItem: WorkbenchQueueItemPayload): string;
   resolveQueueItems(queueItemIds: string[]): WorkbenchQueueItemPayload[];
   requireBatch(batchId: string): WorkbenchBatchRow;
   assertAutonomousEligibility(queueItem: WorkbenchQueueItemPayload, policy: WorkbenchPolicyRow): void;
@@ -72,9 +72,10 @@ export async function startWorkbenchRun(
 
   const runId = `wb-run-${randomUUID()}`;
   const worktree = context.allocateWorktree(queueItem, runId);
+  const taskGitRoot = context.resolveGitRoot(queueItem);
   const touchedRepos = [{
-    repoId: basename(context.resolveGitRoot()),
-    repoPath: context.resolveGitRoot(),
+    repoId: basename(taskGitRoot),
+    repoPath: taskGitRoot,
     kind: "meta" as const,
     committed: false,
   }];

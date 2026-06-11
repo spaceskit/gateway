@@ -47,7 +47,11 @@ import {
   type RunWorkbenchCommandOptions,
   type WorkbenchCommandEvidence,
 } from "./workbench-verification-executor.js";
-import { resolvePlanningRepoRoot } from "./workbench-task-metadata.js";
+import {
+  listWorkbenchProjectSlugs,
+  resolvePlanningRepoRoot,
+  resolveProjectRepoRoot,
+} from "./workbench-task-metadata.js";
 import {
   assertWorkbenchAutonomousEligibility,
   assertWorkbenchBatchConflictFree,
@@ -119,8 +123,9 @@ export class WorkbenchService {
   private readonly logger: Logger | null;
   private readonly repoRoot: string;
   private readonly workProjectsRoot: string;
-  private readonly workbenchProjectSlug: string;
-  private readonly worktreeParentRoot: string;
+  private readonly workbenchProjectSlugs: string[];
+  private readonly defaultProjectSlug: string;
+  private readonly worktreeParentRootOverride: string | null;
   private readonly verificationCommandTimeoutMs: number;
   private readonly verificationExecutor: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
   private readonly agentTurnCompletionTimeoutMs: number;
@@ -136,11 +141,17 @@ export class WorkbenchService {
     this.logger = options.logger ?? null;
     this.repoRoot = resolvePlanningRepoRoot(resolve(options.repoRoot), this.logger);
     this.workProjectsRoot = resolve(options.workProjectsRoot ?? "/Users/caruso/Documents/work/projects");
-    this.workbenchProjectSlug = options.workbenchProjectSlug ?? "spaces";
-    this.worktreeParentRoot = resolve(
-      options.worktreeParentRoot
-        ?? join(dirname(this.repoRoot), ".spaceskit-workbench", basename(this.repoRoot)),
-    );
+    // Resolution order: slug list > legacy single slug > default ["spaces"].
+    this.defaultProjectSlug = options.workbenchProjectSlug ?? "spaces";
+    const configuredSlugs = (options.workbenchProjectSlugs ?? [])
+      .map((slug) => slug.trim())
+      .filter(Boolean);
+    this.workbenchProjectSlugs = configuredSlugs.length > 0
+      ? configuredSlugs
+      : [this.defaultProjectSlug];
+    this.worktreeParentRootOverride = options.worktreeParentRoot
+      ? resolve(options.worktreeParentRoot)
+      : null;
     this.verificationCommandTimeoutMs = options.verificationCommandTimeoutMs ?? 10 * 60 * 1000;
     this.verificationExecutor = options.verificationExecutor ?? runWorkbenchCommand;
     this.agentTurnCompletionTimeoutMs = options.agentTurnCompletionTimeoutMs ?? 30 * 60 * 1000;
@@ -208,7 +219,7 @@ export class WorkbenchService {
     return startWorkbenchRun({
       options: this.options,
       now: this.now,
-      resolveGitRoot: () => this.resolveGitRoot(),
+      resolveGitRoot: (queueItem) => this.resolveGitRootForItem(queueItem),
       resolveQueueItems: (queueItemIds) => this.resolveQueueItems(queueItemIds),
       requireBatch: (batchId) => this.requireBatch(batchId),
       assertAutonomousEligibility: (queueItem, policy) =>
@@ -636,10 +647,33 @@ export class WorkbenchService {
   private loadQueueItems(): WorkbenchQueueItemPayload[] {
     return loadWorkbenchQueueItems({
       workProjectsRoot: this.workProjectsRoot,
-      workbenchProjectSlug: this.workbenchProjectSlug,
+      workbenchProjectSlugs: this.resolveProjectSlugs(),
+      resolveRepoRoot: (projectSlug) => this.resolveRepoRootForSlug(projectSlug),
       now: this.now(),
       logger: this.logger,
     });
+  }
+
+  /** Expand the special "all" configuration at load time so new project folders are picked up live. */
+  private resolveProjectSlugs(): string[] {
+    if (this.workbenchProjectSlugs.length === 1 && this.workbenchProjectSlugs[0] === "all") {
+      const discovered = listWorkbenchProjectSlugs(this.workProjectsRoot);
+      return discovered.length > 0 ? discovered : [this.defaultProjectSlug];
+    }
+    return this.workbenchProjectSlugs;
+  }
+
+  /**
+   * Repo a slug's worktrees are cut from: the `repo:` declared in the slug's
+   * harness project.md. The legacy default slug keeps falling back to the
+   * configured SPACESKIT_WORKBENCH_REPO_ROOT so single-slug behavior is
+   * unchanged; every other slug without a resolvable repo is execution-blocked.
+   */
+  private resolveRepoRootForSlug(projectSlug: string): string | null {
+    if (projectSlug === this.defaultProjectSlug) {
+      return this.repoRoot;
+    }
+    return resolveProjectRepoRoot(this.workProjectsRoot, projectSlug);
   }
 
   private updateCentralTaskStatus(
@@ -709,17 +743,30 @@ export class WorkbenchService {
     return row;
   }
 
-  private resolveGitRoot(): string {
-    return resolveWorkbenchGitRoot(this.repoRoot);
+  private resolveGitRootForItem(queueItem: WorkbenchQueueItemPayload): string {
+    return resolveWorkbenchGitRoot(this.requireRepoRootForItem(queueItem));
+  }
+
+  private requireRepoRootForItem(queueItem: WorkbenchQueueItemPayload): string {
+    const repoRoot = this.resolveRepoRootForSlug(queueItem.projectSlug);
+    if (!repoRoot) {
+      throw new WorkbenchServiceError(
+        "FAILED_PRECONDITION",
+        `Project '${queueItem.projectSlug}' has no repo configured in project.md.`,
+      );
+    }
+    return repoRoot;
   }
 
   private allocateWorktree(
     queueItem: WorkbenchQueueItemPayload,
     runId: string,
   ): WorkbenchWorktreeRefPayload {
+    const repoRoot = this.requireRepoRootForItem(queueItem);
     return allocateWorkbenchWorktree({
-      repoRoot: this.repoRoot,
-      worktreeParentRoot: this.worktreeParentRoot,
+      repoRoot,
+      worktreeParentRoot: this.worktreeParentRootOverride
+        ?? join(dirname(repoRoot), ".spaceskit-workbench", basename(repoRoot)),
       queueItem,
       runId,
       now: this.now,
@@ -736,7 +783,6 @@ export class WorkbenchService {
     persistWorkbenchRunArtifacts({
       artifacts: this.options.artifacts,
       workProjectsRoot: this.workProjectsRoot,
-      workbenchProjectSlug: this.workbenchProjectSlug,
       row,
       queueItem,
       worktree,

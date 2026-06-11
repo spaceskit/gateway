@@ -134,14 +134,13 @@ export function persistWorkbenchGeneratedDocsKnowledgeArtifact(
 export function persistWorkbenchRunArtifacts(input: {
   artifacts: WorkbenchArtifactRepository;
   workProjectsRoot: string;
-  workbenchProjectSlug: string;
   row: WorkbenchRunRow;
   queueItem: WorkbenchQueueItemPayload;
   worktree: WorkbenchWorktreeRefPayload;
   verificationSuites: WorkbenchVerificationSuitePayload[];
   executionMode: WorkbenchExecutionMode;
 }): void {
-  const queuePath = centralTasksRoot(input.workProjectsRoot, input.workbenchProjectSlug);
+  const queuePath = centralTasksRoot(input.workProjectsRoot, input.queueItem.projectSlug);
   input.artifacts.create({
     artifactId: `wb-artifact-${randomUUID()}`,
     runId: input.row.run_id,

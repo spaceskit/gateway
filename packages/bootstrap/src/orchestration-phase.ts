@@ -88,6 +88,8 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
       repoRoot: Bun.env.SPACESKIT_WORKBENCH_REPO_ROOT ?? process.cwd(),
       workProjectsRoot: Bun.env.SPACESKIT_WORKBENCH_PROJECTS_ROOT,
       workbenchProjectSlug: Bun.env.SPACESKIT_WORKBENCH_PROJECT_SLUG,
+      // Comma-separated slug list (or the literal "all" for discovery); wins over the legacy single-slug var.
+      workbenchProjectSlugs: parseWorkbenchProjectSlugs(Bun.env.SPACESKIT_WORKBENCH_PROJECT_SLUGS),
       runnerApiEnabled: Bun.env.SPACESKIT_WORKBENCH_RUNNER_API_ENABLED === "true",
       workbenchExecutorAutostart,
       logger: logger.child({ module: "workbench" }),
@@ -421,4 +423,12 @@ export async function initializeOrchestrationServices(state: BootstrapState): Pr
     speechSessionService,
     conciergeCallRuntimeService,
   });
+}
+
+function parseWorkbenchProjectSlugs(raw: string | undefined): string[] | undefined {
+  const slugs = (raw ?? "")
+    .split(",")
+    .map((slug) => slug.trim())
+    .filter(Boolean);
+  return slugs.length > 0 ? slugs : undefined;
 }

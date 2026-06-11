@@ -36,7 +36,8 @@ export interface WorkbenchOpenBacklogAuditReport extends WorkbenchPlanningAuditR
 type WorkbenchPlanningAuditOptions = {
   logger?: Logger | null;
   workProjectsRoot?: string;
-  projectSlug?: string;
+  /** Single slug or configured slug list; defaults to "spaces" for back-compat. */
+  projectSlug?: string | string[];
   now?: Date;
 };
 
@@ -48,21 +49,13 @@ export function auditWorkbenchPlanningRepo(
 ): WorkbenchPlanningAuditReport {
   const options = normalizeAuditOptions(loggerOrOptions);
   const repoRoot = resolvePlanningRepoRoot(resolve(startPath), options.logger);
-  const queuePath = centralTasksRoot(options.workProjectsRoot, options.projectSlug);
-  if (!existsSync(queuePath)) {
-    return {
-      repoRoot,
-      queuePath,
-      executableQueueItemCount: 0,
-      nonExecutableRows: [],
-      missingMachineReadableVerification: [],
-      malformedVerificationBlocks: [],
-      goalContractErrors: [],
-      goalContractWarnings: [],
-    };
-  }
-
-  const tasks = loadCentralTasks(options.workProjectsRoot, options.projectSlug, options.now, options.logger);
+  const projectSlugs = Array.isArray(options.projectSlug) ? options.projectSlug : [options.projectSlug];
+  const queuePath = projectSlugs
+    .map((slug) => centralTasksRoot(options.workProjectsRoot, slug))
+    .join(", ");
+  const auditedTasks = projectSlugs
+    .filter((slug) => existsSync(centralTasksRoot(options.workProjectsRoot, slug)))
+    .flatMap((slug) => loadCentralTasks(options.workProjectsRoot, slug, options.now, options.logger));
   const seenIds = new Set<string>();
   const nonExecutableRows: WorkbenchPlanningAuditIssue[] = [];
   const missingMachineReadableVerification: WorkbenchPlanningAuditIssue[] = [];
@@ -70,15 +63,15 @@ export function auditWorkbenchPlanningRepo(
   const goalContractErrors: WorkbenchPlanningAuditIssue[] = [];
   const goalContractWarnings: WorkbenchPlanningAuditIssue[] = [];
 
-  for (const [index, task] of tasks.entries()) {
+  for (const [index, task] of auditedTasks.entries()) {
     const taskMetadata = task.metadata;
     const queueIndex = index + 1;
-    if (!taskMetadata.id.startsWith(`${options.projectSlug}/`)) {
+    if (!taskMetadata.id.startsWith(`${taskMetadata.projectSlug}/`)) {
       nonExecutableRows.push({
         queueIndex,
         queueItemId: taskMetadata.id,
         taskFilePath: task.path,
-        message: `Task id must be namespaced as ${options.projectSlug}/T-NNNN.`,
+        message: `Task id must be namespaced as ${taskMetadata.projectSlug}/T-NNNN.`,
       });
     }
     if (seenIds.has(taskMetadata.id)) {
@@ -137,7 +130,7 @@ export function auditWorkbenchPlanningRepo(
   return {
     repoRoot,
     queuePath,
-    executableQueueItemCount: tasks.length,
+    executableQueueItemCount: auditedTasks.length,
     nonExecutableRows,
     missingMachineReadableVerification,
     malformedVerificationBlocks,

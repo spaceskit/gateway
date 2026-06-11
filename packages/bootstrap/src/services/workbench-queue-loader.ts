@@ -12,41 +12,58 @@ import {
 } from "./workbench-task-metadata.js";
 import { WorkbenchServiceError } from "./workbench-service-normalizers.js";
 
+export function workbenchProjectRepoBlocker(projectSlug: string): string {
+  return `Project '${projectSlug}' has no repo configured in project.md.`;
+}
+
 export function loadWorkbenchQueueItems(input: {
   workProjectsRoot: string;
-  workbenchProjectSlug: string;
+  workbenchProjectSlugs: string[];
+  resolveRepoRoot: (projectSlug: string) => string | null;
   now: Date;
   logger: Logger | null;
 }): WorkbenchQueueItemPayload[] {
-  const tasks: CentralTaskRecord[] = loadCentralTasks(
-    input.workProjectsRoot,
-    input.workbenchProjectSlug,
-    input.now,
-    input.logger,
-  );
   const items: WorkbenchQueueItemPayload[] = [];
-  for (const [index, task] of tasks.entries()) {
-    const taskMetadata = task.metadata;
-    items.push({
-      queueItemId: taskMetadata.id,
-      queueIndex: index + 1,
-      title: taskMetadata.title,
-      type: task.frontmatter.get("spaces-item-type") ?? taskMetadata.priority ?? "task",
-      status: taskMetadata.status,
-      nextAction: taskMetadata.summary ?? extractNextAction(task.body) ?? taskMetadata.title,
-      taskFilePath: task.path,
-      delegation: taskMetadata.delegation,
-      parallelKeys: taskMetadata.parallelKeys,
-      aiShippable: taskMetadata.aiShippable,
-      executionModeEligibility: {
-        supervised: true,
-        autonomous: taskMetadata.executionModeBlockers.length === 0,
-      },
-      verificationMode: taskMetadata.verificationMode,
-      executionModeBlockers: taskMetadata.executionModeBlockers,
-      products: taskMetadata.products,
-      verificationCommands: taskMetadata.verificationCommands,
-    } satisfies WorkbenchQueueItemPayload);
+  let queueIndex = 0;
+  for (const projectSlug of input.workbenchProjectSlugs) {
+    const tasks: CentralTaskRecord[] = loadCentralTasks(
+      input.workProjectsRoot,
+      projectSlug,
+      input.now,
+      input.logger,
+    );
+    // Per-slug repo gate (SYSTEM-MAP D1): slugs without a resolvable repo stay
+    // visible in the merged queue but are execution-blocked in every mode —
+    // supervised runs need a worktree too.
+    const repoRoot = input.resolveRepoRoot(projectSlug);
+    for (const task of tasks) {
+      const taskMetadata = task.metadata;
+      const executionModeBlockers = repoRoot
+        ? taskMetadata.executionModeBlockers
+        : [...taskMetadata.executionModeBlockers, workbenchProjectRepoBlocker(projectSlug)];
+      queueIndex += 1;
+      items.push({
+        queueItemId: taskMetadata.id,
+        projectSlug,
+        queueIndex,
+        title: taskMetadata.title,
+        type: task.frontmatter.get("spaces-item-type") ?? taskMetadata.priority ?? "task",
+        status: taskMetadata.status,
+        nextAction: taskMetadata.summary ?? extractNextAction(task.body) ?? taskMetadata.title,
+        taskFilePath: task.path,
+        delegation: taskMetadata.delegation,
+        parallelKeys: taskMetadata.parallelKeys,
+        aiShippable: taskMetadata.aiShippable,
+        executionModeEligibility: {
+          supervised: repoRoot !== null,
+          autonomous: repoRoot !== null && taskMetadata.executionModeBlockers.length === 0,
+        },
+        verificationMode: taskMetadata.verificationMode,
+        executionModeBlockers,
+        products: taskMetadata.products,
+        verificationCommands: taskMetadata.verificationCommands,
+      } satisfies WorkbenchQueueItemPayload);
+    }
   }
   return items;
 }

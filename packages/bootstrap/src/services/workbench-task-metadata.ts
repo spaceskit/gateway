@@ -12,6 +12,7 @@ import {
 
 export interface ParsedTaskMetadata {
   id: string;
+  projectSlug: string;
   title: string;
   status: string;
   priority?: string;
@@ -46,6 +47,43 @@ export interface CentralTaskRecord {
 
 export function centralTasksRoot(workProjectsRoot: string, projectSlug: string): string {
   return join(workProjectsRoot, projectSlug, "tasks");
+}
+
+/**
+ * Discover every harness project slug under the work projects root that has a
+ * `tasks/` subdirectory; `_`-prefixed directories (`_archive`, ...) are skipped.
+ * Used when the workbench slug configuration is the special value `all`.
+ */
+export function listWorkbenchProjectSlugs(workProjectsRoot: string): string[] {
+  if (!existsSync(workProjectsRoot)) return [];
+  return readdirSync(workProjectsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_"))
+    .map((entry) => entry.name)
+    .filter((slug) => existsSync(join(workProjectsRoot, slug, "tasks")))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Resolve the git repo a project slug's tasks execute against, declared via the
+ * `repo:` frontmatter key of `<workProjectsRoot>/<slug>/project.md`.
+ * Returns null when project.md is missing, declares no `repo:`, or the declared
+ * path is not a git checkout — such slugs stay visible in the queue but are
+ * execution-blocked (SYSTEM-MAP decision D1).
+ */
+export function resolveProjectRepoRoot(workProjectsRoot: string, slug: string): string | null {
+  const projectFilePath = join(workProjectsRoot, slug, "project.md");
+  if (!existsSync(projectFilePath)) return null;
+  let content: string;
+  try {
+    content = readFileSync(projectFilePath, "utf8");
+  } catch {
+    return null;
+  }
+  const repoValue = stripQuotes(parseFrontmatter(content).get("repo") ?? "").trim();
+  if (!repoValue) return null;
+  const repoRoot = repoValue.replace(/\/+$/, "");
+  if (!existsSync(join(repoRoot, ".git"))) return null;
+  return repoRoot;
 }
 
 export function loadCentralTasks(
@@ -218,6 +256,7 @@ function parseCentralTaskFile(taskFilePath: string, projectSlug: string, now: Da
     frontmatter,
     metadata: {
       id,
+      projectSlug,
       title,
       status,
       priority: frontmatter.get("priority"),
@@ -363,6 +402,8 @@ function parseTaskFile(taskFilePath: string): ParsedTaskMetadata {
   }).concat(goalContract.errors.map((issue) => `Goal contract: ${issue.message}`));
   return {
     id: basename(taskFilePath),
+    // Legacy planning-file parse path: central tasks live at <root>/<slug>/tasks/<file>.
+    projectSlug: basename(dirname(dirname(taskFilePath))),
     title,
     status: metadata.get("status") ?? "planned",
     autonomous: delegation === "autonomous",

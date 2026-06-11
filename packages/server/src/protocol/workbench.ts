@@ -30,6 +30,7 @@ export interface WorkbenchExecutionModeEligibilityPayload {
 
 export interface WorkbenchQueueItemPayload {
   queueItemId: string;
+  projectSlug: string;
   queueIndex: number;
   title: string;
   type: string;

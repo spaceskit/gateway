@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   initDatabase,
@@ -1236,5 +1236,175 @@ blockers: []
     expect(audit.executableQueueItemCount).toBeGreaterThan(0);
     expect(audit.queuePath).toBe("/Users/caruso/Documents/work/projects/spaces/tasks");
     expect(audit.malformedVerificationBlocks).toEqual([]);
+  });
+});
+
+describe("WorkbenchService multi-slug", () => {
+  function writeSlugProjectFile(workProjectsRoot: string, slug: string, repoRoot: string | null) {
+    mkdirSync(join(workProjectsRoot, slug), { recursive: true });
+    writeFileSync(join(workProjectsRoot, slug, "project.md"), `---
+slug: ${slug}
+title: ${slug}
+status: in-progress
+${repoRoot ? `repo: ${repoRoot}/` : ""}
+---
+
+# ${slug}
+`);
+  }
+
+  function writeSlugTask(workProjectsRoot: string, slug: string, taskNumber: string) {
+    const tasksRoot = join(workProjectsRoot, slug, "tasks");
+    mkdirSync(tasksRoot, { recursive: true });
+    writeFileSync(join(tasksRoot, `${taskNumber}.md`), `---
+id: ${slug}/${taskNumber}
+title: "${slug} ${taskNumber}"
+status: ready
+owner: agent
+autonomous: true
+priority: medium
+created: 2026-06-11
+updated: 2026-06-11
+depends-on: []
+verification-commands: ["printf 'ok'"]
+products: [${slug}]
+parallel: [independent]
+---
+
+# Task: ${slug} ${taskNumber}
+
+Next action: Do the ${slug} thing.
+`);
+  }
+
+  function createSlugRepo(name: string): string {
+    const base = mkdtempSync(join(tmpdir(), `spaces-workbench-${name}-`));
+    tempDirs.push(base);
+    const repoRoot = join(base, `${name}-repo`);
+    mkdirSync(repoRoot, { recursive: true });
+    writeFileSync(join(repoRoot, "README.md"), `# ${name}\n`);
+    initializeGitRepository(repoRoot);
+    return repoRoot;
+  }
+
+  test("default configuration keeps today's single-slug queue and stamps projectSlug", async () => {
+    const { service } = createHarness();
+
+    const items = await service.listQueue();
+
+    expect(items).toHaveLength(6);
+    expect(new Set(items.map((item) => item.projectSlug))).toEqual(new Set(["spaces"]));
+    expect(items.every((item) => item.executionModeEligibility.supervised)).toBe(true);
+    expect(items.flatMap((item) => item.executionModeBlockers)).not.toContain(
+      "Project 'spaces' has no repo configured in project.md.",
+    );
+  });
+
+  test("merges queue items across configured slugs in slug order", async () => {
+    const { service, workProjectsRoot } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: { workbenchProjectSlugs: ["spaces", "beta"] },
+    });
+    const betaRepo = createSlugRepo("beta");
+    writeSlugProjectFile(workProjectsRoot, "beta", betaRepo);
+    writeSlugTask(workProjectsRoot, "beta", "T-0001");
+
+    const items = await service.listQueue();
+
+    expect(items.map((item) => item.queueItemId)).toEqual([
+      "spaces/T-0001",
+      "spaces/T-0002",
+      "spaces/T-0003",
+      "spaces/T-0004",
+      "spaces/T-0005",
+      "spaces/T-0006",
+      "beta/T-0001",
+    ]);
+    expect(items.map((item) => item.queueIndex)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    const betaItem = items.at(-1)!;
+    expect(betaItem.projectSlug).toBe("beta");
+    expect(betaItem.executionModeEligibility).toEqual({ supervised: true, autonomous: true });
+    expect(betaItem.executionModeBlockers).toEqual([]);
+  });
+
+  test("keeps repo-less slugs visible in the queue but execution-blocked", async () => {
+    const { service, workProjectsRoot } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: { workbenchProjectSlugs: ["spaces", "gamma"] },
+    });
+    writeSlugTask(workProjectsRoot, "gamma", "T-0001");
+
+    const items = await service.listQueue();
+    const gammaItem = items.find((item) => item.queueItemId === "gamma/T-0001")!;
+
+    expect(gammaItem).toBeDefined();
+    expect(gammaItem.projectSlug).toBe("gamma");
+    expect(gammaItem.executionModeBlockers).toContain(
+      "Project 'gamma' has no repo configured in project.md.",
+    );
+    expect(gammaItem.executionModeEligibility).toEqual({ supervised: false, autonomous: false });
+
+    await expect(service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "gamma/T-0001",
+      executionMode: "supervised",
+    })).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+      message: "Project 'gamma' has no repo configured in project.md.",
+    });
+    // The gate fired before any side effect: the task file stays ready.
+    const taskContent = readFileSync(join(workProjectsRoot, "gamma", "tasks", "T-0001.md"), "utf8");
+    expect(taskContent).toContain("status: ready");
+  });
+
+  test("cuts worktrees from the task slug's own repo and reports it in touchedRepos", async () => {
+    const { service, repoRoot, workProjectsRoot } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: { workbenchProjectSlugs: ["spaces", "beta"] },
+    });
+    const betaRepo = createSlugRepo("beta");
+    writeSlugProjectFile(workProjectsRoot, "beta", betaRepo);
+    writeSlugTask(workProjectsRoot, "beta", "T-0001");
+
+    const run = await service.startRun({
+      principalId: "principal-owner",
+      queueItemId: "beta/T-0001",
+      executionMode: "supervised",
+    });
+
+    const expectedParent = join(dirname(betaRepo), ".spaceskit-workbench", "beta-repo");
+    expect(run.worktree?.path.startsWith(expectedParent)).toBe(true);
+    expect(existsSync(run.worktree!.path)).toBe(true);
+    expect(run.worktree!.path.startsWith(repoRoot)).toBe(false);
+    expect(run.touchedRepos).toHaveLength(1);
+    expect(run.touchedRepos[0]!.repoId).toBe("beta-repo");
+    expect(run.touchedRepos[0]!.repoPath.endsWith("beta-repo")).toBe(true);
+  });
+
+  test("'all' discovers every slug with a tasks directory, skipping _-prefixed ones", async () => {
+    const { service, workProjectsRoot } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: { workbenchProjectSlugs: ["all"] },
+    });
+    const betaRepo = createSlugRepo("beta");
+    writeSlugProjectFile(workProjectsRoot, "beta", betaRepo);
+    writeSlugTask(workProjectsRoot, "beta", "T-0001");
+    writeSlugTask(workProjectsRoot, "_archive", "T-0001");
+    mkdirSync(join(workProjectsRoot, "no-tasks-here"), { recursive: true });
+
+    const items = await service.listQueue();
+    const slugs = new Set(items.map((item) => item.projectSlug));
+
+    expect(slugs).toEqual(new Set(["beta", "spaces"]));
+    expect(items[0]!.projectSlug).toBe("beta");
+    expect(items.map((item) => item.queueItemId)).toContain("beta/T-0001");
+    expect(items.map((item) => item.queueItemId)).not.toContain("_archive/T-0001");
+  });
+
+  test("legacy single-slug option still resolves as the only configured slug", async () => {
+    const { service, workProjectsRoot } = createHarness("2026-04-10T12:00:00.000Z", {
+      serviceOverrides: { workbenchProjectSlugs: [] },
+    });
+    writeSlugTask(workProjectsRoot, "beta", "T-0001");
+
+    const items = await service.listQueue();
+
+    expect(new Set(items.map((item) => item.projectSlug))).toEqual(new Set(["spaces"]));
   });
 });

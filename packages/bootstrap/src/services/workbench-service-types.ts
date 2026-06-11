@@ -40,7 +40,15 @@ export interface WorkbenchServiceOptions {
   logger?: Logger;
   now?: () => Date;
   workProjectsRoot?: string;
+  /** Legacy single-slug configuration; superseded by workbenchProjectSlugs when both are set. */
   workbenchProjectSlug?: string;
+  /**
+   * Harness project slugs served by this workbench, in queue order.
+   * The special single entry "all" discovers every slug under workProjectsRoot
+   * with a tasks/ subdirectory (skipping `_`-prefixed directories) at load time.
+   * Resolution order: workbenchProjectSlugs > workbenchProjectSlug > ["spaces"].
+   */
+  workbenchProjectSlugs?: string[];
   worktreeParentRoot?: string;
   verificationCommandTimeoutMs?: number;
   verificationExecutor?: (options: RunWorkbenchCommandOptions) => Promise<WorkbenchCommandEvidence>;
