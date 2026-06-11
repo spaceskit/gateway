@@ -98,18 +98,37 @@ export function updateCentralTaskFile(taskFilePath: string, input: {
   setLine("claimed-at", input.claimedAt);
   setLine("claim-expires-at", input.claimExpiresAt);
   const logEntry = `- ${input.nowIso} - ${input.logMessage}`;
-  const feedbackEntry = input.status === "in-progress"
-    ? `\n## Attempts\n\n### Spaces Workbench Attempt Started\n- at: ${input.nowIso}\n- agent: ${input.owner ?? "agent"}\n- status: in-progress\n`
+  const sectionUpdate = input.status === "in-progress"
+    ? {
+        heading: "Attempts",
+        entry: `### Spaces Workbench Attempt Started\n- at: ${input.nowIso}\n- agent: ${input.owner ?? "agent"}\n- status: in-progress`,
+      }
     : input.status === "review"
-      ? `\n## Feedback\n\n### Spaces Workbench Review Requested\n- at: ${input.nowIso}\n- decision: review\n- feedback: ${input.logMessage}\n`
-      : input.status === "blocked"
-        ? `\n## Feedback\n\n### Spaces Workbench Blocked\n- at: ${input.nowIso}\n- decision: block\n- feedback: ${input.logMessage}\n`
-        : "";
-  const bodyWithFeedback = feedbackEntry ? `${body.trimEnd()}\n${feedbackEntry}` : body;
+      ? {
+          heading: "Feedback",
+          entry: `### Spaces Workbench Review Requested\n- at: ${input.nowIso}\n- decision: review\n- feedback: ${input.logMessage}`,
+        }
+      : {
+          heading: "Feedback",
+          entry: `### Spaces Workbench Blocked\n- at: ${input.nowIso}\n- decision: block\n- feedback: ${input.logMessage}`,
+        };
+  const bodyWithFeedback = upsertSection(body, sectionUpdate.heading, sectionUpdate.entry);
   const nextBody = bodyWithFeedback.includes("\n## Log\n")
     ? bodyWithFeedback.replace(/\n## Log\n/, `\n## Log\n\n${logEntry}\n`)
     : `${bodyWithFeedback.trimEnd()}\n\n## Log\n\n${logEntry}\n`;
   writeFileSync(taskFilePath, `---\n${lines.join("\n")}\n---\n\n${nextBody.replace(/^\n+/, "")}`);
+}
+
+/**
+ * Insert an entry into an existing `## <heading>` section (newest-first,
+ * mirroring the `## Log` merge behavior) instead of appending a duplicate
+ * heading; appends the section when it does not exist yet.
+ */
+export function upsertSection(body: string, heading: string, entry: string): string {
+  const marker = `\n## ${heading}\n`;
+  return body.includes(marker)
+    ? body.replace(marker, `${marker}\n${entry}\n`)
+    : `${body.trimEnd()}\n\n## ${heading}\n\n${entry}\n`;
 }
 
 export function tryParseTaskFile(taskFilePath: string): ParsedTaskMetadata | null {
