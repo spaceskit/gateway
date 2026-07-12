@@ -27,6 +27,8 @@ export function createCliStreamParser(providerId: SupportedProviderId, messages:
       return new JsonLineCliStreamParser((record, state) => parseCodexStreamRecord(record, state), messages);
     case "gemini":
       return new JsonLineCliStreamParser((record, state) => parseGeminiStreamRecord(record, state), messages);
+    case "opencode":
+      return new PlainTextCliStreamParser(messages);
   }
 }
 

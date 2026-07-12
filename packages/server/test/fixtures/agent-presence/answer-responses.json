@@ -1,0 +1,87 @@
+{
+  "inPlace": {
+    "ok": true,
+    "mode": "in_place",
+    "deliveredAnswer": "Yes",
+    "detail": "answer file consumed by hook-bridge",
+    "agent": {
+      "key": "claude:fixture-question",
+      "provider": "claude",
+      "sessionId": "fixture-question",
+      "cwd": "/Users/example/code/project",
+      "status": "question",
+      "summary": "Should I retry the failing test?",
+      "hash": "hash-question",
+      "at": 1719925500000.5,
+      "live": true,
+      "title": "Fix flaky auth test",
+      "contextTail": "The suite failed twice on auth.spec.ts — retry or skip?",
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Retry the test suite"
+        },
+        {
+          "label": "No",
+          "description": "Skip and move on"
+        }
+      ]
+    }
+  },
+  "forkResume": {
+    "ok": true,
+    "mode": "fork_resume",
+    "deliveredAnswer": "Yes, update the docs too.",
+    "detail": "codex exec resume spawned",
+    "agent": {
+      "key": "codex:fixture-turn-end",
+      "provider": "codex",
+      "sessionId": "fixture-turn-end",
+      "cwd": "/Users/example/code/project",
+      "status": "turn-end",
+      "summary": "Done — typecheck passes. Want me to also update the docs?",
+      "hash": "hash-turn-end",
+      "at": 1719925500000.5,
+      "live": true,
+      "title": "Docs sync sweep"
+    }
+  },
+  "readOnlyDisabled": {
+    "ok": false,
+    "mode": "read_only",
+    "error": "answer-back disabled (AGENT_PRESENCE_ANSWER_ENABLED=false)"
+  },
+  "staleHash": {
+    "ok": false,
+    "mode": "read_only",
+    "error": "stale: ask superseded",
+    "agent": {
+      "key": "claude:fixture-question",
+      "provider": "claude",
+      "sessionId": "fixture-question",
+      "cwd": "/Users/example/code/project",
+      "status": "question",
+      "summary": "Should I retry the failing test?",
+      "hash": "hash-question",
+      "at": 1719925500000.5,
+      "live": true,
+      "title": "Fix flaky auth test",
+      "contextTail": "The suite failed twice on auth.spec.ts — retry or skip?",
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Retry the test suite"
+        },
+        {
+          "label": "No",
+          "description": "Skip and move on"
+        }
+      ]
+    }
+  },
+  "notFound": {
+    "ok": false,
+    "mode": "read_only",
+    "error": "agent not found or no longer waiting"
+  }
+}

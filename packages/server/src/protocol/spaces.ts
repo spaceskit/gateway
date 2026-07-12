@@ -218,12 +218,49 @@ export interface SpaceGetWorkspacePayload {
   spaceId: string;
 }
 
+export interface SpaceOpenWorkspacePayload {
+  apiVersion?: string;
+  workspaceRoot: string;
+}
+
 export interface SpaceGetWorkspaceResponsePayload {
   workspace: SpaceWorkspacePayload;
 }
 
 export interface SpaceSetWorkspaceResponsePayload {
   workspace: SpaceWorkspacePayload;
+}
+
+export type SpaceOpenWorkspaceStatus =
+  | "opened_existing"
+  | "created_new"
+  | "unbound"
+  | "conflict";
+
+export interface SpaceOpenWorkspaceConflict {
+  reason: string;
+  message: string;
+  workspaceRoot: string;
+  metadataPath?: string;
+  existingSpaceId?: string;
+  existingSpaceUid?: string;
+  existingWorkspaceRoot?: string;
+  requestedSpaceId?: string;
+  requestedSpaceUid?: string;
+}
+
+export interface SpaceOpenWorkspaceResult {
+  status: SpaceOpenWorkspaceStatus;
+  workspaceRoot: string;
+  gitRepoDetected: boolean;
+  hasSpaceMetadata: boolean;
+  space?: SpaceSummary;
+  workspace?: SpaceWorkspacePayload;
+  conflict?: SpaceOpenWorkspaceConflict;
+}
+
+export interface SpaceOpenWorkspaceResponsePayload {
+  result: SpaceOpenWorkspaceResult;
 }
 
 export interface SpaceResourcePayload {

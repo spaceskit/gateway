@@ -49,7 +49,7 @@ function makeFailedRunDetail(): WorkbenchJobRunDetail {
               name: "default-access-gateway-tools",
               status: "fail",
               durationMs: 10,
-              error: "Provider parity failures: codex-app-server/gpt-5.4, gemini/gemini-2.5-flash",
+              error: "Provider parity failures: codex-app-server/gpt-5.4, opencode/openai/gpt-5.5",
             },
             {
               name: "codex-app-server-explicit-runtime-selection",
@@ -79,9 +79,9 @@ function makeFailedRunDetail(): WorkbenchJobRunDetail {
         },
         {
           scope: "live",
-          provider: "gemini",
-          model: "gemini/gemini-2.5-flash",
-          transport: "mediated_fallback",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.5",
+          transport: "bridge",
           status: "fail",
           failureReason: "Timed out waiting for the turn to reach a terminal event.",
         },
@@ -176,7 +176,7 @@ describe("dashboard narrative summaries", () => {
     expect(summary.headline).toBe("Run failed in provider-tool-parity");
     expect(summary.primaryFailures).toEqual([
       "codex-app-server/codex-app-server/gpt-5.4: Final answer did not include marker codex-app-server-5dd4406e.",
-      "gemini/gemini/gemini-2.5-flash: Timed out waiting for the turn to reach a terminal event.",
+      "opencode/opencode/openai/gpt-5.5: Timed out waiting for the turn to reach a terminal event.",
     ]);
     expect(summary.passedAreas).toEqual(["chat-roundtrip", "mcp-tools", "orchestration"]);
     expect(summary.nextActions).toEqual(["Retry run", "Open report", "Analyze run"]);

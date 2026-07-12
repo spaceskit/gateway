@@ -156,7 +156,7 @@ export const ARCHETYPE_TEMPLATES: readonly ArchetypeTemplateSeed[] = [
       { agentId: "plan-coordinator", profileId: "plan-coordinator-opus", role: "global_coordinator", isPrimary: true, agentTier: "advanced" },
       { agentId: "plan-codex-architect", profileId: "plan-codex-architect", role: "participant", isPrimary: false, agentTier: "advanced" },
       { agentId: "plan-opus-reviewer", profileId: "plan-opus-reviewer", role: "participant", isPrimary: false, agentTier: "advanced" },
-      { agentId: "plan-gemini-constraints", profileId: "plan-gemini-constraints", role: "participant", isPrimary: false, agentTier: "advanced" },
+      { agentId: "plan-opencode-constraints", profileId: "plan-opencode-constraints", role: "participant", isPrimary: false, agentTier: "advanced" },
       { agentId: "plan-lmstudio-maintainer", profileId: "plan-lmstudio-maintainer", role: "participant", isPrimary: false, agentTier: "standard" },
       { agentId: "plan-apple-continuity", profileId: "plan-apple-continuity", role: "participant", isPrimary: false, agentTier: "standard" },
     ],
@@ -182,7 +182,7 @@ export const ARCHETYPE_TEMPLATES: readonly ArchetypeTemplateSeed[] = [
     agents: [
       { agentId: "code-lead", profileId: "code-lead-codex", role: "global_coordinator", isPrimary: true, agentTier: "advanced" },
       { agentId: "code-opus-reviewer", profileId: "code-opus-reviewer", role: "participant", isPrimary: false, agentTier: "advanced" },
-      { agentId: "code-gemini-integrator", profileId: "code-gemini-integrator", role: "participant", isPrimary: false, agentTier: "advanced" },
+      { agentId: "code-opencode-integrator", profileId: "code-opencode-integrator", role: "participant", isPrimary: false, agentTier: "advanced" },
       { agentId: "code-lmstudio-maintainer", profileId: "code-lmstudio-maintainer", role: "participant", isPrimary: false, agentTier: "standard" },
       { agentId: "code-apple-continuity", profileId: "code-apple-continuity", role: "participant", isPrimary: false, agentTier: "standard" },
     ],

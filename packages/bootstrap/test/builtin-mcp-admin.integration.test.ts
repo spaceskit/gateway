@@ -14,8 +14,10 @@ function removeDbArtifacts(dbPath: string): void {
   rmSync(`${dbPath}-shm`, { force: true });
 }
 
+const INTEGRATION_TIMEOUT = 15_000;
+
 describe("built-in MCP admin bootstrap integration", () => {
-  test("main admin MCP enablement no longer blocks non-MCP orchestrator commands", async () => {
+  test("main admin MCP enablement no longer blocks non-MCP orchestrator commands", { timeout: INTEGRATION_TIMEOUT }, async () => {
     const dbPath = join(tmpdir(), `spaceskit-builtin-mcp-admin-${crypto.randomUUID()}.db`);
     const previousGatewayProfile = Bun.env.SPACESKIT_GATEWAY_PROFILE;
     let gateway: Awaited<ReturnType<typeof startGateway>> | null = null;

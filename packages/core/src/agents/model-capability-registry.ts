@@ -34,7 +34,7 @@ export interface ModelCapabilities {
   accessModeStrategy: RuntimeAccessModeStrategy;
   /** Determines how much prompt content to include. */
   promptBudgetClass: PromptBudgetClass;
-  /** True for CLI-based execution providers (antigravity, claude, codex, gemini). */
+  /** True for CLI-based execution providers (antigravity, claude, codex, opencode). */
   isCliExecutor: boolean;
 }
 
@@ -42,7 +42,7 @@ export interface ModelCapabilities {
 // Provider defaults
 // ---------------------------------------------------------------------------
 
-const CLI_EXECUTOR_PROVIDERS = new Set(["antigravity", "claude", "codex", "gemini"]);
+const CLI_EXECUTOR_PROVIDERS = new Set(["antigravity", "claude", "codex", "opencode"]);
 
 interface ProviderDefaults {
   contextWindow: number;
@@ -71,8 +71,8 @@ const PROVIDER_DEFAULTS: Record<string, ProviderDefaults> = {
   "codex-app-server": { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: false, supportsReasoningEffort: true, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: false },
   claude: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
   codex: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: true, supportsThinking: false, supportsReasoningEffort: true, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
-  gemini: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: true, supportsPublicReasoning: false, supportsThinking: true, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
   antigravity: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: false, supportsPublicReasoning: false, supportsThinking: false, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
+  opencode: { contextWindow: 200_000, toolSupportMode: "mediated", supportsStreaming: true, supportsActivityStreaming: false, supportsPublicReasoning: false, supportsThinking: false, supportsReasoningEffort: false, executionClass: "executor", accessModeStrategy: "executor_cli", isCliExecutor: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -203,8 +203,8 @@ const STATIC_CONTEXT_WINDOW_PROVIDERS: Record<string, number> = {
   "codex-app-server": 200_000,
   claude: 200_000,
   codex: 200_000,
-  gemini: 200_000,
   antigravity: 200_000,
+  opencode: 200_000,
 };
 
 export function inferContextWindow(providerId: string, modelId?: string): number | undefined {

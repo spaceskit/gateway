@@ -28,6 +28,11 @@ export function createShutdown(state: BootstrapState): () => Promise<void> {
       state.harnessConciergePingerTimer = null;
     }
     state.harnessConciergePingerService?.stop();
+    if (state.agentPresenceSourceTimer) {
+      clearInterval(state.agentPresenceSourceTimer);
+      state.agentPresenceSourceTimer = null;
+    }
+    state.agentPresenceSource?.stop();
     if (state.lifecycleMaintenanceTimer) {
       clearInterval(state.lifecycleMaintenanceTimer);
       state.lifecycleMaintenanceTimer = null;

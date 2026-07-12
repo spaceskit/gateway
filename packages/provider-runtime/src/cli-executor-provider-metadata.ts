@@ -5,6 +5,7 @@ const PROVIDER_ALIASES: Record<string, SupportedProviderId> = {
   claude: "claude",
   codex: "codex",
   gemini: "gemini",
+  opencode: "opencode",
 };
 
 export const MODEL_MANIFEST: Record<SupportedProviderId, string[]> = {
@@ -25,6 +26,7 @@ export const MODEL_MANIFEST: Record<SupportedProviderId, string[]> = {
     "gemini/gemini-2.5-pro",
     "gemini/gemini-2.5-flash",
   ],
+  opencode: [],
 };
 
 export function normalizeProviderId(value?: string): SupportedProviderId | undefined {
@@ -42,6 +44,8 @@ export function executableForProvider(providerId?: SupportedProviderId): string 
       return "codex";
     case "gemini":
       return "gemini";
+    case "opencode":
+      return "opencode";
     default:
       return undefined;
   }

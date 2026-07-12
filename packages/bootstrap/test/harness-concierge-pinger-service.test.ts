@@ -233,6 +233,128 @@ describe("HarnessConciergePingerService", () => {
     expect(mutations).toEqual([{ pingId: "p-1", action: "ack" }]);
   });
 
+  test("question ping escalations offer the free-text revise response", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const service = new HarnessConciergePingerService({
+      escalationService: {
+        requestUserInput: async (input) => {
+          assertLegalEscalation(input);
+          requests.push(input);
+          return { requestId: `req-${requests.length}`, status: "notified" };
+        },
+      },
+      readPings: async () => [
+        ping({ id: "p-question", urgency: "urgent", deliveryChannel: "voice", question: "Which env should this deploy to?" }),
+        ping({ id: "p-plain", urgency: "urgent", deliveryChannel: "voice" }),
+      ],
+      resolvePing: async () => {},
+      now: () => new Date("2026-06-09T10:00:00.000Z"),
+    });
+
+    await service.runOnce({ spaceId: "s", requestingAgentId: "a" });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.allowedResponses).toEqual(["approve", "open_app", "defer", "revise"]);
+    expect((requests[0]?.context as Record<string, unknown>).question).toBe("Which env should this deploy to?");
+    expect(requests[1]?.allowedResponses).toEqual(["approve", "open_app", "defer"]);
+  });
+
+  test("revise reply on a question ping answers the parked task, then resolves the ping", async () => {
+    const mutations: Array<{ pingId: string; action: string }> = [];
+    const answers: Array<{ taskId: string; text: string }> = [];
+    const service = new HarnessConciergePingerService({
+      escalationService: { requestUserInput: async () => ({ requestId: "req-1", status: "notified" }) },
+      readPings: async () => [],
+      resolvePing: async ({ pingId, action }) => {
+        mutations.push({ pingId, action });
+      },
+      answerTask: async (input) => {
+        answers.push(input);
+      },
+      now: () => new Date("2026-06-09T10:00:00.000Z"),
+    });
+
+    const handled = await service.handleResolvedRequest({
+      requestId: "req-answer",
+      status: "actioned",
+      response: { action: "revise", message: "Deploy to staging first" },
+      context: {
+        source: "harness-concierge",
+        pingId: "p-q",
+        taskId: "spaces/T-0009",
+        question: "Which env should this deploy to?",
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(answers).toEqual([{ taskId: "spaces/T-0009", text: "Deploy to staging first" }]);
+    expect(mutations).toEqual([{ pingId: "p-q", action: "resolve" }]);
+  });
+
+  test("revise without text or on a non-question ping is ignored (ping keeps re-firing)", async () => {
+    const mutations: Array<unknown> = [];
+    const answers: Array<unknown> = [];
+    const service = new HarnessConciergePingerService({
+      escalationService: { requestUserInput: async () => ({ requestId: "req-1", status: "notified" }) },
+      readPings: async () => [],
+      resolvePing: async (m) => {
+        mutations.push(m);
+      },
+      answerTask: async (a) => {
+        answers.push(a);
+      },
+      now: () => new Date("2026-06-09T10:00:00.000Z"),
+    });
+
+    // No message text.
+    expect(
+      await service.handleResolvedRequest({
+        requestId: "req-no-text",
+        status: "actioned",
+        response: { action: "revise" },
+        context: { source: "harness-concierge", pingId: "p-q", taskId: "spaces/T-0009", question: "Q?" },
+      }),
+    ).toBe(false);
+    // Not a question ping (no question in context).
+    expect(
+      await service.handleResolvedRequest({
+        requestId: "req-not-question",
+        status: "actioned",
+        response: { action: "revise", message: "text" },
+        context: { source: "harness-concierge", pingId: "p-q", taskId: "spaces/T-0009" },
+      }),
+    ).toBe(false);
+
+    expect(mutations).toHaveLength(0);
+    expect(answers).toHaveLength(0);
+  });
+
+  test("failed task answer keeps the request retryable and does not resolve the ping", async () => {
+    const mutations: Array<unknown> = [];
+    const service = new HarnessConciergePingerService({
+      escalationService: { requestUserInput: async () => ({ requestId: "req-1", status: "notified" }) },
+      readPings: async () => [],
+      resolvePing: async (m) => {
+        mutations.push(m);
+      },
+      answerTask: async () => {
+        throw new Error("task CLI unavailable");
+      },
+      now: () => new Date("2026-06-09T10:00:00.000Z"),
+    });
+
+    const input = {
+      requestId: "req-fail",
+      status: "actioned",
+      response: { action: "revise", message: "answer text" },
+      context: { source: "harness-concierge", pingId: "p-q", taskId: "spaces/T-0009", question: "Q?" },
+    };
+    await expect(service.handleResolvedRequest(input)).rejects.toThrow("task CLI unavailable");
+    expect(mutations).toHaveLength(0);
+    // The request id was not burned: a retry reaches answerTask again (and throws again).
+    await expect(service.handleResolvedRequest(input)).rejects.toThrow("task CLI unavailable");
+  });
+
   test("ignores resolved requests that are not harness pings", async () => {
     let called = false;
     const service = new HarnessConciergePingerService({

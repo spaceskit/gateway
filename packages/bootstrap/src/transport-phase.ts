@@ -1,11 +1,13 @@
 import {
   A2AHandler,
   A2APushNotificationHandler,
+  AgentPresenceSourceService,
   createDiagramHandler,
   MessageRouter,
   NotificationHandler,
   WorkflowVisualizer,
 } from "@spaceskit/server";
+import { parseBooleanEnv } from "./config.js";
 import type { GatewayEvent, SpaceConfig } from "@spaceskit/core";
 import type {
   OrchestrationJournalRow,
@@ -31,7 +33,20 @@ import {
 export function initializeTransportServices(state: BootstrapState): void {
   const { config, logger } = state;
 
+  // Agent-presence "departure board" source: polls infra-pulse (a SEPARATE repo,
+  // HTTP http://localhost:9091) and re-broadcasts the gateway-wide snapshot.
+  // Default OFF behind SPACESKIT_AGENT_PRESENCE_READ_ENABLED; the poll loop is
+  // started later in server-phase (once the WebSocket server's send() exists).
+  const agentPresenceSource = parseBooleanEnv(Bun.env.SPACESKIT_AGENT_PRESENCE_READ_ENABLED, false)
+    ? new AgentPresenceSourceService({
+      infraPulseUrl: Bun.env.SPACESKIT_AGENT_PRESENCE_URL || undefined,
+      pollIntervalMs: parsePresencePollMs(Bun.env.SPACESKIT_AGENT_PRESENCE_POLL_MS),
+      logger: logger.child({ module: "agent-presence-source" }),
+    })
+    : null;
+
   const messageRouter = new MessageRouter({
+    agentPresenceSource: agentPresenceSource ?? undefined,
     spaceManager: state.spaceManager,
     spaceAdminService: state.spaceAdminService,
     gatewayAdminService: state.gatewayAdminService,
@@ -427,6 +442,7 @@ export function initializeTransportServices(state: BootstrapState): void {
 
   Object.assign(state, {
     a2aHandler,
+    agentPresenceSource,
     a2aPush,
     appleNotificationApiService,
     diagramHandler,
@@ -442,4 +458,11 @@ export function initializeTransportServices(state: BootstrapState): void {
     spacesRestApiService,
     workflowVisualizer,
   });
+}
+
+/** Parse the optional agent-presence poll interval; undefined falls back to the service default (4s). */
+function parsePresencePollMs(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

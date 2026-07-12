@@ -2,8 +2,60 @@ import type { GatewayCoreProfileId } from "@spaceskit/gateway-core";
 import type { BootstrapState } from "./bootstrap-state.js";
 import { evaluateSandboxSlo } from "./turn-helpers.js";
 
+interface HealthPayload {
+  status: "ok" | "degraded" | "error";
+  uptime: number;
+  clients: number;
+  subsystems: Record<string, { status: "ok" | "degraded" | "error"; detail?: string }>;
+  metadata: {
+    gatewayId: string;
+    gatewayProfile: GatewayCoreProfileId;
+    gatewayUuid: string;
+    spacesRoot?: string;
+    mainSpaceId: string;
+    mainSpaceName: string;
+    mainSpaceResourceId: string;
+    mainAgentId: string;
+    mainProfileId: string;
+    mainAgentStatus: "healthy" | "repaired" | "fallback" | "degraded";
+  };
+  degradation?: { reasons: Array<{ subsystem: string; status: "degraded" | "error"; detail?: string }> };
+  debug?: Record<string, unknown>;
+}
+
+// The /health subsystem snapshot is computed by walking provider configs, which on the
+// embedded profile can spawn local CLIs (e.g. `opencode models`) to detect models — making
+// a single /health call cost ~1s. The app's gateway-reachability probe uses a sub-second
+// timeout, so an uncached /health makes a running gateway look unreachable. We memoize the
+// assembled payload for a short TTL so at most one call per window pays that cost; uptime and
+// client count are refreshed live on every response so they never read as stale.
+const HEALTH_PAYLOAD_CACHE_TTL_MS = 1000;
+
 export function createHealthCheck(state: BootstrapState) {
+  const computePayload = buildHealthPayloadComputer(state);
+  let cache: { debug: boolean; payload: HealthPayload; expiresAt: number } | null = null;
+
   return async (context?: { debug?: boolean }) => {
+    const debug = state.config.healthDebug || context?.debug === true;
+    const now = performance.now();
+    if (!cache || cache.debug !== debug || cache.expiresAt <= now) {
+      cache = {
+        debug,
+        payload: await computePayload(debug),
+        expiresAt: now + HEALTH_PAYLOAD_CACHE_TTL_MS,
+      };
+    }
+    // Always refresh the cheap, volatile fields so a cached payload never reports stale liveness.
+    return {
+      ...cache.payload,
+      uptime: Math.floor(process.uptime()),
+      clients: state.server?.clientCount ?? 0,
+    };
+  };
+}
+
+function buildHealthPayloadComputer(state: BootstrapState) {
+  return async (debug: boolean): Promise<HealthPayload> => {
     const { config } = state;
     const subsystems: Record<string, { status: "ok" | "degraded" | "error"; detail?: string }> = {};
 
@@ -16,7 +68,9 @@ export function createHealthCheck(state: BootstrapState) {
       ? { status: "ok", detail: `${memoryProviders.length} provider(s)` }
       : { status: "degraded", detail: "No memory providers" };
 
-    const providerConfigList = state.gatewayAdminService.listProviderConfigs();
+    // Use the lightweight summary: the full listProviderConfigs() computes allowedModels per
+    // provider, which can spawn local CLIs (e.g. `opencode models`) and makes /health cost ~1s.
+    const providerConfigList = state.gatewayAdminService.listProviderConfigSummaries();
     if (state.modelRouter) {
       subsystems.modelRouter = { status: "ok", detail: `${config.modelProvider}/${config.defaultModelId}` };
     } else if (providerConfigList.length > 0) {
@@ -95,26 +149,7 @@ export function createHealthCheck(state: BootstrapState) {
         detail: entry.detail,
       }));
 
-    const payload: {
-      status: "ok" | "degraded" | "error";
-      uptime: number;
-      clients: number;
-      subsystems: Record<string, { status: "ok" | "degraded" | "error"; detail?: string }>;
-      metadata: {
-        gatewayId: string;
-        gatewayProfile: GatewayCoreProfileId;
-        gatewayUuid: string;
-        spacesRoot?: string;
-        mainSpaceId: string;
-        mainSpaceName: string;
-        mainSpaceResourceId: string;
-        mainAgentId: string;
-        mainProfileId: string;
-        mainAgentStatus: "healthy" | "repaired" | "fallback" | "degraded";
-      };
-      degradation?: { reasons: Array<{ subsystem: string; status: "degraded" | "error"; detail?: string }> };
-      debug?: Record<string, unknown>;
-    } = {
+    const payload: HealthPayload = {
       status: hasError ? "error" : hasDegraded ? "degraded" : "ok",
       uptime: Math.floor(process.uptime()),
       clients: state.server?.clientCount ?? 0,
@@ -137,12 +172,11 @@ export function createHealthCheck(state: BootstrapState) {
       payload.degradation = { reasons: degradationReasons };
     }
 
-    const debugEnabled = config.healthDebug || context?.debug === true;
-    if (debugEnabled) {
+    if (debug) {
       const defaultMemoryProviderId = state.memoryRegistry.getDefault()?.id ?? null;
       const mcpStats = state.spaceMcpService.getHealthStats();
       payload.debug = {
-        requestedViaQuery: context?.debug === true,
+        requestedViaQuery: debug,
         enabledViaConfig: config.healthDebug,
         generatedAt: new Date().toISOString(),
         runtime: {

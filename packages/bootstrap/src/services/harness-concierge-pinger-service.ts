@@ -57,10 +57,14 @@ export interface HarnessConciergePingerServiceOptions {
   pingsPath?: string;
   /** Absolute path to the harness `concierge` CLI, for the ack/snooze/resolve round-trip. */
   conciergeBinPath?: string;
+  /** Absolute path to the harness `task` CLI, for the question answer-back (`task answer --source spaces`). */
+  taskBinPath?: string;
   /** Inject for tests: read the raw pings file. Defaults to reading `pingsPath`. */
   readPings?: () => Promise<HarnessConciergePing[]>;
   /** Inject for tests: clear a ping in the harness. Defaults to spawning the concierge CLI. */
   resolvePing?: (input: { pingId: string; action: "ack" | "resolve"; note?: string }) => Promise<void>;
+  /** Inject for tests: answer a parked task question. Defaults to spawning the task CLI. */
+  answerTask?: (input: { taskId: string; text: string }) => Promise<void>;
   now?: () => Date;
   cooldownMs?: number;
   /**
@@ -79,6 +83,7 @@ export interface HarnessConciergePingerServiceOptions {
 
 const DEFAULT_PINGS_PATH = "/Users/caruso/Documents/work/harness/state/concierge-pings.json";
 const DEFAULT_CONCIERGE_BIN = "/Users/caruso/Documents/work/harness/bin/concierge";
+const DEFAULT_TASK_BIN = "/Users/caruso/Documents/work/harness/bin/task";
 const DEFAULT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_URGENT_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_ESCALATIONS_PER_RUN = 5;
@@ -157,7 +162,11 @@ export class HarnessConciergePingerService {
           question: ping.message,
           reason: ping.reason ?? "harness-concierge",
           urgency,
-          allowedResponses: ["approve", "open_app", "defer"],
+          // Question pings additionally allow a free-text `revise` reply, which
+          // handleResolvedRequest routes to `task answer --source spaces`.
+          allowedResponses: ping.question
+            ? ["approve", "open_app", "defer", "revise"]
+            : ["approve", "open_app", "defer"],
           context,
           fallbackPolicy: POLICY_BY_URGENCY[urgency],
           timeoutSeconds: urgency === "urgent" ? this.urgentTimeoutSeconds : this.promptTimeoutSeconds(),
@@ -177,7 +186,10 @@ export class HarnessConciergePingerService {
   /**
    * When the user answers a harness-ping escalation, clear the underlying ping
    * in the harness so it stops re-firing. `actioned`/approve → resolve;
-   * `defer` → ack (acknowledged, no further nudging this cycle).
+   * `defer` → ack (acknowledged, no further nudging this cycle);
+   * `revise` with text on a question ping → `task answer --source spaces`
+   * (returns the parked task to the pool, matching the Telegram reply lane),
+   * then resolve the ping.
    */
   async handleResolvedRequest(input: HarnessConciergePingerResolvedRequest): Promise<boolean> {
     if (this.resolvedRequestIds.has(input.requestId)) return false;
@@ -188,7 +200,16 @@ export class HarnessConciergePingerService {
 
     const action = optionalString(input.response?.action);
     let mutate: "ack" | "resolve" | null = null;
+    let answer: { taskId: string; text: string } | null = null;
     if (input.status === "actioned" && (action === "approve" || action === "open_app")) {
+      mutate = "resolve";
+    } else if (input.status === "actioned" && action === "revise") {
+      // Free-text reply to a question ping = the answer to the parked task.
+      const taskId = optionalString(context.taskId);
+      const text = optionalString(input.response?.message);
+      const isQuestionPing = optionalString(context.question) !== undefined;
+      if (!taskId || !text || !isQuestionPing) return false;
+      answer = { taskId, text };
       mutate = "resolve";
     } else if (action === "defer" || input.status === "expired") {
       mutate = "ack";
@@ -197,6 +218,7 @@ export class HarnessConciergePingerService {
 
     this.resolvedRequestIds.add(input.requestId);
     try {
+      if (answer) await this.answerTask(answer);
       await this.resolvePing({ pingId, action: mutate, note: `concierge call (${input.requestId})` });
       return true;
     } catch (error) {
@@ -205,6 +227,7 @@ export class HarnessConciergePingerService {
         requestId: input.requestId,
         pingId,
         action: mutate,
+        answered: !!answer,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -220,6 +243,7 @@ export class HarnessConciergePingerService {
       action: "open_task",
       ...(ping.title ? { title: ping.title } : {}),
       ...(ping.targetPath ? { targetPath: ping.targetPath } : {}),
+      ...(ping.question ? { question: ping.question } : {}),
     };
   }
 
@@ -236,6 +260,12 @@ export class HarnessConciergePingerService {
     const args = [input.action, input.pingId];
     if (input.note) args.push("--note", input.note);
     await runConcierge(bin, args);
+  }
+
+  private async answerTask(input: { taskId: string; text: string }): Promise<void> {
+    if (this.options.answerTask) return this.options.answerTask(input);
+    const bin = this.options.taskBinPath ?? DEFAULT_TASK_BIN;
+    await runConcierge(bin, ["answer", input.taskId, input.text, "--source", "spaces"]);
   }
 
   private isCoolingDown(key: string): boolean {

@@ -98,6 +98,18 @@ export function buildCommand(
         ...(cwd ? { cwd } : {}),
       };
     }
+    case "opencode":
+      return {
+        executable: "opencode",
+        args: [
+          "run",
+          "--model",
+          reference.providerModelId,
+          "--prompt",
+          prompt,
+        ],
+        ...(cwd ? { cwd } : {}),
+      };
     case "gemini":
       return {
         executable: "gemini",

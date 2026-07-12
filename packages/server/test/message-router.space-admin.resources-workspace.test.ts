@@ -96,6 +96,14 @@ describe("MessageRouter space admin handlers", () => {
             gitRepoDetected: false,
           }),
           ensureWorkspace: async () => workspace,
+          openWorkspace: async () => ({
+            status: "opened_existing",
+            workspaceRoot: "/tmp/explicit",
+            gitRepoDetected: false,
+            hasSpaceMetadata: true,
+            spaceId: "space-main",
+            workspace,
+          }),
         },
       },
     );
@@ -117,6 +125,16 @@ describe("MessageRouter space admin handlers", () => {
     expect(setResponse?.type).toBe(MessageTypes.SPACE_SET_WORKSPACE);
     expect((setResponse?.payload as any).workspace.mode).toBe("folder_bound");
     expect((setResponse?.payload as any).workspace.explicitWorkspaceRoot).toBe("/tmp/explicit");
+
+    const openResponse = await router.handle(
+      makeClient(),
+      makeMessage(MessageTypes.SPACE_OPEN_WORKSPACE, {
+        workspaceRoot: "/tmp/explicit",
+      }),
+    );
+    expect(openResponse?.type).toBe(MessageTypes.SPACE_OPEN_WORKSPACE);
+    expect((openResponse?.payload as any).result.status).toBe("opened_existing");
+    expect((openResponse?.payload as any).result.space.id).toBe("space-main");
   });
 
   test("invalidates cached agent runtimes after workspace root changes", async () => {

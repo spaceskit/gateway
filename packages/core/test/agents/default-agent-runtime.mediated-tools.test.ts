@@ -15,9 +15,9 @@ import type {
 import type { ToolExecutionContext, ToolExecutor, ToolPermission } from "../../src/agents/tool-executor.js";
 import { EventBus } from "../../src/events/event-bus.js";
 
-class MediatedGeminiProvider implements ModelProvider {
-  readonly id = "gemini";
-  readonly name = "Gemini";
+class MediatedAntigravityProvider implements ModelProvider {
+  readonly id = "antigravity";
+  readonly name = "Antigravity";
   readonly isLocal = true;
   readonly generateCalls: GenerateOptions[] = [];
   readonly streamCalls: GenerateOptions[] = [];
@@ -28,9 +28,9 @@ class MediatedGeminiProvider implements ModelProvider {
 
   async listModels(): Promise<ModelInfo[]> {
     return [{
-      id: "gemini/gemini-2.5-flash",
-      name: "gemini-2.5-flash",
-      provider: "gemini",
+      id: "antigravity/selected",
+      name: "selected",
+      provider: "antigravity",
       isLocal: true,
       supportsTools: true,
     }];
@@ -116,7 +116,11 @@ function buildRuntime(
     ? "claude-agent-sdk/claude-sonnet-4-5"
     : provider.id === "codex-app-server"
       ? "codex-app-server/gpt-5.4"
-    : "gemini/gemini-2.5-flash";
+      : provider.id === "opencode"
+        ? "opencode/openai/gpt-5.5"
+        : provider.id === "antigravity"
+          ? "antigravity/selected"
+          : "unknown/default";
   const config: AgentConfig = {
     id: "agent-1",
     profileId: "profile-1",
@@ -158,8 +162,8 @@ async function collectEvents(runtime: DefaultAgentRuntime): Promise<TurnEvent[]>
 }
 
 describe("DefaultAgentRuntime mediated tool fallback", () => {
-  test("parses fenced tool calls for gemini default-mode turns and continues the tool loop", async () => {
-    const provider = new MediatedGeminiProvider();
+  test("parses fenced tool calls for antigravity default-mode turns and continues the tool loop", async () => {
+    const provider = new MediatedAntigravityProvider();
     const toolExecutor = new EchoToolExecutor();
     const runtime = buildRuntime(provider, toolExecutor);
 
@@ -172,13 +176,14 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
       .map((message) => message.content) ?? [];
 
     expect(provider.generateCalls).toHaveLength(2);
-    expect(provider.streamCalls).toHaveLength(0);
+    expect(provider.streamCalls).toHaveLength(2);
+    expect(provider.streamCalls.every((call) => call.accessMode === "default")).toBe(true);
     expect(provider.generateCalls[0]?.tools).toBeUndefined();
     expect(provider.generateCalls[0]?.messages.some((message) =>
       message.role === "system" && message.content.includes("```tool_call")
     )).toBe(true);
     expect(systemMessages.some((message) => message.includes("Safe read-only tools are available"))).toBe(false);
-    expect(systemMessages.some((message) => message.includes("Native Gemini CLI tools are not available in this turn."))).toBe(true);
+    expect(systemMessages.some((message) => message.includes("Native Antigravity CLI tools are not available in this turn."))).toBe(true);
     expect(systemMessages.some((message) => message.includes("fenced `tool_call` blocks"))).toBe(true);
     expect(toolExecutor.executedToolCalls).toEqual([{
       id: expect.any(String),
@@ -295,10 +300,10 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
     expect(completed?.result.finalMessage.content).toBe("App server connected.");
   });
 
-  test("keeps gemini full-access turns on native CLI streaming", async () => {
-    class NativeGeminiProvider implements ModelProvider {
-      readonly id = "gemini";
-      readonly name = "Gemini";
+  test("keeps opencode full-access turns on native CLI streaming", async () => {
+    class NativeOpenCodeProvider implements ModelProvider {
+      readonly id = "opencode";
+      readonly name = "OpenCode";
       readonly isLocal = true;
       readonly generateCalls: GenerateOptions[] = [];
       readonly streamCalls: GenerateOptions[] = [];
@@ -309,9 +314,9 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
 
       async listModels(): Promise<ModelInfo[]> {
         return [{
-          id: "gemini/gemini-2.5-flash",
-          name: "gemini-2.5-flash",
-          provider: "gemini",
+          id: "opencode/openai/gpt-5.5",
+          name: "openai/gpt-5.5",
+          provider: "opencode",
           isLocal: true,
           supportsTools: true,
         }];
@@ -319,7 +324,7 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
 
       async generate(_model: string, options: GenerateOptions): Promise<GenerateResult> {
         this.generateCalls.push(options);
-        throw new Error("generate() should not run for Gemini full-access streaming turns");
+        throw new Error("generate() should not run for OpenCode full-access streaming turns");
       }
 
       async *stream(_model: string, options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -333,7 +338,7 @@ describe("DefaultAgentRuntime mediated tool fallback", () => {
       }
     }
 
-    const provider = new NativeGeminiProvider();
+    const provider = new NativeOpenCodeProvider();
     const runtime = buildRuntime(provider, new EchoToolExecutor(), { tools: [] });
 
     const events: TurnEvent[] = [];

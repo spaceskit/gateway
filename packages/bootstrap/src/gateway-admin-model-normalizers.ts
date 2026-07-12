@@ -37,18 +37,16 @@ export function runtimeDefaultPriority(providerIdRaw: string): number {
       return 3;
     case "codex":
       return 4;
-    case "gemini":
-      return 5;
     case "lmstudio":
-      return 6;
+      return 5;
     case "ollama":
-      return 7;
+      return 6;
     case "anthropic":
-      return 8;
+      return 7;
     case "claude-agent-sdk":
-      return 9;
+      return 8;
     case "claude":
-      return 10;
+      return 9;
     default:
       return 50;
   }

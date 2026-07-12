@@ -9,7 +9,7 @@ import { ExecutionAdapterFactory } from "../../packages/bootstrap/src/execution/
 import type { ProviderParityRow } from "../report.js";
 import { skipScenario, type Layer, type ScenarioContext, type ScenarioOutcome } from "./index.js";
 
-type SupportedParityProviderId = "apple" | "lmstudio" | "claude" | "codex" | "codex-app-server" | "gemini";
+type SupportedParityProviderId = "apple" | "lmstudio" | "claude" | "codex" | "codex-app-server";
 
 interface ProviderTarget {
   provider: SupportedParityProviderId;
@@ -23,14 +23,12 @@ export const SUPPORTED_PROVIDERS: SupportedParityProviderId[] = [
   "claude",
   "codex",
   "codex-app-server",
-  "gemini",
 ];
 
 const CANONICAL_LIVE_MODELS: Record<Exclude<SupportedParityProviderId, "lmstudio" | "codex-app-server">, string> = {
   apple: "apple/apple-on-device",
   claude: "claude/sonnet",
   codex: "codex/gpt-5.1-codex",
-  gemini: "gemini/gemini-2.5-flash",
 };
 
 const PROVIDER_TRANSPORT: Record<SupportedParityProviderId, ProviderParityRow["transport"]> = {
@@ -39,7 +37,6 @@ const PROVIDER_TRANSPORT: Record<SupportedParityProviderId, ProviderParityRow["t
   claude: "bridge",
   codex: "bridge",
   "codex-app-server": "mediated",
-  gemini: "mediated_fallback",
 };
 
 const EXPECTED_PARITY_TOOL_NAME = "lists.echo";
@@ -948,20 +945,12 @@ export function shouldRetryLiveParityFailure(input: {
     || (input.provider === "apple" && input.transport === "native");
 }
 
-export function classifyLiveParityFailureStatus(input: {
+export function classifyLiveParityFailureStatus(_input: {
   provider: SupportedParityProviderId;
   transport: ProviderParityRow["transport"];
   failureReason?: string;
   sawRateLimitedEvent: boolean;
 }): ProviderParityRow["status"] {
-  if (input.provider !== "gemini" || input.transport !== "mediated_fallback") {
-    return "fail";
-  }
-
-  if (input.sawRateLimitedEvent || isGeminiTransientHostLimitMessage(input.failureReason)) {
-    return "unavailable";
-  }
-
   return "fail";
 }
 
@@ -1099,17 +1088,6 @@ function hasRateLimitedEvidence(
     const raw = asRecord(event.data);
     return payload?.kind === "rate_limited" || raw?.type === "rate_limited";
   }) || (trace?.events.some((event) => event.eventType === "rate_limited") ?? false);
-}
-
-function isGeminiTransientHostLimitMessage(message: string | undefined): boolean {
-  const normalized = message?.toLowerCase() ?? "";
-  if (!normalized) return false;
-  return normalized.includes("exhausted your capacity")
-    || normalized.includes("quota will reset")
-    || normalized.includes("rate limit")
-    || normalized.includes("rate-limit")
-    || normalized.includes("too many requests")
-    || normalized.includes("retrying after");
 }
 
 async function makeClient(wsUrl: string, devicePrefix: string): Promise<GatewayClient> {

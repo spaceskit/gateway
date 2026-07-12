@@ -1,5 +1,19 @@
 // Server
 export { GatewayServer } from "./gateway-server.js";
+export {
+  AGENT_PRESENCE_TOPIC,
+  AgentPresenceSourceService,
+} from "./services/agent-presence-source.js";
+export type {
+  AgentPresenceSourceServiceOptions,
+  AgentPresenceSourceLogger,
+} from "./services/agent-presence-source.js";
+export type { AgentPresenceSource } from "./handlers/agent-presence-handlers.js";
+export {
+  GATEWAY_PRESENCE_TOPIC,
+  subscribeWebSocketToGatewayPresence,
+  unsubscribeWebSocketFromGatewayPresence,
+} from "./gateway-presence-topic.js";
 export { effectiveToolMatrixFromAccess } from "./effective-tool-matrix.js";
 
 // Provider catalog helpers

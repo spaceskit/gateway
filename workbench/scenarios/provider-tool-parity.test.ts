@@ -134,22 +134,7 @@ describe("provider tool parity helpers", () => {
     })).toBe(false);
   });
 
-  test("classifies gemini quota and rate-limit evidence as unavailable", () => {
-    expect(classifyLiveParityFailureStatus({
-      provider: "gemini",
-      transport: "mediated_fallback",
-      failureReason: "Timed out waiting for the turn to reach a terminal event.",
-      sawRateLimitedEvent: true,
-    })).toBe("unavailable");
-    expect(classifyLiveParityFailureStatus({
-      provider: "gemini",
-      transport: "mediated_fallback",
-      failureReason: "Attempt 1 failed: You have exhausted your capacity on this model. Your quota will reset after 1s.. Retrying after 5648ms...",
-      sawRateLimitedEvent: false,
-    })).toBe("unavailable");
-  });
-
-  test("keeps non-gemini and non-transient parity failures as hard failures", () => {
+  test("keeps parity failures as hard failures", () => {
     expect(classifyLiveParityFailureStatus({
       provider: "codex",
       transport: "bridge",
@@ -157,8 +142,8 @@ describe("provider tool parity helpers", () => {
       sawRateLimitedEvent: true,
     })).toBe("fail");
     expect(classifyLiveParityFailureStatus({
-      provider: "gemini",
-      transport: "mediated_fallback",
+      provider: "codex-app-server",
+      transport: "mediated",
       failureReason: "Expected a lists.echo tool call during the turn.",
       sawRateLimitedEvent: false,
     })).toBe("fail");

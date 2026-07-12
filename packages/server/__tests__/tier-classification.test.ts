@@ -52,10 +52,9 @@ describe("classifyTier", () => {
     });
   });
 
-  describe("Gemini models", () => {
-    test("gemini-3-flash-preview → local (gemini CLI provider)", () => {
-      // gemini CLI is local-runtime
-      expect(classifyTier("gemini", "gemini/gemini-3-flash-preview")).toBe("local");
+  describe("Gemini model names", () => {
+    test("gemini-3-flash-preview → fast when not routed through a local CLI provider", () => {
+      expect(classifyTier("gemini", "gemini/gemini-3-flash-preview")).toBe("fast");
     });
 
     test("openrouter google/gemini-3-flash → fast (cloud routing)", () => {
@@ -105,6 +104,10 @@ describe("classifyTier", () => {
 
     test("antigravity (CLI) → local for selected model", () => {
       expect(classifyTier("antigravity", "antigravity/selected")).toBe("local");
+    });
+
+    test("opencode (CLI) → local for selected model", () => {
+      expect(classifyTier("opencode", "opencode/openai/gpt-5.5")).toBe("local");
     });
   });
 

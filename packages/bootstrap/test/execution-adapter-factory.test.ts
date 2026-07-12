@@ -56,6 +56,21 @@ describe("ExecutionAdapterFactory", () => {
     expect(provider.isLocal).toBe(true);
   });
 
+  test("classifies OpenCode CLI as an executor-backed provider", () => {
+    const factory = new ExecutionAdapterFactory();
+
+    expect(factory.classify("opencode")).toBe("executor");
+
+    const provider = factory.createModelProvider({
+      providerId: "opencode",
+      model: "opencode/openai/gpt-5.5",
+    });
+
+    expect(provider.constructor.name).toBe("CliExecutorModelProvider");
+    expect(provider.id).toBe("opencode");
+    expect(provider.isLocal).toBe(true);
+  });
+
   test("wires the Apple Foundation helper into apple providers when available", async () => {
     const invocations: Array<{
       executable: string;

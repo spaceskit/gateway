@@ -29,12 +29,6 @@ describe("resolveModelCapabilities", () => {
       isCliExecutor: false,
       accessModeStrategy: "executor_cli",
     });
-    expect(resolveModelCapabilities("gemini")).toMatchObject({
-      executionClass: "executor",
-      supportsActivityStreaming: true,
-      supportsPublicReasoning: false,
-      accessModeStrategy: "executor_cli",
-    });
     expect(resolveModelCapabilities("antigravity")).toMatchObject({
       executionClass: "executor",
       toolSupportMode: "mediated",
@@ -43,6 +37,25 @@ describe("resolveModelCapabilities", () => {
       supportsPublicReasoning: false,
       accessModeStrategy: "executor_cli",
       isCliExecutor: true,
+    });
+    expect(resolveModelCapabilities("opencode")).toMatchObject({
+      executionClass: "executor",
+      toolSupportMode: "mediated",
+      supportsStreaming: true,
+      supportsActivityStreaming: false,
+      supportsPublicReasoning: false,
+      supportsThinking: false,
+      supportsReasoningEffort: false,
+      accessModeStrategy: "executor_cli",
+      isCliExecutor: true,
+    });
+    expect(resolveModelCapabilities("gemini")).toMatchObject({
+      executionClass: "cloud",
+      toolSupportMode: "native",
+      supportsActivityStreaming: false,
+      supportsPublicReasoning: false,
+      accessModeStrategy: "gateway_owned",
+      isCliExecutor: false,
     });
   });
 
@@ -72,9 +85,9 @@ describe("resolveModelCapabilities", () => {
       supportsThinking: false,
       supportsReasoningEffort: true,
     });
-    // Gemini CLI supports thinking (via --thinking-level)
+    // Gemini CLI is no longer exposed as an executor provider.
     expect(resolveModelCapabilities("gemini")).toMatchObject({
-      supportsThinking: true,
+      supportsThinking: false,
       supportsReasoningEffort: false,
     });
     // Codex CLI supports reasoning_effort
@@ -84,6 +97,10 @@ describe("resolveModelCapabilities", () => {
     });
     // Antigravity CLI model selection/thinking controls live inside the CLI session.
     expect(resolveModelCapabilities("antigravity")).toMatchObject({
+      supportsThinking: false,
+      supportsReasoningEffort: false,
+    });
+    expect(resolveModelCapabilities("opencode")).toMatchObject({
       supportsThinking: false,
       supportsReasoningEffort: false,
     });
@@ -129,8 +146,8 @@ describe("inferContextWindow", () => {
     expect(inferContextWindow("claude-agent-sdk")).toBe(200_000);
     expect(inferContextWindow("codex-app-server")).toBe(200_000);
     expect(inferContextWindow("codex")).toBe(200_000);
-    expect(inferContextWindow("gemini")).toBe(200_000);
     expect(inferContextWindow("antigravity")).toBe(200_000);
+    expect(inferContextWindow("opencode")).toBe(200_000);
     expect(inferContextWindow("apple")).toBe(4_096);
   });
 
@@ -153,7 +170,7 @@ describe("inferContextWindow", () => {
 
   test("falls back to provider default for unknown model IDs", () => {
     expect(inferContextWindow("codex", "codex/some-future-model")).toBe(200_000);
-    expect(inferContextWindow("gemini", "gemini/unknown-model")).toBe(200_000);
+    expect(inferContextWindow("gemini", "gemini/unknown-model")).toBeUndefined();
   });
 
   test("returns undefined for providers without static defaults", () => {

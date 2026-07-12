@@ -47,6 +47,7 @@ import {
   disconnectGatewaySessionsByDevice,
   sendToGatewayIdentity,
 } from "./gateway-server-session-delivery.js";
+import { GATEWAY_PRESENCE_TOPIC } from "./gateway-presence-topic.js";
 
 export type { SyncHttpError, SyncHttpHandler } from "./sync-http-routes.js";
 export type {
@@ -290,6 +291,16 @@ export class GatewayServer {
   /** Broadcast a message to all clients subscribed to a space UID via Bun's pub/sub. */
   broadcastToSpace(spaceUid: string, msg: GatewayMessage): void {
     this.server?.publish(`space:${spaceUid}`, JSON.stringify(msg));
+  }
+
+  /**
+   * Broadcast a message to every client subscribed to the gateway-wide
+   * agent-presence "departure board". Space-agnostic — there is a single
+   * `GATEWAY_PRESENCE_TOPIC` rather than one topic per space. Mirrors
+   * `broadcastToSpace` (same `server.publish` path).
+   */
+  broadcastToGateway(msg: GatewayMessage): void {
+    this.server?.publish(GATEWAY_PRESENCE_TOPIC, JSON.stringify(msg));
   }
 
   // ---------------------------------------------------------------------------

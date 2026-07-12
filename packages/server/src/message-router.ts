@@ -15,6 +15,7 @@ import type { PolicyHandlerContext } from "./handlers/policy-handlers.js";
 import type { RealtimeCollaborationHandlerContext } from "./handlers/realtime-collaboration-handlers.js";
 import { routeMessage } from "./handlers/route-dispatch.js";
 import type { SchedulerHandlerContext } from "./handlers/scheduler-handlers.js";
+import type { AgentPresenceHandlerContext, AgentPresenceSource } from "./handlers/agent-presence-handlers.js";
 import type { SpaceAdminHandlerContext } from "./handlers/space-admin-handlers.js";
 import type { SpaceResourceHandlerContext } from "./handlers/space-resource-handlers.js";
 import type { SpaceSharingHandlerContext } from "./handlers/space-sharing-handlers.js";
@@ -114,6 +115,13 @@ export type {
 } from "./message-router-space-services.js";
 export type { MessageRouterOptions, PendingAdapterInvocation } from "./message-router-types.js";
 
+/** True only for an explicit truthy env value (mirrors bootstrap's parseBooleanEnv true-set). */
+function envFlagEnabled(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes";
+}
+
 export class MessageRouter {
   private readonly spaceUidBySpaceId = new Map<string, string>();
   private readonly spaceIdBySpaceUid = new Map<string, string>();
@@ -157,6 +165,7 @@ export class MessageRouter {
   private get spaceMcpService(): SpaceMcpService | null { return this.options.spaceMcpService ?? null; }
   private get deviceIdentityService(): DeviceIdentityService | null { return this.options.deviceIdentityService ?? null; }
   private get orchestratorCommandService(): OrchestratorCommandService | null { return this.options.orchestratorCommandService ?? null; }
+  private get agentPresenceSource(): AgentPresenceSource | null { return this.options.agentPresenceSource ?? null; }
   private get gatewaySyncService(): GatewaySyncService | null { return this.options.gatewaySyncService ?? null; }
   private get speechSessionService(): SpeechSessionService | null { return this.options.speechSessionService ?? null; }
   private get conciergeCallRuntimeService(): ConciergeCallRuntimeService | null { return this.options.conciergeCallRuntimeService ?? null; }
@@ -177,6 +186,7 @@ export class MessageRouter {
   private get agentSessionReplacementEnabled(): boolean { return this.options.agentSessionReplacementEnabled ?? true; }
 
   onClientDisconnected(client: ClientSession): void {
+    this.agentPresenceSource?.unsubscribe(client.id);
     const providers = this.adapterProvidersByClient.get(client.id);
     if (providers) {
       for (const providerId of providers) {
@@ -301,6 +311,29 @@ export class MessageRouter {
   }
   schedulerHandlerContext(): SchedulerHandlerContext {
     return { orchestratorCommandService: this.orchestratorCommandService, schedulerService: this.schedulerService, resolveSpaceUid: this.resolveSpaceUid.bind(this), response: this.response.bind(this), errorResponse: this.errorResponse.bind(this), broadcastToSpace: this.broadcastToSpace };
+  }
+  agentPresenceHandlerContext(): AgentPresenceHandlerContext {
+    // The handler gates read on policy-DB globalFlags, but there is no policy
+    // CLI to set them — so the SPACESKIT_* env vars (which already construct
+    // the poller in bootstrap) are merged in as authoritative-when-true. Env
+    // can only ENABLE; it never disables a DB-enabled flag.
+    const envPresenceFlags: Record<string, unknown> = {};
+    if (envFlagEnabled(Bun.env.SPACESKIT_AGENT_PRESENCE_READ_ENABLED)) {
+      envPresenceFlags.AGENT_PRESENCE_READ_ENABLED = true;
+    }
+    if (envFlagEnabled(Bun.env.SPACESKIT_AGENT_PRESENCE_ANSWER_ENABLED)) {
+      envPresenceFlags.AGENT_PRESENCE_ANSWER_ENABLED = true;
+    }
+    return {
+      agentPresenceSource: this.agentPresenceSource,
+      getGatewayGlobalFlags: () => ({
+        ...this.gatewayPolicyService?.getPolicy().globalFlags,
+        ...envPresenceFlags,
+      }),
+      sendToClient: this.sendToClient,
+      response: this.response.bind(this),
+      errorResponse: this.errorResponse.bind(this),
+    };
   }
   workbenchHandlerContext(): WorkbenchHandlerContext {
     return { workbenchService: this.workbenchService, response: this.response.bind(this), errorResponse: this.errorResponse.bind(this) };

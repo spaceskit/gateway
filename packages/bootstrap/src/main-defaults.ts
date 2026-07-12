@@ -61,7 +61,6 @@ export function resolveMainProfileRuntimeSelection(
     "codex-app-server",
     "claude",
     "codex",
-    "gemini",
     "openrouter",
     "openai",
     "groq",

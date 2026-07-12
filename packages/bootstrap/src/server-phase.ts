@@ -1,4 +1,4 @@
-import { GatewayServer } from "@spaceskit/server";
+import { GatewayServer, type GatewayMessage } from "@spaceskit/server";
 import type { BootstrapState } from "./bootstrap-state.js";
 import { parseOptionalNumberEnv } from "./config.js";
 import { createHealthCheck } from "./healthcheck-phase.js";
@@ -249,6 +249,21 @@ export async function startGatewayServer(state: BootstrapState): Promise<void> {
       state.lifecycleMaintenanceTimer.unref?.();
       logger.info("Collaboration lifecycle maintenance loop started", {
         tickIntervalMs: maintenanceIntervalMs,
+      });
+    }
+
+    // Agent-presence "departure board": now that the WebSocket server exists,
+    // bind the source's per-client delivery to GatewayServer.send and start its
+    // infra-pulse poll loop. Constructed (behind SPACESKIT_AGENT_PRESENCE_READ_ENABLED,
+    // default OFF) in transport-phase; null when the flag is off.
+    if (state.agentPresenceSource) {
+      state.agentPresenceSourceTimer = state.agentPresenceSource.start(
+        (clientId: string, msg: GatewayMessage) => {
+          state.server?.send(clientId, msg);
+        },
+      );
+      logger.info("Agent presence source loop started", {
+        url: Bun.env.SPACESKIT_AGENT_PRESENCE_URL || "http://localhost:9091",
       });
     }
   } catch (error) {

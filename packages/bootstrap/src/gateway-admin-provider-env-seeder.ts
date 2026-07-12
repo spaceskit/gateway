@@ -144,8 +144,8 @@ function seedCliExecutorProviders(
   const cliExecutorCommands = {
     claude: ["claude"],
     codex: ["codex"],
-    gemini: ["gemini"],
     antigravity: ["agy", "antigravity"],
+    opencode: ["opencode"],
   } as const;
 
   for (const [providerId, commands] of Object.entries(cliExecutorCommands)) {

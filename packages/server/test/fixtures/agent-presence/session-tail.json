@@ -1,0 +1,30 @@
+{
+  "key": "claude:fixture-question",
+  "provider": "claude",
+  "sessionId": "fixture-question",
+  "cwd": "/Users/example/code/project",
+  "title": "Fix flaky auth test",
+  "generatedAt": "2026-07-02T10:05:00.000Z",
+  "messages": [
+    {
+      "role": "user",
+      "text": "Please fix the flaky auth test.",
+      "at": 1719925440000.5
+    },
+    {
+      "role": "assistant",
+      "text": "Looking at `auth.spec.ts` — the retry helper races the mock clock.",
+      "at": 1719925470000.5
+    },
+    {
+      "role": "tool",
+      "text": "bun test auth.spec.ts → 1 fail",
+      "at": 1719925480000.5
+    },
+    {
+      "role": "assistant",
+      "text": "Should I retry the failing test?",
+      "at": 1719925500000.5
+    }
+  ]
+}

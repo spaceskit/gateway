@@ -1,0 +1,13 @@
+{
+  "layoutVersion": 2,
+  "generatedAt": "2026-06-29T19:46:27.401Z",
+  "root": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa",
+  "spaceDir": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa/.space",
+  "paths": {
+    "meta": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa/.space",
+    "logs": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa/.space/logs",
+    "work": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa/.space/work",
+    "sharedContext": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa/.space/shared-context",
+    "scratchpads": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-main-space--0d8d1bfa/.space/scratchpads"
+  }
+}

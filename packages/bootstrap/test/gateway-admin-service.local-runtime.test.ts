@@ -1,9 +1,34 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createContext } from "./gateway-admin-service-test-helpers.js";
 import { LocalExecutableResolver } from "../src/execution/local-executable-resolver.js";
+
+function createOpencodeBinary(
+  options: {
+    root: string;
+    output: string;
+    exitCode?: number;
+  },
+): string {
+  const scriptPath = join(options.root, "opencode");
+  const output = options.output.trim();
+  const heredocMarker = "__OC_MODELS__";
+  const commandLines = ["#!/bin/sh", 'if [ "$1" = "models" ]; then'];
+  if (output.length > 0) {
+    commandLines.push(`  cat <<'${heredocMarker}'`);
+    commandLines.push(...output.split(/\r?\n/));
+    commandLines.push(heredocMarker);
+  } else {
+    commandLines.push("  :");
+  }
+  commandLines.push(`  exit ${options.exitCode ?? 0}`, "fi", "exit 1");
+  const payload = commandLines.join("\n");
+  writeFileSync(scriptPath, `${payload}\n`, "utf8");
+  chmodSync(scriptPath, 0o755);
+  return scriptPath;
+}
 
 describe("DefaultGatewayAdminService local runtime detection", () => {
   test("lists available models for lmstudio with lmstudio prefixes", async () => {
@@ -267,6 +292,129 @@ describe("DefaultGatewayAdminService local runtime detection", () => {
     } finally {
       ctx.db.close();
       ctx.restoreEnv();
+    }
+  });
+
+  test("discoverLocalAgents includes opencode models from `opencode models` output", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaceskit-opencode-models-"));
+    const executable = createOpencodeBinary({
+      root,
+      output: `
+openai/gpt-5.5
+openai/gpt-5.4
+openai/gpt-5.4-mini
+bad-line
+      `.trim(),
+    });
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "opencode" ? executable : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+    try {
+      const agents = await ctx.admin.discoverLocalAgents();
+      const opencode = agents.find((agent) => agent.id === "opencode");
+
+      expect(opencode?.detected).toBe(true);
+      expect(opencode?.executablePath).toBe(executable);
+      expect(opencode?.recommendedProviderId).toBe("opencode");
+      expect(opencode?.recommendedModel).toBe("opencode/openai/gpt-5.5");
+      expect(opencode?.availableModels).toEqual([
+        "opencode/openai/gpt-5.5",
+        "opencode/openai/gpt-5.4",
+        "opencode/openai/gpt-5.4-mini",
+      ]);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to manifest models for opencode when `opencode models` exits non-zero", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaceskit-opencode-fallback-"));
+    const executable = createOpencodeBinary({
+      root,
+      exitCode: 1,
+      output: `
+openai/gpt-5.5
+openai/gpt-5.4
+      `.trim(),
+    });
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "opencode" ? executable : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+    try {
+      const agents = await ctx.admin.discoverLocalAgents();
+      const opencode = agents.find((agent) => agent.id === "opencode");
+
+      expect(opencode?.detected).toBe(true);
+      expect(opencode?.availableModels).toEqual(["opencode/openai/gpt-5.5"]);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("auto-seeds OpenCode provider config when executable is installed", () => {
+    const root = mkdtempSync(join(tmpdir(), "spaceskit-opencode-seeder-"));
+    const executable = createOpencodeBinary({
+      root,
+      output: "openai/gpt-5.5",
+    });
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "opencode" ? executable : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+    try {
+      const opencode = ctx.admin.getProviderSettings("opencode");
+
+      expect(opencode.providerId).toBe("opencode");
+      expect(opencode.model).toBe("opencode/openai/gpt-5.5");
+      expect(opencode.allowedModels).toEqual(["opencode/openai/gpt-5.5"]);
+      expect(opencode.nativeCliToolsEnabled).toBe(false);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("bootstrap catalog uses opencode models returned from local command output", async () => {
+    const root = mkdtempSync(join(tmpdir(), "spaceskit-opencode-catalog-"));
+    const executable = createOpencodeBinary({
+      root,
+      output: `
+openai/gpt-5.5
+openai/gpt-5.4
+      `.trim(),
+    });
+    const executableResolver = {
+      resolve: ({ cacheKey }: { cacheKey: string }) => ({
+        path: cacheKey === "opencode" ? executable : undefined,
+      }),
+    } as unknown as LocalExecutableResolver;
+    const ctx = createContext({ executableResolver });
+
+    try {
+      const catalogs = await ctx.admin.listAvailableModels({ providerId: "opencode" });
+      expect(catalogs.length).toBe(1);
+      expect(catalogs[0].providerId).toBe("opencode");
+      expect(catalogs[0].models.map((model) => model.id)).toEqual([
+        "opencode/openai/gpt-5.5",
+        "opencode/openai/gpt-5.4",
+      ]);
+    } finally {
+      ctx.db.close();
+      ctx.restoreEnv();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

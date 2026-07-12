@@ -142,6 +142,95 @@ describe("SpaceWorkspaceService", () => {
     }
   });
 
+  test("openWorkspace reports unbound folders without space metadata", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-open-unbound-"));
+    const explicitRoot = join(tempRoot, "unbound-root");
+
+    try {
+      await mkdir(explicitRoot, { recursive: true });
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: join(tempRoot, "gateway-spaces"),
+      });
+
+      const result = await service.openWorkspace(explicitRoot);
+
+      expect(result.status).toBe("unbound");
+      expect(result.workspaceRoot).toBe(explicitRoot);
+      expect(result.gitRepoDetected).toBe(false);
+      expect(result.hasSpaceMetadata).toBe(false);
+      expect(result.spaceId).toBeUndefined();
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("openWorkspace reopens a folder-bound root for an existing space", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-open-existing-"));
+    const explicitRoot = join(tempRoot, "existing-root");
+
+    try {
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: join(tempRoot, "gateway-spaces"),
+      });
+
+      await service.setWorkspace("space-main", explicitRoot);
+      const result = await service.openWorkspace(explicitRoot);
+
+      expect(result.status).toBe("opened_existing");
+      expect(result.spaceId).toBe("space-main");
+      expect(result.metadataSpaceId).toBe("space-main");
+      expect(result.metadataSpaceUid).toBe(TEST_SPACE_UID);
+      expect(result.workspace?.mode).toBe("folder_bound");
+      expect(result.workspace?.effectiveWorkspaceRoot).toBe(explicitRoot);
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("openWorkspace marks external space metadata for import", async () => {
+    const context = createContext();
+    const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-open-import-"));
+    const explicitRoot = join(tempRoot, "imported-root");
+    const importedUid = "22222222-2222-2222-8222-222222222222";
+
+    try {
+      await mkdir(join(explicitRoot, ".space"), { recursive: true });
+      await writeFile(join(explicitRoot, ".space", "space.json"), JSON.stringify({
+        spaceId: "space-imported",
+        spaceUid: importedUid,
+        mode: "folder_bound",
+        effectiveWorkspaceRoot: explicitRoot,
+      }), "utf8");
+      const service = new SpaceWorkspaceService({
+        spaces: context.spaces,
+        resources: context.resources,
+        workspaces: context.workspaces,
+        spacesRoot: join(tempRoot, "gateway-spaces"),
+      });
+
+      const result = await service.openWorkspace(explicitRoot);
+
+      expect(result.status).toBe("created_new");
+      expect(result.metadataSpaceId).toBe("space-imported");
+      expect(result.metadataSpaceUid).toBe(importedUid);
+      expect(result.hasSpaceMetadata).toBe(true);
+      expect(result.workspace).toBeUndefined();
+    } finally {
+      context.db.close();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects incomplete managed workspace metadata", async () => {
     const context = createContext();
     const tempRoot = await mkdtemp(join(tmpdir(), "spaceskit-workspace-reset-"));

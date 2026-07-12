@@ -12,6 +12,7 @@ import { buildCommand } from "./cli-executor-command-builder.js";
 import type {
   CommandSpec,
   ModelReference,
+  SupportedProviderId,
 } from "./cli-executor-command-types.js";
 import {
   commandPreview,
@@ -93,7 +94,9 @@ export class CliExecutorModelProvider implements ModelProvider {
 
   async listModels(): Promise<ModelInfo[]> {
     const reference = this.parseModelReference(this.config.model, this.id);
-    const models = Array.from(new Set([reference.fullModelId, ...MODEL_MANIFEST[reference.providerId]]));
+    const discoveredModels = await this.listAvailableModels(reference.providerId);
+    const fallbackModels = MODEL_MANIFEST[reference.providerId] ?? [];
+    const models = normalizeModelIds([reference.fullModelId, ...discoveredModels, ...fallbackModels]);
     return models.map((modelId) => {
       const parsed = this.parseModelReference(modelId, reference.providerId);
       return {
@@ -104,6 +107,27 @@ export class CliExecutorModelProvider implements ModelProvider {
         isLocal: true,
       };
     });
+  }
+
+  private async listAvailableModels(providerId: SupportedProviderId): Promise<string[]> {
+    if (providerId !== "opencode") {
+      return [];
+    }
+
+    try {
+      const result = await this.runCommand({ executable: "opencode", args: ["models"] });
+      if (result.exitCode !== 0) {
+        return [];
+      }
+      const parsed = parseOpencodeModelList(result.stdout);
+      if (parsed.length > 0) {
+        return parsed;
+      }
+    } catch {
+      // Ignore local CLI discovery failures — fallback to manifest/static IDs.
+    }
+
+    return [];
   }
 
   async generate(model: string, options: GenerateOptions): Promise<GenerateResult> {
@@ -283,6 +307,60 @@ export class CliExecutorModelProvider implements ModelProvider {
       providerModelId: modelId,
     };
   }
+}
+
+function parseOpencodeModelList(stdout: string): string[] {
+  const seen = new Set<string>();
+  const models: string[] = [];
+
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const slashIndex = line.indexOf("/");
+    if (slashIndex <= 0 || slashIndex === line.length - 1) {
+      continue;
+    }
+
+    const provider = line.slice(0, slashIndex).trim().toLowerCase();
+    const model = line.slice(slashIndex + 1).trim();
+    if (!provider || !model) {
+      continue;
+    }
+
+    const modelId = `opencode/${provider}/${model}`;
+    const key = modelId.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    models.push(modelId);
+  }
+
+  return models;
+}
+
+function normalizeModelIds(modelIds: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const modelId of modelIds) {
+    const trimmed = modelId.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(trimmed);
+  }
+
+  return normalized;
 }
 
 async function notifyCliExecutionObserver(

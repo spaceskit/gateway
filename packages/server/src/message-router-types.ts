@@ -1,6 +1,7 @@
 import type { CapabilityRegistry, SessionContinuityManager, SpaceAdminService, SpaceManager } from "@spaceskit/core";
 import type { Logger } from "@spaceskit/observability";
 import type { AuthIssueHttpPrincipalTokenResponsePayload, GatewayMessage } from "./protocol.js";
+import type { AgentPresenceSource } from "./handlers/agent-presence-handlers.js";
 import type {
   ConnectorAdminService,
   ConciergeCallRuntimeService,
@@ -74,6 +75,7 @@ export interface MessageRouterOptions {
   spaceMcpService?: SpaceMcpService;
   deviceIdentityService?: DeviceIdentityService;
   orchestratorCommandService?: OrchestratorCommandService;
+  agentPresenceSource?: AgentPresenceSource;
   gatewaySyncService?: GatewaySyncService;
   speechSessionService?: SpeechSessionService;
   conciergeCallRuntimeService?: ConciergeCallRuntimeService;

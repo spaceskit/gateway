@@ -10,8 +10,8 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   claude: "claude/sonnet",
   "codex-app-server": "codex-app-server/gpt-5.5",
   codex: "codex/gpt-5.5",
-  gemini: "gemini/gemini-2.5-flash",
   antigravity: "antigravity/selected",
+  opencode: "opencode/openai/gpt-5.5",
   lmstudio: "lmstudio/qwen2.5-coder",
   ollama: "ollama/qwen2.5-coder",
   openrouter: "openrouter/openai/gpt-4.1-mini",
@@ -64,14 +64,11 @@ export const LOCAL_PROVIDER_MODEL_MANIFEST: Record<string, string[]> = {
     "codex/gpt-5-codex",
     "codex/gpt-5",
   ],
-  gemini: [
-    "gemini/gemini-3-pro-preview",
-    "gemini/gemini-3-flash-preview",
-    "gemini/gemini-2.5-pro",
-    "gemini/gemini-2.5-flash",
-  ],
   antigravity: [
     "antigravity/selected",
+  ],
+  opencode: [
+    "opencode/openai/gpt-5.5",
   ],
   lmstudio: [],
   ollama: [],
@@ -92,7 +89,15 @@ export const OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL";
 export const LMSTUDIO_BASE_URL_ENV = "LMSTUDIO_BASE_URL";
 export const OLLAMA_BASE_URL_ENV = "OLLAMA_BASE_URL";
 
-export const LOCAL_PROVIDER_IDS = new Set(["apple", "antigravity", "claude", "codex", "gemini", "lmstudio", "ollama"]);
+export const LOCAL_PROVIDER_IDS = new Set([
+  "apple",
+  "antigravity",
+  "claude",
+  "codex",
+  "lmstudio",
+  "ollama",
+  "opencode",
+]);
 const OPENAI_COMPATIBLE_PROVIDER_IDS = new Set([
   "openai",
   "lmstudio",
@@ -138,10 +143,10 @@ export function providerDisplayName(providerId: string): string {
       return "Claude Code";
     case "codex":
       return "Codex CLI";
-    case "gemini":
-      return "Gemini CLI";
     case "antigravity":
       return "Antigravity CLI";
+    case "opencode":
+      return "OpenCode CLI";
     case "lmstudio":
       return "LM Studio";
     case "ollama":
@@ -185,10 +190,10 @@ export function providerInstallHint(providerId: string): string | undefined {
       return "Install Claude Code and sign in locally.";
     case "codex":
       return "Install Codex CLI and sign in locally.";
-    case "gemini":
-      return "Install Gemini CLI and sign in locally.";
     case "antigravity":
       return "Install Antigravity CLI with `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then sign in locally.";
+    case "opencode":
+      return "Install OpenCode CLI and configure provider models before launching local workflows.";
     case "lmstudio":
       return "Install LM Studio, start the local server, and load at least one model.";
     case "ollama":
@@ -282,7 +287,10 @@ export function providerRecommended(providerId: string): boolean {
 }
 
 export function isCliExecutorProvider(providerId: string): boolean {
-  return providerId === "antigravity" || providerId === "claude" || providerId === "codex" || providerId === "gemini";
+  return providerId === "antigravity"
+    || providerId === "claude"
+    || providerId === "codex"
+    || providerId === "opencode";
 }
 
 export function isLocalProvider(providerId: string): boolean {

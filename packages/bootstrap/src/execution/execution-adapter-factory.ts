@@ -35,7 +35,14 @@ interface ExecutionAdapterFactoryOptions {
   findExecutable?: (commands: string[]) => string | null;
 }
 
-const EXECUTOR_PROVIDER_IDS = new Set(["antigravity", "claude", "claude-agent-sdk", "codex", "codex-app-server", "gemini"]);
+const EXECUTOR_PROVIDER_IDS = new Set([
+  "antigravity",
+  "claude",
+  "claude-agent-sdk",
+  "codex",
+  "codex-app-server",
+  "opencode",
+]);
 const LOCAL_RUNTIME_PROVIDER_IDS = new Set(["apple", "lmstudio", "ollama"]);
 
 export function classifyExecutionAdapter(providerIdRaw?: string): ExecutionAdapterClass {
@@ -107,7 +114,12 @@ export class ExecutionAdapterFactory {
       });
     }
 
-    if (providerId === "antigravity" || providerId === "claude" || providerId === "codex" || providerId === "gemini") {
+    if (
+      providerId === "antigravity"
+      || providerId === "claude"
+      || providerId === "codex"
+      || providerId === "opencode"
+    ) {
       return new CliExecutorModelProvider({
         id: providerId,
         name: providerId,

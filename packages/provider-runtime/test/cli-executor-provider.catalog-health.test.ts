@@ -38,6 +38,52 @@ describe("CliExecutorModelProvider", () => {
     }]);
   });
 
+  test("discovers and normalizes opencode models from `opencode models` output", async () => {
+    const provider = new CliExecutorModelProvider({
+      id: "opencode",
+      name: "OpenCode CLI",
+      model: "opencode/openai/gpt-5.5",
+      runCommand: async () => ({
+        exitCode: 0,
+        stdout: [
+          "openai/gpt-5.5",
+          "openai/gpt-5.4",
+          "openai/gpt-5.5",
+          "openai/gpt-5.4-mini",
+          "bad-line",
+        ].join("\n"),
+        stderr: "",
+      }),
+    });
+
+    const models = await provider.listModels();
+
+    expect(models.map((model) => model.id)).toEqual([
+      "opencode/openai/gpt-5.5",
+      "opencode/openai/gpt-5.4",
+      "opencode/openai/gpt-5.4-mini",
+    ]);
+  });
+
+  test("falls back to manifest models when `opencode models` fails", async () => {
+    const provider = new CliExecutorModelProvider({
+      id: "opencode",
+      name: "OpenCode CLI",
+      model: "opencode/openai/gpt-5.5",
+      runCommand: async () => ({
+        exitCode: 1,
+        stdout: "openai/gpt-5.5\nopenai/gpt-5.4",
+        stderr: "command failed",
+      }),
+    });
+
+    const models = await provider.listModels();
+
+    expect(models.map((model) => model.id)).toEqual([
+      "opencode/openai/gpt-5.5",
+    ]);
+  });
+
   test("reports executor health from the native CLI probe", async () => {
     const probes: Array<{ command: string; args: string[] }> = [];
     const provider = new CliExecutorModelProvider({

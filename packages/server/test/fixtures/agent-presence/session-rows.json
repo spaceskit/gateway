@@ -1,0 +1,97 @@
+{
+  "question": {
+    "key": "claude:fixture-question",
+    "provider": "claude",
+    "sessionId": "fixture-question",
+    "cwd": "/Users/example/code/project",
+    "status": "question",
+    "summary": "Should I retry the failing test?",
+    "hash": "hash-question",
+    "at": 1719925500000.5,
+    "live": true,
+    "title": "Fix flaky auth test",
+    "contextTail": "The suite failed twice on auth.spec.ts — retry or skip?",
+    "options": [
+      {
+        "label": "Yes",
+        "description": "Retry the test suite"
+      },
+      {
+        "label": "No",
+        "description": "Skip and move on"
+      }
+    ]
+  },
+  "plan": {
+    "key": "claude:fixture-plan",
+    "provider": "claude",
+    "sessionId": "fixture-plan",
+    "cwd": "/Users/example/code/project",
+    "status": "plan",
+    "summary": "Plan ready: migrate the auth module",
+    "hash": "hash-plan",
+    "at": 1719925500000.5,
+    "live": true,
+    "options": [
+      {
+        "label": "Approve plan"
+      },
+      {
+        "label": "Keep planning"
+      }
+    ]
+  },
+  "permission": {
+    "key": "codex:fixture-permission",
+    "provider": "codex",
+    "sessionId": "fixture-permission",
+    "cwd": "/Users/example/code/project",
+    "status": "permission",
+    "summary": "Allow `rm -rf dist`?",
+    "hash": "hash-permission",
+    "at": 1719925500000.5,
+    "live": true,
+    "options": [
+      {
+        "label": "Allow"
+      },
+      {
+        "label": "Deny"
+      }
+    ]
+  },
+  "turn-end": {
+    "key": "codex:fixture-turn-end",
+    "provider": "codex",
+    "sessionId": "fixture-turn-end",
+    "cwd": "/Users/example/code/project",
+    "status": "turn-end",
+    "summary": "Done — typecheck passes. Want me to also update the docs?",
+    "hash": "hash-turn-end",
+    "at": 1719925500000.5,
+    "live": true,
+    "title": "Docs sync sweep"
+  },
+  "working": {
+    "key": "opencode:fixture-working",
+    "provider": "opencode",
+    "sessionId": "fixture-working",
+    "cwd": "/Users/example/code/project",
+    "status": "working",
+    "summary": "fixture working summary",
+    "hash": "hash-working",
+    "at": 1719925500000.5,
+    "live": true
+  },
+  "idle-dead": {
+    "key": "claude:fixture-idle-dead",
+    "provider": "claude",
+    "sessionId": "fixture-idle-dead",
+    "cwd": "/Users/example/code/project",
+    "status": "idle-dead",
+    "summary": "fixture idle-dead summary",
+    "hash": "hash-idle-dead",
+    "at": 1719925500000.5,
+    "live": false
+  }
+}

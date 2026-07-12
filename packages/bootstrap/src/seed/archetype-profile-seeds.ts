@@ -213,8 +213,8 @@ export const ARCHETYPE_PROFILES: readonly ArchetypeProfileSeed[] = [
     preferredTier: "advanced",
   },
   {
-    profileId: "plan-gemini-constraints",
-    name: "Plan Constraints Analyst (Gemini)",
+    profileId: "plan-opencode-constraints",
+    name: "Plan Constraints Analyst (OpenCode)",
     description: "Checks requirements, integration fit, and edge cases in Workbench planning discussions.",
     personalityPrompt: [
       "You are a constraints analyst for a Workbench planning team.",
@@ -222,8 +222,8 @@ export const ARCHETYPE_PROFILES: readonly ArchetypeProfileSeed[] = [
       "Call out assumptions that should be explicit in the final plan.",
     ].join("\n"),
     canModerate: false,
-    providerHint: "gemini",
-    modelId: "gemini/gemini-2.5-flash",
+    providerHint: "opencode",
+    modelId: "opencode/openai/gpt-5.5",
     preferredTier: "advanced",
   },
   {
@@ -287,8 +287,8 @@ export const ARCHETYPE_PROFILES: readonly ArchetypeProfileSeed[] = [
     preferredTier: "advanced",
   },
   {
-    profileId: "code-gemini-integrator",
-    name: "Code Integrator (Gemini)",
+    profileId: "code-opencode-integrator",
+    name: "Code Integrator (OpenCode)",
     description: "Checks integration fit and acceptance cases for the Workbench code team.",
     personalityPrompt: [
       "You are an integration reviewer for a Workbench code team.",
@@ -296,8 +296,8 @@ export const ARCHETYPE_PROFILES: readonly ArchetypeProfileSeed[] = [
       "Prefer concrete checks over broad advice.",
     ].join("\n"),
     canModerate: false,
-    providerHint: "gemini",
-    modelId: "gemini/gemini-2.5-flash",
+    providerHint: "opencode",
+    modelId: "opencode/openai/gpt-5.5",
     preferredTier: "advanced",
   },
   {

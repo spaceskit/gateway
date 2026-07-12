@@ -1,0 +1,13 @@
+{
+  "layoutVersion": 2,
+  "generatedAt": "2026-06-29T19:46:27.403Z",
+  "root": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca",
+  "spaceDir": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca/.space",
+  "paths": {
+    "meta": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca/.space",
+    "logs": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca/.space/logs",
+    "work": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca/.space/work",
+    "sharedContext": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca/.space/shared-context",
+    "scratchpads": "/Users/caruso/code/spaces/gateway/packages/bootstrap/spaces/external-concierge--bcc383ca/.space/scratchpads"
+  }
+}

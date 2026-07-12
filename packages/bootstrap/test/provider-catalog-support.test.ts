@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   inferDefaultProviderAuthStatus,
   isCliExecutorProvider,
   isLikelyLocalBaseURL,
   isLocalProvider,
   isOpenAICompatibleProvider,
   keyFromEnvironment,
+  LOCAL_PROVIDER_MODEL_MANIFEST,
   LMSTUDIO_BASE_URL_ENV,
   normalizeProviderAuthMode,
   OPENAI_BASE_URL_ENV,
@@ -27,10 +29,12 @@ describe("provider-catalog-support", () => {
     expect(providerDisplayName("claude-agent-sdk")).toBe("Claude Agent SDK");
     expect(providerDisplayName("codex-app-server")).toBe("Codex App Server");
     expect(providerDisplayName("antigravity")).toBe("Antigravity CLI");
+    expect(providerDisplayName("opencode")).toBe("OpenCode CLI");
     expect(providerDisplayName("lmstudio")).toBe("LM Studio");
     expect(providerInstallHint("openrouter")).toContain("OPENROUTER_API_KEY");
     expect(providerInstallHint("codex-app-server")).toContain("OPENAI_API_KEY");
     expect(providerInstallHint("antigravity")).toContain("antigravity.google/cli/install.sh");
+    expect(providerInstallHint("opencode")).toContain("OpenCode CLI");
     expect(providerInstallHint("unknown-provider")).toBeUndefined();
   });
 
@@ -56,12 +60,21 @@ describe("provider-catalog-support", () => {
     expect(isLocalProvider("openai")).toBe(false);
     expect(isCliExecutorProvider("codex")).toBe(true);
     expect(isCliExecutorProvider("antigravity")).toBe(true);
+    expect(isCliExecutorProvider("opencode")).toBe(true);
     expect(isCliExecutorProvider("openai")).toBe(false);
     expect(isOpenAICompatibleProvider("openrouter")).toBe(true);
     expect(isOpenAICompatibleProvider("claude")).toBe(false);
     expect(providerRecommended("apple")).toBe(true);
     expect(providerRecommended("antigravity")).toBe(false);
     expect(providerRecommended("anthropic")).toBe(false);
+  });
+
+  test("does not expose Gemini CLI as a selectable provider", () => {
+    expect(DEFAULT_MODEL_BY_PROVIDER.gemini).toBeUndefined();
+    expect(LOCAL_PROVIDER_MODEL_MANIFEST.gemini).toBeUndefined();
+    expect(isLocalProvider("gemini")).toBe(false);
+    expect(isCliExecutorProvider("gemini")).toBe(false);
+    expect(providerInstallHint("gemini")).toBeUndefined();
   });
 
   test("uses local base URLs to suppress OpenAI API-key requirements", () => {

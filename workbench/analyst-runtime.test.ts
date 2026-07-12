@@ -41,9 +41,9 @@ function makeRunDetail(overrides: Partial<WorkbenchJobRunDetail> = {}): Workbenc
           status: "fail",
         },
         {
-          provider: "gemini",
-          model: "gemini-2.5-flash",
-          transport: "mediated_fallback",
+          provider: "opencode",
+          model: "opencode/openai/gpt-5.5",
+          transport: "bridge",
           status: "fail",
         },
         {

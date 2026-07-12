@@ -35,7 +35,7 @@ export const WORKBENCH_PLANNING_AGENTS: WorkbenchExecutionAgent[] = [
   { agentId: "plan-coordinator", profileId: "plan-coordinator-opus", role: "global_coordinator", isPrimary: true, turnOrder: 0 },
   { agentId: "plan-codex-architect", profileId: "plan-codex-architect", role: "participant", isPrimary: false, turnOrder: 1 },
   { agentId: "plan-opus-reviewer", profileId: "plan-opus-reviewer", role: "participant", isPrimary: false, turnOrder: 2 },
-  { agentId: "plan-gemini-constraints", profileId: "plan-gemini-constraints", role: "participant", isPrimary: false, turnOrder: 3 },
+  { agentId: "plan-opencode-constraints", profileId: "plan-opencode-constraints", role: "participant", isPrimary: false, turnOrder: 3 },
   { agentId: "plan-lmstudio-maintainer", profileId: "plan-lmstudio-maintainer", role: "participant", isPrimary: false, turnOrder: 4 },
   { agentId: "plan-apple-continuity", profileId: "plan-apple-continuity", role: "participant", isPrimary: false, turnOrder: 5 },
 ];
@@ -43,7 +43,7 @@ export const WORKBENCH_PLANNING_AGENTS: WorkbenchExecutionAgent[] = [
 export const WORKBENCH_IMPLEMENTATION_AGENTS: WorkbenchExecutionAgent[] = [
   { agentId: "code-lead", profileId: "code-lead-codex", role: "global_coordinator", isPrimary: true, turnOrder: 6 },
   { agentId: "code-opus-reviewer", profileId: "code-opus-reviewer", role: "participant", isPrimary: false, turnOrder: 7 },
-  { agentId: "code-gemini-integrator", profileId: "code-gemini-integrator", role: "participant", isPrimary: false, turnOrder: 8 },
+  { agentId: "code-opencode-integrator", profileId: "code-opencode-integrator", role: "participant", isPrimary: false, turnOrder: 8 },
   { agentId: "code-lmstudio-maintainer", profileId: "code-lmstudio-maintainer", role: "participant", isPrimary: false, turnOrder: 9 },
   { agentId: "code-apple-continuity", profileId: "code-apple-continuity", role: "participant", isPrimary: false, turnOrder: 10 },
 ];

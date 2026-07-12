@@ -17,9 +17,9 @@ function makeLayer(status: LayerResult["status"]): LayerResult {
 
 function makeRow(status: ProviderParityRow["status"]): ProviderParityRow {
   return {
-    provider: "gemini",
-    model: "gemini/gemini-2.5-flash",
-    transport: "mediated_fallback",
+    provider: "opencode",
+    model: "opencode/openai/gpt-5.5",
+    transport: "bridge",
     status,
   };
 }

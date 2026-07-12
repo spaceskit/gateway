@@ -28,6 +28,8 @@ import type {
   SpaceShareListParticipantsResponsePayload,
   SpaceSetMcpEndpointPayload,
   SpaceSummary,
+  SpaceOpenWorkspaceConflict,
+  SpaceOpenWorkspaceStatus,
   SpaceTurnPayload,
   SpaceUserProfilePayload,
   SpaceUpdateQuotaPolicyPayload,
@@ -166,6 +168,19 @@ export interface SpaceWorkspaceService {
   ensureWorkspace: (spaceId: string) => Promise<SpaceWorkspacePayload>;
   getWorkspace: (spaceId: string) => Promise<SpaceWorkspacePayload>;
   setWorkspace: (spaceId: string, workspaceRoot?: string | null) => Promise<SpaceWorkspacePayload>;
+  openWorkspace: (workspaceRoot: string) => Promise<SpaceOpenWorkspaceServiceResult>;
+}
+
+export interface SpaceOpenWorkspaceServiceResult {
+  status: SpaceOpenWorkspaceStatus;
+  workspaceRoot: string;
+  gitRepoDetected: boolean;
+  hasSpaceMetadata: boolean;
+  spaceId?: string;
+  metadataSpaceId?: string;
+  metadataSpaceUid?: string;
+  workspace?: SpaceWorkspacePayload;
+  conflict?: SpaceOpenWorkspaceConflict;
 }
 
 export interface SpaceEndIncognitoSessionOutcome {

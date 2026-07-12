@@ -58,7 +58,7 @@ describe("DefaultGatewayAdminService embedded profile constraints", () => {
   test("embedded non-mac profile rejects executor/local runtimes", () => {
     const ctx = createContext({ gatewayProfile: "embedded", hostPlatform: "linux", hostArch: "x64" });
     try {
-      for (const providerId of ["antigravity", "claude", "codex", "gemini", "lmstudio"]) {
+      for (const providerId of ["antigravity", "claude", "codex", "lmstudio"]) {
         expect(() => ctx.admin.setProviderConfig({
           providerId,
           model: `${providerId}/test-model`,
@@ -135,7 +135,7 @@ describe("DefaultGatewayAdminService embedded profile constraints", () => {
         expect(typeof catalog.configAllowed).toBe("boolean");
       }
       const enabledProviders = ["openrouter", "openai", "groq", "together", "mistral"];
-      const disabledProviders = ["apple", "antigravity", "claude", "codex", "gemini", "lmstudio"];
+      const disabledProviders = ["apple", "antigravity", "claude", "codex", "lmstudio"];
       for (const catalog of catalogs) {
         if (enabledProviders.includes(catalog.providerId)) {
           expect(catalog.configAllowed).toBe(true);

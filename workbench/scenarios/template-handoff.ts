@@ -58,9 +58,9 @@ const RUNTIME_TARGET_BY_PROFILE_ID: Record<string, RuntimeTarget> = {
     required: true,
     roleFocus: "review the plan for missing decisions and risky assumptions",
   },
-  "plan-gemini-constraints": {
-    providerId: "gemini",
-    model: "gemini/gemini-2.5-flash",
+  "plan-opencode-constraints": {
+    providerId: "opencode",
+    model: "opencode/openai/gpt-5.5",
     required: true,
     roleFocus: "check constraints, compatibility, and acceptance criteria",
   },
@@ -88,9 +88,9 @@ const RUNTIME_TARGET_BY_PROFILE_ID: Record<string, RuntimeTarget> = {
     required: true,
     roleFocus: "review implementation risks and missing tests",
   },
-  "code-gemini-integrator": {
-    providerId: "gemini",
-    model: "gemini/gemini-2.5-flash",
+  "code-opencode-integrator": {
+    providerId: "opencode",
+    model: "opencode/openai/gpt-5.5",
     required: true,
     roleFocus: "check API/UI integration and compatibility",
   },

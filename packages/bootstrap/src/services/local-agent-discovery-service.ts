@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { LocalExecutableResolver } from "../execution/local-executable-resolver.js";
 import {
   LOCAL_PROVIDER_MODEL_MANIFEST,
@@ -62,16 +63,6 @@ export const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
     defaultPersonalityPrompt: "You are a Claude-backed agent focused on clear reasoning and safe execution.",
   },
   {
-    id: "gemini",
-    name: "Gemini",
-    commands: ["gemini"],
-    recommendedProviderId: "gemini",
-    recommendedModel: "gemini/gemini-2.5-flash",
-    requiresApiKey: false,
-    defaultProfileName: "Gemini Agent",
-    defaultPersonalityPrompt: "You are a Gemini-backed agent focused on concise and grounded responses.",
-  },
-  {
     id: "codex",
     name: "Codex",
     commands: ["codex"],
@@ -102,6 +93,16 @@ export const LOCAL_CLIENT_TEMPLATES: LocalClientTemplate[] = [
     defaultProfileName: "Codex App Server Agent",
     defaultPersonalityPrompt: "You are a coding-focused assistant running through Codex App Server with mediated gateway tools.",
     notes: "Uses the local codex app-server transport and can authenticate with ChatGPT or OPENAI_API_KEY.",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    commands: ["opencode"],
+    recommendedProviderId: "opencode",
+    recommendedModel: "opencode/openai/gpt-5.5",
+    requiresApiKey: false,
+    defaultProfileName: "OpenCode Agent",
+    defaultPersonalityPrompt: "You are a coding-focused assistant that uses OpenCode CLI as a local runtime.",
   },
   {
     id: "lmstudio",
@@ -238,6 +239,29 @@ export class LocalAgentDiscoveryService {
     return results;
   }
 
+  detectOpencodeCliModels(): string[] {
+    const executable = this.findExecutable(["opencode"]) ?? "opencode";
+
+    try {
+      const result = spawnSync(executable, ["models"], {
+        encoding: "utf8",
+        timeout: 1_500,
+      });
+      if (!result || result.error || result.status !== 0) {
+        return [];
+      }
+      const output = (result.stdout ?? "").toString();
+      const parsed = parseOpencodeModelList(output);
+      if (parsed.length > 0) {
+        return parsed;
+      }
+    } catch {
+      return [];
+    }
+
+    return [];
+  }
+
   private async computeLocalAgentSnapshot(): Promise<DiscoveredLocalAgent[]> {
     const lmStudioPolicyReason = this.options.providerPolicyRestrictionReason("lmstudio");
     try {
@@ -257,6 +281,7 @@ export class LocalAgentDiscoveryService {
       const codexAppServerDetectedModels = codexDetectedModels.map((modelId) =>
         modelId.replace(/^codex\//, "codex-app-server/"),
       );
+      const opencodeDetectedModels = this.detectOpencodeCliModels();
 
       const value = LOCAL_CLIENT_TEMPLATES.map((template) => {
         const executablePath = this.findExecutable(template.commands);
@@ -273,6 +298,7 @@ export class LocalAgentDiscoveryService {
             : uniqueModelIds([
               ...(template.id === "codex" ? codexDetectedModels : []),
               ...(template.id === "codex-app-server" ? codexAppServerDetectedModels : []),
+              ...(template.id === "opencode" ? opencodeDetectedModels : []),
               ...localManifestModels,
             ]);
         const recommendedModel = availableModels?.[0] ?? template.recommendedModel;
@@ -306,6 +332,40 @@ export class LocalAgentDiscoveryService {
       this.snapshotInFlight = undefined;
     }
   }
+}
+
+function parseOpencodeModelList(stdout: string): string[] {
+  const seen = new Set<string>();
+  const models: string[] = [];
+
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const slashIndex = line.indexOf("/");
+    if (slashIndex <= 0 || slashIndex === line.length - 1) {
+      continue;
+    }
+
+    const provider = line.slice(0, slashIndex).trim().toLowerCase();
+    const model = line.slice(slashIndex + 1).trim();
+    if (!provider || !model) {
+      continue;
+    }
+
+    const modelId = `opencode/${provider}/${model}`;
+    const key = modelId.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    models.push(modelId);
+  }
+
+  return models;
 }
 
 export function cloneDiscoveredLocalAgent(agent: DiscoveredLocalAgent): DiscoveredLocalAgent {

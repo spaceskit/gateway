@@ -1,0 +1,23 @@
+{
+  "option": {
+    "key": "claude:fixture-question",
+    "optionIndex": 0,
+    "expectedHash": "hash-question"
+  },
+  "optionByLabel": {
+    "key": "claude:fixture-question",
+    "optionLabel": "Yes",
+    "expectedHash": "hash-question"
+  },
+  "text": {
+    "key": "codex:fixture-turn-end",
+    "text": "Yes, update the docs too.",
+    "expectedHash": "hash-turn-end"
+  },
+  "optionWithText": {
+    "key": "claude:fixture-question",
+    "optionIndex": 1,
+    "text": "The failure looks environmental.",
+    "expectedHash": "hash-question"
+  }
+}

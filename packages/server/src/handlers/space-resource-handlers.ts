@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import type { SpaceAdminService } from "@spaceskit/core";
 import type { ErrorPayload } from "../protocol.js";
 import {
@@ -27,6 +29,9 @@ import {
   type SpaceListTurnsPayload,
   type SpaceListTurnsResponsePayload,
   type SpaceMcpEndpointPayload,
+  type SpaceOpenWorkspacePayload,
+  type SpaceOpenWorkspaceResponsePayload,
+  type SpaceOpenWorkspaceResult,
   type SpaceRemoveResourcePayload,
   type SpaceRemoveResourceResponsePayload,
   type SpaceRemoveSkillPayload,
@@ -298,6 +303,69 @@ export async function handleSpaceSetWorkspace(
   return context.response(msg.id, MessageTypes.SPACE_SET_WORKSPACE, {
     workspace,
   } satisfies SpaceSetWorkspaceResponsePayload);
+}
+
+export async function handleSpaceOpenWorkspace(
+  context: SpaceResourceHandlerContext,
+  _client: ClientSession,
+  msg: GatewayMessage,
+): Promise<GatewayMessage | null> {
+  if (!context.spaceWorkspaceService) {
+    return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space workspace service unavailable");
+  }
+  const payload = msg.payload as SpaceOpenWorkspacePayload;
+  const requestedWorkspaceRoot = normalizeString(payload?.workspaceRoot);
+  if (!requestedWorkspaceRoot) {
+    return context.errorResponse(msg.id, "INVALID_ARGUMENT", "workspaceRoot is required");
+  }
+
+  const openResult = await context.spaceWorkspaceService.openWorkspace(requestedWorkspaceRoot);
+  let resolvedSpaceId = openResult.spaceId;
+  let workspace = openResult.workspace;
+  let space: SpaceSummary | undefined;
+
+  if (openResult.status === "created_new") {
+    if (!context.spaceAdminService) {
+      return context.errorResponse(msg.id, "FAILED_PRECONDITION", "Space admin service unavailable");
+    }
+
+    const created = await context.spaceAdminService.createSpace({
+      spaceId: openResult.metadataSpaceId,
+      spaceUid: openResult.metadataSpaceUid,
+      resourceId: `resource:workspace:${randomUUID()}`,
+      name: importedWorkspaceName(openResult.workspaceRoot),
+      goal: "",
+      visibility: "shared",
+    });
+    workspace = await context.spaceWorkspaceService.setWorkspace(created.id, openResult.workspaceRoot);
+    context.spaceManager.invalidateCache(created.id);
+    resolvedSpaceId = created.id;
+  }
+
+  if (resolvedSpaceId && context.spaceAdminService) {
+    const resolvedSpace = await context.spaceAdminService.getSpace(resolvedSpaceId);
+    if (resolvedSpace) {
+      space = await context.decorateSpaceSummary(resolvedSpace as SpaceSummary);
+    }
+  }
+
+  const result: SpaceOpenWorkspaceResult = {
+    status: openResult.status,
+    workspaceRoot: openResult.workspaceRoot,
+    gitRepoDetected: workspace?.gitRepoDetected ?? openResult.gitRepoDetected,
+    hasSpaceMetadata: openResult.hasSpaceMetadata,
+    ...(space ? { space } : {}),
+    ...(workspace ? { workspace } : {}),
+    ...(openResult.conflict ? { conflict: openResult.conflict } : {}),
+  };
+
+  return context.response(msg.id, MessageTypes.SPACE_OPEN_WORKSPACE, {
+    result,
+  } satisfies SpaceOpenWorkspaceResponsePayload);
+}
+
+function importedWorkspaceName(workspaceRoot: string): string {
+  return basename(workspaceRoot).trim() || "Imported Space";
 }
 
 export async function handleSpaceAddResource(

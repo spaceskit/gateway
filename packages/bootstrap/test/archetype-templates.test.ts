@@ -38,7 +38,7 @@ describe("workbench archetype templates", () => {
       "plan-coordinator-opus",
       "plan-codex-architect",
       "plan-opus-reviewer",
-      "plan-gemini-constraints",
+      "plan-opencode-constraints",
       "plan-lmstudio-maintainer",
       "plan-apple-continuity",
     ]);
@@ -71,9 +71,9 @@ describe("workbench archetype templates", () => {
         providerHint: "claude-agent-sdk",
         modelId: "claude-agent-sdk/claude-opus-4-6",
       },
-      "plan-gemini-constraints": {
-        providerHint: "gemini",
-        modelId: "gemini/gemini-2.5-flash",
+      "plan-opencode-constraints": {
+        providerHint: "opencode",
+        modelId: "opencode/openai/gpt-5.5",
       },
       "plan-lmstudio-maintainer": {
         providerHint: "lmstudio",
@@ -92,7 +92,7 @@ describe("workbench archetype templates", () => {
     expect(template?.agents.map((agent) => agent.profileId)).toEqual([
       "code-lead-codex",
       "code-opus-reviewer",
-      "code-gemini-integrator",
+      "code-opencode-integrator",
       "code-lmstudio-maintainer",
       "code-apple-continuity",
     ]);
@@ -121,9 +121,9 @@ describe("workbench archetype templates", () => {
         providerHint: "claude-agent-sdk",
         modelId: "claude-agent-sdk/claude-opus-4-6",
       },
-      "code-gemini-integrator": {
-        providerHint: "gemini",
-        modelId: "gemini/gemini-2.5-flash",
+      "code-opencode-integrator": {
+        providerHint: "opencode",
+        modelId: "opencode/openai/gpt-5.5",
       },
       "code-lmstudio-maintainer": {
         providerHint: "lmstudio",

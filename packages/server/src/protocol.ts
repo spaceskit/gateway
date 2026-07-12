@@ -26,4 +26,5 @@ export * from "./protocol/settings.js";
 export * from "./protocol/sync-speech-capabilities.js";
 export * from "./protocol/events.js";
 export * from "./protocol/coordination.js";
+export * from "./protocol/agent-presence.js";
 export { MessageTypes } from "./protocol/message-types.js";

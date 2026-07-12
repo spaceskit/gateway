@@ -299,7 +299,7 @@ describe("bootstrap main defaults", () => {
       // and take priority over API-key providers. Codex app server is preferred
       // when available; otherwise the resolver falls through to the next
       // detected CLI or configured API-key provider.
-      const validProviders = ["codex-app-server", "antigravity", "claude", "codex", "gemini", "openrouter"];
+      const validProviders = ["codex-app-server", "antigravity", "claude", "codex", "opencode", "openrouter"];
       expect(validProviders).toContain(row?.provider_hint);
       expect(selectedModel).toStartWith(`${row!.provider_hint}/`);
     } finally {

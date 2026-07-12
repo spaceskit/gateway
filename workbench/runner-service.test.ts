@@ -60,7 +60,7 @@ describe("WorkbenchRunnerService", () => {
     const preset = service.createPreset({
       name: "Smoke",
       layers: ["chat-roundtrip", "provider-tool-parity"],
-      providers: ["claude", "gemini"],
+      providers: ["claude", "opencode"],
     });
 
     expect(service.listPresets()).toEqual([preset]);

@@ -46,7 +46,13 @@ export async function configureTurnTools(input: ConfigureTurnToolsInput): Promis
   let gatewayToolBridgeConfig: GatewayToolBridgeConfig | undefined;
   let mcpDiscoveryFilePath: string | undefined;
 
-  const gatewayToolBridgeProviders = new Set(["claude", "codex", "claude-agent-sdk", "codex-app-server"]);
+  const gatewayToolBridgeProviders = new Set([
+    "claude",
+    "codex",
+    "claude-agent-sdk",
+    "codex-app-server",
+    "opencode",
+  ]);
   const mcpDiscoveryProviders = new Set(["claude", "codex"]);
 
   if (input.isMediated) {

@@ -2,7 +2,10 @@ import type { GenerateOptions, GenerateResult } from "./model-provider.js";
 import type { AgentConfig, TurnContext } from "./agent-runtime.js";
 
 function isCliExecutorProvider(providerId: string): boolean {
-  return providerId === "antigravity" || providerId === "claude" || providerId === "codex" || providerId === "gemini";
+  return providerId === "antigravity"
+    || providerId === "claude"
+    || providerId === "codex"
+    || providerId === "opencode";
 }
 
 export function resolveTurnAccessMode(
@@ -62,22 +65,22 @@ This turn is running in FULL ACCESS mode for the ${executor} executor.
 - Keep file and system actions scoped to the active workspace.`;
   }
 
-  if (providerId === "gemini" && options.isMediated) {
-    return `[[SPACESKIT_EXECUTOR_ACCESS_MODE_V1]]
-This turn is running in DEFAULT access mode for the ${executor} executor.
-- Native Gemini CLI tools are not available in this turn.
-- Request gateway tools only with fenced \`tool_call\` blocks.
-- Do not use Gemini CLI native tools or shell/file modification actions in this mode.
-- If native Gemini CLI tools are needed, ask the user to switch to Full Access mode.`;
-  }
-
   if (providerId === "antigravity" && options.isMediated) {
     return `[[SPACESKIT_EXECUTOR_ACCESS_MODE_V1]]
 This turn is running in DEFAULT access mode for the ${executor} executor.
 - Native Antigravity CLI tools are not available in this turn.
 - Request gateway tools only with fenced \`tool_call\` blocks.
 - Do not use Antigravity CLI native tools or shell/file modification actions in this mode.
-- If native Antigravity CLI tools are needed, ask the user to switch to Full Access mode.`;
+    - If native Antigravity CLI tools are needed, ask the user to switch to Full Access mode.`;
+  }
+
+  if (providerId === "opencode" && options.isMediated) {
+    return `[[SPACESKIT_EXECUTOR_ACCESS_MODE_V1]]
+This turn is running in DEFAULT access mode for the ${executor} executor.
+- Native OpenCode CLI tools are not available in this turn.
+- Request gateway tools only with fenced \`tool_call\` blocks.
+- Do not use OpenCode CLI native tools or shell/file modification actions in this mode.
+- If native OpenCode CLI tools are needed, ask the user to switch to Full Access mode.`;
   }
 
   return `[[SPACESKIT_EXECUTOR_ACCESS_MODE_V1]]

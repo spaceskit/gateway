@@ -90,6 +90,48 @@ describe("CliExecutorModelProvider command building", () => {
     expect(seenSpec?.args).toContain("model_reasoning_effort=\"high\"");
   });
 
+  test("builds the OpenCode CLI run command", async () => {
+    let seenSpec:
+      | {
+        executable: string;
+        args: string[];
+        stdin?: string;
+        cwd?: string;
+      }
+      | undefined;
+
+    const provider = new CliExecutorModelProvider({
+      id: "opencode",
+      name: "OpenCode CLI",
+      model: "opencode/openai/gpt-5.5",
+      runCommand: async (spec) => {
+        seenSpec = spec;
+        return { exitCode: 0, stdout: "done", stderr: "" };
+      },
+    });
+
+    const result = await provider.generate("opencode/openai/gpt-5.5", {
+      messages: [{ role: "user", content: "Say done." }],
+      workingDirectory: "/tmp/opencode-space",
+    });
+
+    expect(seenSpec).toEqual({
+      executable: "opencode",
+      args: [
+        "run",
+        "--model",
+        "openai/gpt-5.5",
+        "--prompt",
+        "USER:\nSay done.",
+      ],
+      cwd: "/tmp/opencode-space",
+    });
+    expect(result.message).toEqual({
+      role: "assistant",
+      content: "done",
+    });
+  });
+
   test("maps gateway max effort to codex high reasoning effort", async () => {
     let seenSpec:
       | {

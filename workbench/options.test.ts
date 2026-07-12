@@ -9,7 +9,7 @@ describe("workbench options", () => {
       "--interactive",
       "--layers=chat-roundtrip,provider-tool-parity",
       "--providers",
-      "claude,gemini",
+      "claude,opencode",
       "--db-path",
       "/tmp/workbench.db",
       "--reports-dir=/tmp/reports",
@@ -22,7 +22,7 @@ describe("workbench options", () => {
       interactive: true,
       serveOnly: false,
       layers: new Set(["chat-roundtrip", "provider-tool-parity"]),
-      providers: new Set(["claude", "gemini"]),
+      providers: new Set(["claude", "opencode"]),
       dbPath: "/tmp/workbench.db",
       reportsDir: "/tmp/reports",
     });

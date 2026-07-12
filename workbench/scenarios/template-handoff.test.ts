@@ -9,7 +9,7 @@ const PLAN_AGENTS = [
   { agentId: "plan-coordinator", profileId: "plan-coordinator-opus", role: "global_coordinator", turnOrder: 0, isPrimary: true },
   { agentId: "plan-codex-architect", profileId: "plan-codex-architect", role: "participant", turnOrder: 1, isPrimary: false },
   { agentId: "plan-opus-reviewer", profileId: "plan-opus-reviewer", role: "participant", turnOrder: 2, isPrimary: false },
-  { agentId: "plan-gemini-constraints", profileId: "plan-gemini-constraints", role: "participant", turnOrder: 3, isPrimary: false },
+  { agentId: "plan-opencode-constraints", profileId: "plan-opencode-constraints", role: "participant", turnOrder: 3, isPrimary: false },
   { agentId: "plan-lmstudio-maintainer", profileId: "plan-lmstudio-maintainer", role: "participant", turnOrder: 4, isPrimary: false },
   { agentId: "plan-apple-continuity", profileId: "plan-apple-continuity", role: "participant", turnOrder: 5, isPrimary: false },
 ];
@@ -22,7 +22,7 @@ describe("template handoff helpers", () => {
       availableProviderIds: new Set([
         "codex-app-server",
         "claude-agent-sdk",
-        "gemini",
+        "opencode",
         "apple",
       ]),
     });
@@ -31,7 +31,7 @@ describe("template handoff helpers", () => {
     expect(selection.requiredProvidersUsed).toEqual([
       "claude-agent-sdk",
       "codex-app-server",
-      "gemini",
+      "opencode",
     ]);
     expect(selection.optionalProvidersUsed).toEqual(["apple"]);
     expect(selection.optionalProvidersOmitted).toEqual(["lmstudio"]);
@@ -39,7 +39,7 @@ describe("template handoff helpers", () => {
       "plan-coordinator-opus",
       "plan-codex-architect",
       "plan-opus-reviewer",
-      "plan-gemini-constraints",
+      "plan-opencode-constraints",
       "plan-apple-continuity",
     ]);
   });
@@ -48,7 +48,7 @@ describe("template handoff helpers", () => {
     const selection = selectWorkbenchLiveAgents({
       templateId: "workbench/plan-discussion",
       agents: PLAN_AGENTS,
-      availableProviderIds: new Set(["claude-agent-sdk", "gemini", "apple", "lmstudio"]),
+      availableProviderIds: new Set(["claude-agent-sdk", "opencode", "apple", "lmstudio"]),
     });
 
     expect(selection.missingRequiredProviders).toEqual(["codex-app-server"]);
@@ -61,7 +61,7 @@ describe("template handoff helpers", () => {
       targetTemplateId: "workbench/code-implementation",
       sourceSpaceId: "space-plan",
       sourceTurnId: "turn-plan",
-      requiredProvidersUsed: ["claude-agent-sdk", "codex-app-server", "gemini"],
+      requiredProvidersUsed: ["claude-agent-sdk", "codex-app-server", "opencode"],
       optionalProvidersUsed: ["apple"],
       optionalProvidersOmitted: ["lmstudio"],
     });
@@ -78,7 +78,7 @@ describe("template handoff helpers", () => {
       targetTemplateId: "workbench/code-implementation",
       sourceSpaceId: "space-plan",
       sourceTurnId: "turn-plan",
-      requiredProvidersUsed: ["claude-agent-sdk", "codex-app-server", "gemini"],
+      requiredProvidersUsed: ["claude-agent-sdk", "codex-app-server", "opencode"],
       optionalProvidersUsed: ["apple"],
       optionalProvidersOmitted: ["lmstudio"],
     });

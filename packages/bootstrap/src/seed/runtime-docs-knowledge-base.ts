@@ -19,13 +19,6 @@ const RUNTIME_DOC_ENTRIES = [
     tags: ["docs", "sdk", "codex", "openai"],
   },
   {
-    entryId: "kb-runtime-doc-gemini-cli-docs",
-    name: "Gemini CLI Docs",
-    uri: "https://geminicli.com/docs/",
-    description: "Official Gemini CLI documentation.",
-    tags: ["docs", "cli", "gemini", "google"],
-  },
-  {
     entryId: "kb-runtime-doc-harvest-cli",
     name: "Harvest CLI Docs",
     uri: "https://kgajera.github.io/hrvst-cli/",

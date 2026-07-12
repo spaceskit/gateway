@@ -147,10 +147,10 @@ export async function runLlmCall({
 }
 
 function shouldBypassStreamingForMediatedCliTurn(
-  providerId: string,
-  generateOpts: GenerateOptions,
+  _providerId: string,
+  _generateOpts: GenerateOptions,
 ): boolean {
-  return providerId === "gemini" && generateOpts.accessMode === "default";
+  return false;
 }
 
 async function tryStreamLlmCall(

@@ -118,7 +118,6 @@ describe("KnowledgeBaseService", () => {
       "kb-runtime-doc-1password-cli",
       "kb-runtime-doc-claude-agent-sdk-overview",
       "kb-runtime-doc-codexbar",
-      "kb-runtime-doc-gemini-cli-docs",
       "kb-runtime-doc-harvest-cli",
       "kb-runtime-doc-openai-codex-sdk",
     ]);

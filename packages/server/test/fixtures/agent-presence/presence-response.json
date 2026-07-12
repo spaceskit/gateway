@@ -1,0 +1,41 @@
+{
+  "generatedAt": "2026-07-02T10:05:00.000Z",
+  "total": 2,
+  "agents": [
+    {
+      "key": "claude:fixture-question",
+      "provider": "claude",
+      "sessionId": "fixture-question",
+      "cwd": "/Users/example/code/project",
+      "status": "question",
+      "summary": "Should I retry the failing test?",
+      "hash": "hash-question",
+      "at": 1719925500000.5,
+      "live": true,
+      "title": "Fix flaky auth test",
+      "contextTail": "The suite failed twice on auth.spec.ts — retry or skip?",
+      "options": [
+        {
+          "label": "Yes",
+          "description": "Retry the test suite"
+        },
+        {
+          "label": "No",
+          "description": "Skip and move on"
+        }
+      ]
+    },
+    {
+      "key": "codex:fixture-turn-end",
+      "provider": "codex",
+      "sessionId": "fixture-turn-end",
+      "cwd": "/Users/example/code/project",
+      "status": "turn-end",
+      "summary": "Done — typecheck passes. Want me to also update the docs?",
+      "hash": "hash-turn-end",
+      "at": 1719925500000.5,
+      "live": true,
+      "title": "Docs sync sweep"
+    }
+  ]
+}

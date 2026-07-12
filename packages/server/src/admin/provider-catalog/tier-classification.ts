@@ -12,7 +12,7 @@ import { inferKnownModelTier } from "@spaceskit/core";
  *  1. Apple, LM Studio, and Ollama always classify as `local` (on-device or
  *     local-runtime providers — see `LOCAL_PROVIDER_IDS` in
  *     provider-catalog-support.ts).
- *  2. CLI executors (`antigravity`, `claude`, `codex`, `gemini`) are also treated as `local`
+ *  2. CLI executors (`antigravity`, `claude`, `codex`, `opencode`) are also treated as `local`
  *     when the gateway runs on the user's host. Their inner model id still
  *     gets re-classified by name keywords, but the *runtime* sits on the host.
  *     Per spec we surface them as `local`.
@@ -44,7 +44,7 @@ const LOCAL_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "antigravity",
   "claude",
   "codex",
-  "gemini",
+  "opencode",
   "lmstudio",
   "ollama",
 ]);
@@ -52,7 +52,7 @@ const LOCAL_PROVIDER_IDS: ReadonlySet<string> = new Set([
 /**
  * On-device or local-runtime providers — always tier `local`, regardless of
  * the model id they expose. CLI executor providers (Claude Code / Codex CLI /
- * Gemini CLI) also fall here because the runtime is the user's local CLI.
+ * OpenCode CLI) also fall here because the runtime is the user's local CLI.
  */
 const LOCAL_RUNTIME_PROVIDER_IDS: ReadonlySet<string> = LOCAL_PROVIDER_IDS;
 

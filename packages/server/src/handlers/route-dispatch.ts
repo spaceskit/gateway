@@ -5,13 +5,14 @@ import { handleAuthIssueHttpPrincipalToken, handleAuthListDevices, handleAuthReg
 import { handleGatewayGetExternalConnectivity, handleGatewayGetToolPolicy, handleGatewayGetWorkspaceDefaults, handleGatewaySetExternalConnectivity, handleGatewaySetWorkspaceDefaults, handleGatewayUpdateToolPolicy, handleSpaceGetEffectiveToolAccess, handleSpaceGetEffectiveTools, handleSpaceGetToolPolicy, handleSpaceReset, handleSpaceResetAgentUsageSession, handleSpaceUpdateToolPolicy } from "./policy-handlers.js";
 import { handleExecuteTurn, handleCancelTurn, handleResumeFeedback, handleCapabilityInvoke } from "./turn-handlers.js";
 import { handleSpaceAddAgent, handleSpaceArchive, handleSpaceCreate, handleSpaceDelete, handleSpaceEndIncognitoSession, handleSpaceGet, handleSpaceGetMemoryPolicy, handleSpaceList, handleSpaceListAgentAssignments, handleSpaceRemoveAgent, handleSpaceSetMemoryPolicy, handleSpaceSetOrchestrator, handleSpaceSetThinkingCapturePolicy, handleSpaceUpdateAgentAssignment } from "./space-admin-handlers.js";
-import { handleSpaceAddResource, handleSpaceAddSkill, handleSpaceApproveMcpAgent, handleSpaceClearMcpEndpoint, handleSpaceDiscoverMcpAgents, handleSpaceGetMcpEndpoint, handleSpaceGetWorkspace, handleSpaceListOrchestrationJournal, handleSpaceListResources, handleSpaceListSkills, handleSpaceListTurns, handleSpaceRemoveResource, handleSpaceRemoveSkill, handleSpaceSetMcpEndpoint, handleSpaceSetWorkspace } from "./space-resource-handlers.js";
+import { handleSpaceAddResource, handleSpaceAddSkill, handleSpaceApproveMcpAgent, handleSpaceClearMcpEndpoint, handleSpaceDiscoverMcpAgents, handleSpaceGetMcpEndpoint, handleSpaceGetWorkspace, handleSpaceListOrchestrationJournal, handleSpaceListResources, handleSpaceListSkills, handleSpaceListTurns, handleSpaceOpenWorkspace, handleSpaceRemoveResource, handleSpaceRemoveSkill, handleSpaceSetMcpEndpoint, handleSpaceSetWorkspace } from "./space-resource-handlers.js";
 import { handleGatewayDiscoverLocalAgents, handleGatewayGetConciergeAgent, handleGatewayGetMainAgent, handleGatewayListAvailableModels, handleGatewayListProviderCatalogs, handleGatewayListProviderConfigs, handleGatewaySetConciergeAgent, handleGatewaySetMainAgent } from "./gateway-agent-handlers.js";
 import { handleGatewayCreateIntegrationRequest, handleGatewayDeleteSecretRef, handleGatewayFactoryReset, handleGatewayGetLocalUsageTelemetry, handleGatewayGetProviderSettings, handleGatewayGetProviderTelemetry, handleGatewayGetRuntimeDefaults, handleGatewayListIntegrationRequests, handleGatewayListInterconnectors, handleGatewayListSecretRefs, handleGatewayProvisionLocalProfile, handleGatewayPutSecretRef, handleGatewayRemoveProviderConfig, handleGatewayRescanInterconnectors, handleGatewaySetProviderConfig, handleGatewaySetRuntimeDefaults, handleGatewayUpdateProviderSettings, handleToolGet, handleToolList, handleToolListGrants, handleToolRegister, handleToolRemove, handleToolRevokeGrant, handleToolScaffold, handleToolSetEnabled } from "./gateway-control-handlers.js";
 import { handleConnectorSubmitInboundEvent, handleGatewayGetConnectorPolicy, handleGatewayListConnectorBindings, handleGatewayListConnectorFamilies, handleGatewayListConnectors, handleGatewayRemoveConnector, handleGatewayRemoveConnectorBinding, handleGatewayTestConnector, handleGatewayUpdateConnectorPolicy, handleGatewayUpsertConnector, handleGatewayUpsertConnectorBinding } from "./gateway-connector-handlers.js";
 import { handleIdentityArchiveAgentDefinition, handleIdentityArchivePersona, handleIdentityCreateAgentDefinition, handleIdentityCreatePersona, handleIdentityGetAgentDefinition, handleIdentityGetPersona, handleIdentityListAgentDefinitions, handleIdentityListPersonas, handleIdentityPreviewCompiledInstructions, handleIdentityPreviewRuntimeSystemPrompt, handleIdentityPreviewSystemPromptMatrix, handleIdentityUpdateAgentDefinition, handleIdentityUpdatePersona, handleSpaceArchiveTemplate, handleSpaceCreateFromTemplate, handleSpaceGetTemplate, handleSpaceListTemplates, handleSpacePreviewTemplate, handleSpaceSaveTemplate } from "./identity-template-handlers.js";
 import { handleGatewayGetPolicy, handleGatewayGrantCapability, handleGatewayKnowledgeBaseDeleteEntry, handleGatewayKnowledgeBaseListEntries, handleGatewayKnowledgeBaseUpsertEntry, handleGatewayListCapabilityGrants, handleGatewayRevokeCapability, handleGatewaySkillDelete, handleGatewaySkillGet, handleGatewaySkillList, handleGatewaySkillUpsert, handleGatewayUpdatePolicy, handleUsageGetSnapshot } from "./gateway-governance-handlers.js";
 import { handleOrchestratorCommand, handleOrchestratorGetCommand, handleSchedulerCreateJob, handleSchedulerDeleteJob, handleSchedulerGetJob, handleSchedulerLinkSpace, handleSchedulerListEvalDefinitions, handleSchedulerListJobs, handleSchedulerListRuns, handleSchedulerRunNow, handleSchedulerUnlinkSpace, handleSchedulerUpdateJob } from "./scheduler-handlers.js";
+import { handleAgentAnswer, handleAgentPresenceList, handleAgentPresenceSubscribe } from "./agent-presence-handlers.js";
 import { handleWorkbenchApproveStage, handleWorkbenchCancelRun, handleWorkbenchCancelScenarioRun, handleWorkbenchCreateBatch, handleWorkbenchGetPolicy, handleWorkbenchGetQueueItem, handleWorkbenchGetRun, handleWorkbenchGetScenarioRun, handleWorkbenchListArtifacts, handleWorkbenchListBatches, handleWorkbenchListQueue, handleWorkbenchListRuns, handleWorkbenchListScenarioRuns, handleWorkbenchListScenarios, handleWorkbenchRejectStage, handleWorkbenchRetryRun, handleWorkbenchSetMode, handleWorkbenchStartRun, handleWorkbenchStartScenarioRun, handleWorkbenchUpdateBatch, handleWorkbenchUpdatePolicy } from "./workbench-handlers.js";
 import { handleSpaceLink, handleSpacePullSharedContext, handleSpaceShareContext, handleSpaceShareCreateInvite, handleSpaceShareJoin, handleSpaceShareListParticipants, handleSpaceShareRevoke, handleSpaceUnlink } from "./space-sharing-handlers.js";
 import {
@@ -112,6 +113,8 @@ export async function routeMessage(
       return handleSpaceGetWorkspace(router.spaceResourceHandlerContext(), client, msg);
     case MessageTypes.SPACE_SET_WORKSPACE:
       return handleSpaceSetWorkspace(router.spaceResourceHandlerContext(), client, msg);
+    case MessageTypes.SPACE_OPEN_WORKSPACE:
+      return handleSpaceOpenWorkspace(router.spaceResourceHandlerContext(), client, msg);
     case MessageTypes.SPACE_ADD_RESOURCE:
       return handleSpaceAddResource(router.spaceResourceHandlerContext(), client, msg);
     case MessageTypes.SPACE_REMOVE_RESOURCE:
@@ -294,6 +297,12 @@ export async function routeMessage(
       return handleSchedulerListRuns(router.schedulerHandlerContext(), client, msg);
     case MessageTypes.SCHEDULER_RUN_NOW:
       return handleSchedulerRunNow(router.schedulerHandlerContext(), client, msg);
+    case MessageTypes.AGENT_PRESENCE_LIST:
+      return handleAgentPresenceList(router.agentPresenceHandlerContext(), client, msg);
+    case MessageTypes.AGENT_PRESENCE_SUBSCRIBE:
+      return handleAgentPresenceSubscribe(router.agentPresenceHandlerContext(), client, msg);
+    case MessageTypes.AGENT_PRESENCE_ANSWER:
+      return handleAgentAnswer(router.agentPresenceHandlerContext(), client, msg);
     case MessageTypes.WORKBENCH_LIST_QUEUE:
       return handleWorkbenchListQueue(router.workbenchHandlerContext(), client, msg);
     case MessageTypes.WORKBENCH_GET_QUEUE_ITEM:

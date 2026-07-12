@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Logger } from "@spaceskit/observability";
@@ -57,6 +57,36 @@ export interface SpaceWorkspacePayload {
   metadataStatus: SpaceWorkspaceMetadataStatus;
   discoveredProjectFiles: string[];
   updatedAt: string;
+}
+
+export type SpaceOpenWorkspaceStatus =
+  | "opened_existing"
+  | "created_new"
+  | "unbound"
+  | "conflict";
+
+export interface SpaceOpenWorkspaceConflict {
+  reason: string;
+  message: string;
+  workspaceRoot: string;
+  metadataPath?: string;
+  existingSpaceId?: string;
+  existingSpaceUid?: string;
+  existingWorkspaceRoot?: string;
+  requestedSpaceId?: string;
+  requestedSpaceUid?: string;
+}
+
+export interface SpaceOpenWorkspaceServiceResult {
+  status: SpaceOpenWorkspaceStatus;
+  workspaceRoot: string;
+  gitRepoDetected: boolean;
+  hasSpaceMetadata: boolean;
+  spaceId?: string;
+  metadataSpaceId?: string;
+  metadataSpaceUid?: string;
+  workspace?: SpaceWorkspacePayload;
+  conflict?: SpaceOpenWorkspaceConflict;
 }
 
 export type SpaceWorkspaceServiceErrorCode =
@@ -125,7 +155,6 @@ export class SpaceWorkspaceService {
   async ensureWorkspace(spaceIdRaw: string): Promise<SpaceWorkspacePayload> {
     const spaceId = normalizeRequiredString(spaceIdRaw, "spaceId");
     const space = this.requireSpace(spaceId);
-    const spaceUid = this.resolveOrCreateSpaceUid(space);
     const managedResourceId = this.managedResourceId(spaceId);
     const existing = this.options.workspaces.getBySpace(spaceId);
     const existingManagedFolderName = normalizeOptionalString(existing?.managed_folder_name) ?? "";
@@ -139,9 +168,23 @@ export class SpaceWorkspaceService {
     const explicitRoot = existingExplicitRoot
       ? normalizeAbsolutePath(existingExplicitRoot, "explicit workspace root")
       : "";
+
+    // On a fresh/wiped DB (no workspace row, no explicit binding) adopt an existing on-disk folder
+    // for this space before generating a new uid, so we reconcile the space's uid to the folder's.
+    // This prevents both the per-folder UID conflict guard from firing and orphan accumulation.
+    let adopted: { folderName: string; spaceUid?: string } | undefined;
+    if (!existing && !explicitRoot) {
+      adopted = await this.findAdoptableManagedFolder(spaceId);
+      if (adopted?.spaceUid) {
+        this.adoptSpaceUid(space, adopted.spaceUid);
+      }
+    }
+
+    const spaceUid = this.resolveOrCreateSpaceUid(space);
     const managedFolderName = explicitRoot
       ? existingManagedFolderName
-      : await this.resolveManagedFolderName(spaceId, space.name, spaceUid, existingManagedFolderName);
+      : adopted?.folderName
+        ?? await this.resolveManagedFolderName(spaceId, space.name, spaceUid, existingManagedFolderName);
     const effectiveRoot = explicitRoot || this.defaultWorkspaceRoot(managedFolderName);
     const metadataState = await this.provisionWorkspaceLayout(spaceId, spaceUid, explicitRoot, effectiveRoot);
 
@@ -157,7 +200,36 @@ export class SpaceWorkspaceService {
       metadataStatus: metadataState.status,
       metadataUpdatedAt: metadataState.updatedAt,
     });
+    // If we just repointed this space at a different managed folder, remove the one it used to
+    // occupy so superseded directories don't linger as orphans under the spaces root.
+    if (!explicitRoot && existingManagedFolderName && existingManagedFolderName !== managedFolderName) {
+      await this.removeSupersededManagedFolder(spaceId, existingManagedFolderName);
+    }
     return this.toWorkspacePayload(spaceId, spaceUid, row, metadataState.gitRepoDetected);
+  }
+
+  /**
+   * Delete a managed workspace folder that this space no longer uses. Guarded: only removes a
+   * directory directly under the managed spaces root whose .space/space.json still belongs to
+   * this space (so a folder reassigned to another space or holding a user's data is never touched).
+   */
+  private async removeSupersededManagedFolder(spaceId: string, folderName: string): Promise<void> {
+    const target = this.defaultWorkspaceRoot(folderName);
+    if (!existsSync(target)) {
+      return;
+    }
+    const meta = await readJsonFile(join(target, SPACE_DIR_FOLDER, "space.json"));
+    const candidateSpaceId = normalizeOptionalString(
+      typeof meta.spaceId === "string" ? meta.spaceId : undefined,
+    );
+    if (candidateSpaceId !== spaceId) {
+      return;
+    }
+    try {
+      await rm(target, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; a leftover folder is not fatal.
+    }
   }
 
   async getWorkspace(spaceIdRaw: string): Promise<SpaceWorkspacePayload> {
@@ -197,6 +269,97 @@ export class SpaceWorkspaceService {
     });
 
     return this.toWorkspacePayload(spaceId, spaceUid, row, metadataState.gitRepoDetected);
+  }
+
+  async openWorkspace(workspaceRootRaw: string): Promise<SpaceOpenWorkspaceServiceResult> {
+    const workspaceRoot = normalizeAbsolutePath(workspaceRootRaw, "workspaceRoot");
+    const layout = workspaceLayout(workspaceRoot);
+    const metadataPath = join(layout.meta, "space.json");
+    const metadata = await readJsonFile(metadataPath);
+    const metadataSpaceId = normalizeOptionalString(metadata.spaceId);
+    const metadataSpaceUid = normalizeOptionalString(metadata.spaceUid);
+    const metadataWorkspaceRoot = normalizeOptionalString(metadata.effectiveWorkspaceRoot)
+      ?? normalizeOptionalString(metadata.explicitWorkspaceRoot);
+    const gitRepoDetected = detectGitRepo(workspaceRoot);
+    const hasSpaceMetadata = Object.keys(metadata).length > 0;
+
+    if (!hasSpaceMetadata) {
+      return {
+        status: "unbound",
+        workspaceRoot,
+        gitRepoDetected,
+        hasSpaceMetadata: false,
+      };
+    }
+
+    if (metadataSpaceId) {
+      const existingSpace = this.options.spaces.getById(metadataSpaceId);
+      if (existingSpace && existingSpace.status !== "archived" && existingSpace.status !== "deleted") {
+        try {
+          const workspace = await this.setWorkspace(metadataSpaceId, workspaceRoot);
+          return {
+            status: "opened_existing",
+            workspaceRoot,
+            gitRepoDetected: workspace.gitRepoDetected,
+            hasSpaceMetadata: true,
+            spaceId: metadataSpaceId,
+            metadataSpaceId,
+            metadataSpaceUid,
+            workspace,
+          };
+        } catch (error) {
+          if (error instanceof SpaceWorkspaceServiceError && error.code === "FAILED_PRECONDITION") {
+            return {
+              status: "conflict",
+              workspaceRoot,
+              gitRepoDetected,
+              hasSpaceMetadata: true,
+              metadataSpaceId,
+              metadataSpaceUid,
+              conflict: {
+                reason: "metadata_conflict",
+                message: error.message,
+                workspaceRoot,
+                metadataPath,
+                existingSpaceId: metadataSpaceId,
+                existingSpaceUid: metadataSpaceUid,
+                existingWorkspaceRoot: metadataWorkspaceRoot,
+              },
+            };
+          }
+          throw error;
+        }
+      }
+
+      if (existingSpace) {
+        return {
+          status: "conflict",
+          workspaceRoot,
+          gitRepoDetected,
+          hasSpaceMetadata: true,
+          metadataSpaceId,
+          metadataSpaceUid,
+          conflict: {
+            reason: "inactive_space",
+            message: `Workspace metadata points to an inactive space: ${metadataSpaceId}`,
+            workspaceRoot,
+            metadataPath,
+            existingSpaceId: metadataSpaceId,
+            existingSpaceUid: metadataSpaceUid,
+            existingWorkspaceRoot: metadataWorkspaceRoot,
+          },
+        };
+      }
+    }
+
+    return {
+      status: "created_new",
+      workspaceRoot,
+      gitRepoDetected,
+      hasSpaceMetadata: true,
+      metadataSpaceId,
+      metadataSpaceUid,
+    };
   }
 
   async getAgentScratchpadPath(spaceIdRaw: string, agentIdRaw: string): Promise<string> {
@@ -258,6 +421,24 @@ export class SpaceWorkspaceService {
     return generated;
   }
 
+  /**
+   * Persist a spaceUid taken from an adopted on-disk folder so the space's stored uid matches the
+   * folder it is reusing. No-op if the space already has a uid that matches. Mutates the in-memory
+   * space row so resolveOrCreateSpaceUid() reads the reconciled value within the same call.
+   */
+  private adoptSpaceUid(
+    space: NonNullable<ReturnType<SpaceRepository["getById"]>>,
+    adoptedUid: string,
+  ): void {
+    const parsed = parseSpaceConfig(space?.space_config_json ?? null);
+    if (normalizeOptionalString(parsed.spaceUid) === adoptedUid) {
+      return;
+    }
+    const nextConfig = JSON.stringify({ ...parsed, spaceUid: adoptedUid });
+    this.options.spaces.updateConfig(space.space_id, nextConfig);
+    space.space_config_json = nextConfig;
+  }
+
   private defaultWorkspaceRoot(managedFolderName: string): string {
     return resolvePath(this.spacesRoot, managedFolderName);
   }
@@ -288,6 +469,44 @@ export class SpaceWorkspaceService {
       "FAILED_PRECONDITION",
       `Unable to allocate a managed workspace folder for space: ${spaceId}`,
     );
+  }
+
+  /**
+   * Scan the managed spaces root for a folder whose .space/space.json already belongs to this
+   * space (matching spaceId) and return its folder name plus the spaceUid recorded on disk.
+   * Returns undefined when no such folder exists. The caller reconciles the space's uid to the
+   * adopted folder's so re-provisioning does not trip the per-folder UID conflict guard.
+   */
+  private async findAdoptableManagedFolder(
+    spaceId: string,
+  ): Promise<{ folderName: string; spaceUid?: string } | undefined> {
+    if (!existsSync(this.spacesRoot)) {
+      return undefined;
+    }
+    let entries: string[];
+    try {
+      entries = (await readdir(this.spacesRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((lhs, rhs) => lhs.localeCompare(rhs));
+    } catch {
+      return undefined;
+    }
+    for (const name of entries) {
+      const meta = await readJsonFile(join(this.spacesRoot, name, SPACE_DIR_FOLDER, "space.json"));
+      const candidateSpaceId = normalizeOptionalString(
+        typeof meta.spaceId === "string" ? meta.spaceId : undefined,
+      );
+      if (candidateSpaceId === spaceId) {
+        return {
+          folderName: name,
+          spaceUid: normalizeOptionalString(
+            typeof meta.spaceUid === "string" ? meta.spaceUid : undefined,
+          ),
+        };
+      }
+    }
+    return undefined;
   }
 
   private async isManagedFolderNameAvailable(
