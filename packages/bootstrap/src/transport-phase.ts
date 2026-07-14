@@ -18,7 +18,6 @@ import type { BootstrapState } from "./bootstrap-state.js";
 import { GatewayObservabilityApiService } from "./services/gateway-observability-api-service.js";
 import { issueHttpPrincipalToken } from "./services/http-principal-auth.js";
 import { AppleNotificationApiService } from "./services/apple-notification-api-service.js";
-import { HarnessConciergeApiService } from "./services/harness-concierge-api-service.js";
 import { ShareRelayApiService } from "./services/share-relay-api-service.js";
 import { SpacesAdminMcpFacadeService } from "./services/spaces-admin-mcp-facade-service.js";
 import { createGatewayMcpHttpHandler } from "@spaceskit/mcp-runtime";
@@ -121,7 +120,6 @@ export function initializeTransportServices(state: BootstrapState): void {
     conciergeCallRuntimeService: state.conciergeCallRuntimeService ?? undefined,
     conciergeEscalationService: state.conciergeEscalationService ?? undefined,
     conciergeWorkbenchResolvedRequestService: state.conciergeWorkbenchMonitorService ?? undefined,
-    harnessConciergePingResolvedRequestService: state.harnessConciergePingerService ?? undefined,
     toolAccessPolicyService: state.toolAccessPolicyService ?? undefined,
     gatewayWorkspaceDefaultsService: state.gatewayWorkspaceDefaultsRepo ?? undefined,
     gatewayExternalConnectivityService: state.gatewayExternalConnectivityService,
@@ -262,15 +260,6 @@ export function initializeTransportServices(state: BootstrapState): void {
       maxClockSkewSeconds: config.httpPrincipalAuthMaxClockSkewSeconds,
     },
     requireAuthenticatedPrincipal: true,
-  });
-  const harnessConciergeApiService = new HarnessConciergeApiService({
-    pingsPath: process.env.HARNESS_CONCIERGE_PINGS_PATH,
-    principalAuth: {
-      strictVerification: config.httpPrincipalAuthStrict,
-      hs256Secret: config.httpPrincipalAuthHs256Secret,
-      maxClockSkewSeconds: config.httpPrincipalAuthMaxClockSkewSeconds,
-    },
-    requireAuthenticatedPrincipal: config.gatewayProfile === "external",
   });
   const gatewayObservabilityApiService = new GatewayObservabilityApiService({
     observabilityService: state.gatewayObservabilityService,
@@ -448,7 +437,6 @@ export function initializeTransportServices(state: BootstrapState): void {
     diagramHandler,
     gatewayMcpHandler,
     gatewayObservabilityApiService,
-    harnessConciergeApiService,
     messageRouter,
     notificationHandler,
     resolveSpaceIdFromUid,

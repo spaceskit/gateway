@@ -103,19 +103,6 @@ export async function initializeRuntimeSupport(state: BootstrapState): Promise<v
           response: status.response,
           context: status.context,
         });
-        // Clear the underlying harness ping when the user answers a harness-ping
-        // escalation, so it stops re-firing. No-ops for non-harness escalations.
-        await state.harnessConciergePingerService?.handleResolvedRequest({
-          requestId: status.requestId,
-          status: status.status,
-          response: status.response,
-          context: status.context,
-        }).catch((error: unknown) => {
-          logger.warn("Harness concierge ping round-trip failed", {
-            requestId: status.requestId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
         return {
           requestId: status.requestId,
           status: status.status,

@@ -260,6 +260,7 @@ describe("external workbench control plane", () => {
         gatewayProfile: "embedded",
         env: {
           SPACESKIT_ENABLE_CONCIERGE_WORKBENCH_TOOLS: "true",
+          SPACESKIT_WORKBENCH_ENABLED: "true",
           SPACESKIT_WORKBENCH_REPO_ROOT: repoRoot,
           SPACESKIT_WORKBENCH_PROJECTS_ROOT: join(repoRoot, "Documents", "work", "projects"),
           SPACESKIT_WORKBENCH_PROJECT_SLUG: "spaces",
@@ -349,6 +350,7 @@ describe("external workbench control plane", () => {
         gatewayProfile: "external",
         env: {
           SPACESKIT_SECRET_REF_MASTER_KEY: "test-workbench-e2e-master-key",
+          SPACESKIT_WORKBENCH_ENABLED: "true",
           SPACESKIT_WORKBENCH_REPO_ROOT: repoRoot,
           SPACESKIT_WORKBENCH_PROJECTS_ROOT: join(repoRoot, "Documents", "work", "projects"),
           SPACESKIT_WORKBENCH_PROJECT_SLUG: "spaces",
@@ -516,6 +518,7 @@ describe("external workbench control plane", () => {
         gatewayProfile: "external",
         env: {
           SPACESKIT_SECRET_REF_MASTER_KEY: "test-workbench-e2e-master-key",
+          SPACESKIT_WORKBENCH_ENABLED: "true",
           SPACESKIT_WORKBENCH_REPO_ROOT: repoRoot,
           SPACESKIT_WORKBENCH_PROJECTS_ROOT: join(repoRoot, "Documents", "work", "projects"),
           SPACESKIT_WORKBENCH_PROJECT_SLUG: "spaces",

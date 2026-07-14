@@ -383,7 +383,7 @@ describe("WorkbenchService", () => {
     ]);
   });
 
-  test("accepts harness feedback-loop verification commands from frontmatter", async () => {
+  test("accepts verification commands from frontmatter", async () => {
     const { service, repoRoot } = createHarness();
     const taskPath = join(repoRoot, "Documents", "work", "projects", "spaces", "tasks", "T-0016.md");
     writeFileSync(taskPath, `---
@@ -403,7 +403,7 @@ parallel: [independent]
 
 # Task: frontmatter verification task
 
-Next action: Execute from harness enrichment.
+Next action: Execute the verified change.
 
 ## Metadata
 - Status: Planned
@@ -1228,15 +1228,6 @@ blockers: []
     expect(items.map((item) => item.queueItemId)).toContain("spaces/T-0004");
   });
 
-  test("repo-backed central queue audit reads the migrated Spaces tasks", () => {
-    const repoRoot = resolve(import.meta.dir, "../../../..");
-
-    const audit = auditWorkbenchPlanningRepo(repoRoot);
-
-    expect(audit.executableQueueItemCount).toBeGreaterThan(0);
-    expect(audit.queuePath).toBe("/Users/caruso/Documents/work/projects/spaces/tasks");
-    expect(audit.malformedVerificationBlocks).toEqual([]);
-  });
 });
 
 describe("WorkbenchService multi-slug", () => {
