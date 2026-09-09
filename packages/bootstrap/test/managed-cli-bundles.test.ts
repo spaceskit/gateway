@@ -9,6 +9,9 @@ import { LocalExecutableResolver } from "../src/execution/local-executable-resol
 import { InterconnectorCatalogService } from "../src/services/interconnector-catalog-service.js";
 import { CliToolService } from "../src/services/cli-tool-service.js";
 import {
+  JIRA_TOOL_DEFINITIONS,
+} from "../../../scripts/jira-cli-tools/catalog.mjs";
+import {
   HRVST_TOOL_DEFINITIONS,
 } from "../../../scripts/hrvst-cli-tools/catalog.mjs";
 import {
@@ -618,7 +621,10 @@ describe("interconnector catalog service", () => {
       expect(startup.bundleIds).toContain("fruitmail-cli");
       expect(startup.bundleIds).toContain("peekaboo-cli");
       expect(startup.toolCount).toBe(
-        22 + HRVST_TOOL_DEFINITIONS.length + OP_TOOL_DEFINITIONS.length + 6 + PEEKABOO_TOOL_DEFINITIONS.length,
+        JIRA_TOOL_DEFINITIONS.length
+          + HRVST_TOOL_DEFINITIONS.length
+          + OP_TOOL_DEFINITIONS.length
+          + PEEKABOO_TOOL_DEFINITIONS.length,
       );
 
       await cliToolService.initialize();
@@ -633,6 +639,7 @@ describe("interconnector catalog service", () => {
       expect(bundles.find((bundle) => bundle.bundleId === "jira-cli")?.availabilityStatus).toBe("active");
       expect(bundles.find((bundle) => bundle.bundleId === "hrvst-cli")?.availabilityStatus).toBe("active");
       expect(bundles.find((bundle) => bundle.bundleId === "onepassword-cli")?.availabilityStatus).toBe("active");
+      expect(bundles.find((bundle) => bundle.bundleId === "fruitmail-cli")?.availabilityStatus).toBe("inactive");
       expect(bundles.find((bundle) => bundle.bundleId === "peekaboo-cli")?.availabilityStatus).toBe("active");
       expect(bundles.find((bundle) => bundle.bundleId === "hrvst-cli")?.installHint)
         .toContain("hrvst-cli");

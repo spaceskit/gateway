@@ -160,7 +160,29 @@ describe("DefaultGatewayAdminService local runtime detection", () => {
         path: cacheKey === "codex" ? "/opt/homebrew/bin/codex" : undefined,
       }),
     } as unknown as LocalExecutableResolver;
-    const ctx = createContext({ executableResolver });
+    const ctx = createContext({
+      executableResolver,
+      codexAppServerMetadataProbe: async () => ({
+        authStatus: "authenticated",
+        models: [
+          {
+            id: "codex-app-server/gpt-5.5",
+            displayName: "GPT-5.5",
+            contextWindow: 1_050_000,
+          },
+          {
+            id: "codex-app-server/gpt-5.4",
+            displayName: "GPT-5.4",
+            contextWindow: 1_048_576,
+          },
+          {
+            id: "codex-app-server/gpt-5.4-mini",
+            displayName: "GPT-5.4 Mini",
+            contextWindow: 1_048_576,
+          },
+        ],
+      }),
+    });
 
     try {
       const agents = await ctx.admin.discoverLocalAgents();
