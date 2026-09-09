@@ -1,0 +1,38 @@
+From 8602af094ecd71854577fccc61df76fba7a381e6 Mon Sep 17 00:00:00 2001
+From: "dependabot[bot]" <49699333+dependabot[bot]@users.noreply.github.com>
+Date: Sat, 2 May 2026 05:13:06 +0000
+Subject: [PATCH] build(deps): bump zod from 3.25.76 to 4.4.2
+
+Bumps [zod](https://github.com/colinhacks/zod) from 3.25.76 to 4.4.2.
+- [Release notes](https://github.com/colinhacks/zod/releases)
+- [Commits](https://github.com/colinhacks/zod/compare/v3.25.76...v4.4.2)
+
+---
+updated-dependencies:
+- dependency-name: zod
+  dependency-version: 4.3.6
+  dependency-type: direct:production
+  update-type: version-update:semver-major
+...
+
+Signed-off-by: dependabot[bot] <support@github.com>
+---
+ packages/core/package.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/packages/core/package.json b/packages/core/package.json
+index 96b80b1..04012c2 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -11,7 +11,7 @@
+     "lint": "oxlint src/"
+   },
+   "dependencies": {
+-    "zod": "^3.24.0"
++    "zod": "^4.4.2"
+   },
+   "devDependencies": {
+     "typescript": "^5.7.0",
+-- 
+2.54.0 (Apple Git-157)
+
