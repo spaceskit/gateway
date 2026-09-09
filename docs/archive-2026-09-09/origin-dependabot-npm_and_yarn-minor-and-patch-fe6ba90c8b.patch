@@ -1,0 +1,56 @@
+From 8a9de9ea24e1293103beaca5060a6e426612cb07 Mon Sep 17 00:00:00 2001
+From: "dependabot[bot]" <49699333+dependabot[bot]@users.noreply.github.com>
+Date: Thu, 18 Jun 2026 13:05:46 +0000
+Subject: [PATCH] chore(deps): bump the minor-and-patch group across 1
+ directory with 2 updates
+
+Bumps the minor-and-patch group with 2 updates in the / directory: [@anthropic-ai/claude-agent-sdk](https://github.com/anthropics/claude-agent-sdk-typescript) and [@anthropic-ai/sdk](https://github.com/anthropics/anthropic-sdk-typescript).
+
+
+Updates `@anthropic-ai/claude-agent-sdk` from 0.2.141 to 0.3.181
+- [Release notes](https://github.com/anthropics/claude-agent-sdk-typescript/releases)
+- [Changelog](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)
+- [Commits](https://github.com/anthropics/claude-agent-sdk-typescript/compare/v0.2.141...v0.3.181)
+
+Updates `@anthropic-ai/sdk` from 0.80.0 to 0.104.2
+- [Release notes](https://github.com/anthropics/anthropic-sdk-typescript/releases)
+- [Changelog](https://github.com/anthropics/anthropic-sdk-typescript/blob/main/CHANGELOG.md)
+- [Commits](https://github.com/anthropics/anthropic-sdk-typescript/compare/sdk-v0.80.0...sdk-v0.104.2)
+
+---
+updated-dependencies:
+- dependency-name: "@anthropic-ai/claude-agent-sdk"
+  dependency-version: 0.3.146
+  dependency-type: direct:production
+  update-type: version-update:semver-minor
+  dependency-group: minor-and-patch
+- dependency-name: "@anthropic-ai/sdk"
+  dependency-version: 0.97.1
+  dependency-type: direct:production
+  update-type: version-update:semver-minor
+  dependency-group: minor-and-patch
+...
+
+Signed-off-by: dependabot[bot] <support@github.com>
+---
+ packages/provider-runtime/package.json | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/packages/provider-runtime/package.json b/packages/provider-runtime/package.json
+index fd1122f..19e6cd3 100644
+--- a/packages/provider-runtime/package.json
++++ b/packages/provider-runtime/package.json
+@@ -12,8 +12,8 @@
+     "test": "bun test"
+   },
+   "dependencies": {
+-    "@anthropic-ai/claude-agent-sdk": "^0.2.96",
+-    "@anthropic-ai/sdk": "^0.80.0",
++    "@anthropic-ai/claude-agent-sdk": "^0.3.181",
++    "@anthropic-ai/sdk": "^0.104.2",
+     "@lmstudio/sdk": "^1.5.0",
+     "@meridius-labs/apple-on-device-ai": "^1.6.2",
+     "@spaceskit/core": "*",
+-- 
+2.54.0 (Apple Git-157)
+
