@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/mcp": "^1.0.25",
+    "@ai-sdk/mcp": "^2.0.45",
     "@spaceskit/core": "*"
   },
   "devDependencies": {
